@@ -45,6 +45,11 @@ const PRESETS := {
 		["Bunker", "Build a bunker wall"],
 		["Watchtower", "Build a watchtower"],
 		["Ammo Depot", "Spawn an ammo depot"],
+		["Stairs", "Build stairs"],
+		["Ramp", "Build a ramp"],
+		["Jump Pad", "Build a jump pad"],
+		["Cover Piece", "Build a cover piece"],
+		["Sniper Nest", "Build a sniper nest"],
 	],
 	"Weapons": [
 		["Sniper", "Give me a sniper rifle"],
@@ -52,6 +57,8 @@ const PRESETS := {
 		["SMG", "Give me an smg"],
 		["Assault Rifle", "Give me an assault rifle"],
 		["LMG", "Give me a machine gun"],
+		["Burst Rifle", "Give me a burst rifle"],
+		["Judge", "Give me a judge"],
 	],
 	"Events": [
 		["Weaken Enemies", "Weaken the enemies"],
@@ -74,6 +81,14 @@ var _prompt_input: LineEdit
 var _confirm_button: Button
 var _preview_label: Label
 var _history_list: VBoxContainer
+var _history_search_input: LineEdit
+var _code_input: LineEdit
+var _placed_list: VBoxContainer
+## Pending spec while a ghost preview is active (Forge batch item 2):
+## the position is filled from the ghost at confirm time.
+var _pending_ghost_spec := {}
+var _code_build_button: Button
+var _code_copy_button: Button
 var _undo_button: Button
 var _toast_label: Label
 var _key_input: LineEdit
@@ -110,27 +125,8 @@ var _mods_path_label: Label
 var _mods_rescan_button: Button
 var _mods_tab_idx := -1
 var _mods_rows: Array[Control] = []
-# v0.8 CREATE MOD: one panel + approval area inside the Mods tab.
-# Generation/validation NEVER write anything; install() (Worker A's
-# ModCreator) is the only write path and runs only on the Install tap.
-var _mods_create_button: Button
-var _create_panel: VBoxContainer
-var _create_idea_input: LineEdit
-var _create_generate_button: Button
-var _create_regenerate_button: Button
-var _create_close_button: Button
-var _create_status: Label
-var _approval_panel: VBoxContainer
-var _approval_summary: Label
-var _approval_code: TextEdit
-var _approval_status: Label
-var _approval_install_button: Button
-var _approval_discard_button: Button
-var _approval_regenerate_button: Button
-var _mod_creator: Object
-var _pending_candidate: Dictionary = {}
-var _pending_idea: String = ""
-var _create_generating := false
+# Create-Mod now lives in the standalone Mod Creator menu (main menu ->
+# CREATE A MOD). The Mods tab keeps list / enable / disable / Rescan only.
 
 
 func _ready() -> void:
@@ -184,6 +180,10 @@ func _build() -> void:
 	_budget_label = Label.new()
 	_budget_label.name = "BudgetLabel"
 	_budget_label.text = "BUDGET: —"
+	# Directive A: budget enforcement is OFF (Forge manager
+	# BUDGET_ENABLED = false) — the budget UI is HIDDEN, not deleted:
+	# the label stays in the tree so a re-enable only flips visibility.
+	_budget_label.visible = false
 	header.add_child(_budget_label)
 	var close_btn := Button.new()
 	close_btn.name = "CloseButton"
@@ -241,6 +241,15 @@ func _build() -> void:
 	# v0.7 MODS tab (6th tab): installed user mods from ModLoader.
 	_build_mods_tab()
 
+	# Placed structures (Forge batch item 2): move / rotate / repair /
+	# delete after placing. Refreshed on open() and after every action.
+	var placed_title := Label.new()
+	placed_title.text = "PLACED STRUCTURES"
+	content.add_child(placed_title)
+	_placed_list = VBoxContainer.new()
+	_placed_list.name = "PlacedStructuresList"
+	content.add_child(_placed_list)
+
 	# Free-text prompt + confirm.
 	var prompt_row := HBoxContainer.new()
 	prompt_row.name = "PromptRow"
@@ -284,10 +293,23 @@ func _build() -> void:
 		add_child(_speech)
 
 	# Cost preview (budget-only when preview_cost is absent).
+	# Directive A: costs are still computed + shown, but building is
+	# free — the "(free)" suffix says so, and nothing here blocks.
 	_preview_label = Label.new()
 	_preview_label.name = "PreviewLabel"
 	_preview_label.text = "COST: —"
 	content.add_child(_preview_label)
+
+	# History search: filters the history list by text (case-insensitive).
+	_history_search_input = LineEdit.new()
+	_history_search_input.name = "HistorySearchInput"
+	_history_search_input.placeholder_text = "Search history…"
+	_history_search_input.clear_button_enabled = true
+	_history_search_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.style_lineedit(_history_search_input)
+	_history_search_input.focus_mode = Control.FOCUS_CLICK
+	_history_search_input.text_changed.connect(_on_history_search_changed)
+	content.add_child(_history_search_input)
 
 	# Prompt history.
 	var hist_title := Label.new()
@@ -301,6 +323,34 @@ func _build() -> void:
 	_history_list = VBoxContainer.new()
 	_history_list.name = "HistoryList"
 	hist_scroll.add_child(_history_list)
+
+	# Shareable build codes: paste a code to rebuild the exact spec it
+	# encodes, or copy the last successful build's code to send to a
+	# friend. Codes are validated like any spec before building.
+	var code_row := HBoxContainer.new()
+	code_row.name = "CodeRow"
+	content.add_child(code_row)
+	_code_input = LineEdit.new()
+	_code_input.name = "CodeInput"
+	_code_input.placeholder_text = "Paste a build code…"
+	_code_input.clear_button_enabled = true
+	_code_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.style_lineedit(_code_input)
+	_code_input.focus_mode = Control.FOCUS_CLICK
+	_code_input.text_submitted.connect(_on_code_build_submitted)
+	code_row.add_child(_code_input)
+	_code_build_button = Button.new()
+	_code_build_button.name = "CodeBuildButton"
+	_code_build_button.text = "BUILD FROM CODE"
+	StencilStyle.style_button(_code_build_button)
+	_code_build_button.pressed.connect(_on_code_build_pressed)
+	code_row.add_child(_code_build_button)
+	_code_copy_button = Button.new()
+	_code_copy_button.name = "CodeCopyButton"
+	_code_copy_button.text = "COPY LAST CODE"
+	StencilStyle.style_button(_code_copy_button)
+	_code_copy_button.pressed.connect(_on_code_copy_pressed)
+	code_row.add_child(_code_copy_button)
 
 	# DeepSeek key entry (v0.6 LLM wiring): the key lives ONLY in
 	# user://forge_config.json on this device, placed by the player here.
@@ -426,6 +476,16 @@ func _apply_scale() -> void:
 		_mic_button.add_theme_font_size_override("font_size", UiScale.scaled_font(22, vp))
 	if _preview_label != null:
 		StencilStyle.apply_body(_preview_label, UiScale.scaled_font(19, vp), StencilStyle.ORANGE, 2)
+	if _history_search_input != null:
+		_history_search_input.custom_minimum_size = Vector2(0, UiScale.scaled_size(56, vp))
+		_history_search_input.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+	if _code_input != null:
+		_code_input.custom_minimum_size = Vector2(0, UiScale.scaled_size(56, vp))
+		_code_input.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+	for _cb in [_code_build_button, _code_copy_button]:
+		if _cb != null:
+			(_cb as Button).custom_minimum_size = Vector2(UiScale.scaled_size(200, vp), UiScale.scaled_size(56, vp))
+			(_cb as Button).add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
 	if _hist_title != null:
 		StencilStyle.apply_body(_hist_title, UiScale.scaled_font(18, vp), StencilStyle.TEXT_DIM, 2)
 	if _hist_scroll != null:
@@ -498,6 +558,7 @@ func open() -> void:
 	_refresh_history()
 	_refresh_key_status()
 	_refresh_mods()
+	_refresh_placed()
 	_update_preview()
 	# v0.5.1 FIX 6: NEVER grab focus on open — grabbing focus pops the
 	# phone keyboard and routes WASD into the LineEdit. Re-assert
@@ -526,11 +587,10 @@ func close() -> void:
 		_prompt_input.release_focus()
 	if _key_input != null and _key_input.has_focus():
 		_key_input.release_focus()
-	if _create_idea_input != null and _create_idea_input.has_focus():
-		_create_idea_input.release_focus()
-	# v0.8: never leak a pending candidate across menu sessions — the
-	# approval panel hides and the candidate is dropped, uninstalled.
-	_clear_create_mod_state()
+	if _code_input != null and _code_input.has_focus():
+		_code_input.release_focus()
+	if _history_search_input != null and _history_search_input.has_focus():
+		_history_search_input.release_focus()
 	_play("ui_click")
 
 
@@ -645,6 +705,15 @@ func _submit_prompt(text: String) -> void:
 		_show_toast("Forge system offline.")
 		return
 	_record_local_history(prompt)
+	# Structure prompts get a ghost preview instead of an instant
+	# build (Forge batch item 2). _try_ghost_prompt returns true when
+	# it took the prompt (menu closes, ghost shows); non-structure
+	# prompts keep the instant path below.
+	if _try_ghost_prompt(prompt):
+		_prompt_input.clear()
+		_update_preview()
+		_refresh_history()
+		return
 	forge.submit_prompt(prompt)
 	_prompt_input.clear()
 	_update_preview()
@@ -661,8 +730,180 @@ func _record_local_history(prompt: String) -> void:
 		_local_history.pop_back()
 
 
+# ------------------------------------------------------------------ ghost preview + placed structures (Forge batch item 2)
+
+## Try to route a structure prompt through the ghost preview:
+## parse offline, show the ghost, close the menu. True when the ghost
+## took the prompt. The spec's position is filled from the ghost at
+## confirm time; the build then goes through the manager (history +
+## MP sync + undo), never straight to the builder.
+func _try_ghost_prompt(prompt: String) -> bool:
+	var spec: Dictionary = ForgeLLM.parse_offline(prompt)
+	if spec.is_empty() or str(spec.get("target", "")) != "structure":
+		return false
+	var params: Dictionary = spec.get("params", {})
+	var shape := str(params.get("shape", ""))
+	if shape.is_empty():
+		return false
+	var player := get_tree().get_first_node_in_group("player") as Node3D
+	var root := get_tree().current_scene
+	if player == null or root == null:
+		return false
+	var placement := ForgePlacement.attach_to(root)
+	if placement == null or not placement.start_preview(shape, params, player, root):
+		return false
+	_pending_ghost_spec = spec.duplicate(true)
+	if not placement.is_connected("preview_confirm_requested", _on_ghost_confirm_requested):
+		placement.connect("preview_confirm_requested", _on_ghost_confirm_requested)
+	if not placement.is_connected("preview_cancelled", _on_ghost_cancelled):
+		placement.connect("preview_cancelled", _on_ghost_cancelled)
+	close()
+	return true
+
+
+## Ghost confirm (interact key): build the pending spec at the ghost
+## position through the manager. The placement node clears its own
+## ghost before the build runs.
+func _on_ghost_confirm_requested(pos: Vector3) -> void:
+	var spec := _pending_ghost_spec
+	_pending_ghost_spec = {}
+	if spec.is_empty():
+		return
+	var params: Dictionary = spec.get("params", {})
+	params["position"] = [pos.x, pos.y, pos.z]
+	spec["params"] = params
+	var root := get_tree().current_scene
+	if root != null:
+		var placement := ForgePlacement.attach_to(root)
+		if placement != null:
+			placement.cancel_preview()
+	var forge := _get_forge()
+	if forge != null and forge.has_method("build_spec_direct"):
+		forge.call("build_spec_direct", spec)
+	_show_toast("Structure placed.")
+
+
+## Ghost cancel (ESC): reopen the Forge menu.
+func _on_ghost_cancelled() -> void:
+	_pending_ghost_spec = {}
+	open()
+
+
+## Rebuild the PLACED STRUCTURES list from group "forge_structure".
+func _refresh_placed() -> void:
+	if _placed_list == null:
+		return
+	for c in _placed_list.get_children():
+		c.queue_free()
+	var structures := get_tree().get_nodes_in_group("forge_structure")
+	for node in structures:
+		var row := HBoxContainer.new()
+		var shape := str(node.get("structure_shape"))
+		if shape.is_empty():
+			shape = str(node.get_meta("shape", "structure"))
+		var lbl := Label.new()
+		lbl.text = "%s  (%d / %d HP)" % [shape, ForgeStructure.hp_of(node), ForgeStructure.max_hp_of(node)]
+		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(lbl)
+		for action in ["MOVE", "ROTATE", "REPAIR", "DELETE"]:
+			var b := Button.new()
+			b.text = action
+			StencilStyle.style_button(b)
+			match action:
+				"MOVE":
+					b.pressed.connect(_on_placed_move.bind(node))
+				"ROTATE":
+					b.pressed.connect(_on_placed_rotate.bind(node))
+				"REPAIR":
+					b.pressed.connect(_on_placed_repair.bind(node))
+				"DELETE":
+					b.pressed.connect(_on_placed_delete.bind(node))
+			row.add_child(b)
+		_placed_list.add_child(row)
+
+
+func _on_placed_move(node: Node) -> void:
+	if not is_instance_valid(node):
+		return
+	var player := get_tree().get_first_node_in_group("player") as Node3D
+	var root := get_tree().current_scene
+	if player == null or root == null:
+		return
+	var placement := ForgePlacement.attach_to(root)
+	if placement != null and placement.start_move_preview(node, player, root):
+		if not placement.is_connected("preview_cancelled", _on_ghost_cancelled):
+			placement.connect("preview_cancelled", _on_ghost_cancelled)
+		close()
+
+
+func _on_placed_rotate(node: Node) -> void:
+	if not is_instance_valid(node):
+		return
+	ForgePlacement.rotate_structure(node, 45.0)
+	_show_toast("Rotated 45°.")
+	_refresh_placed()
+
+
+func _on_placed_repair(node: Node) -> void:
+	if not is_instance_valid(node):
+		return
+	ForgePlacement.repair_structure(node)
+	_show_toast("Structure repaired.")
+	_refresh_placed()
+
+
+func _on_placed_delete(node: Node) -> void:
+	if not is_instance_valid(node):
+		return
+	ForgePlacement.delete_structure(node)
+	_show_toast("Structure deleted.")
+	_refresh_placed()
+
+
+func _on_history_search_changed(_new_text: String) -> void:
+	_refresh_history()
+
+
+func _on_code_build_submitted(_text: String) -> void:
+	_on_code_build_pressed()
+
+
+func _on_code_build_pressed() -> void:
+	var forge := _get_forge()
+	if forge == null or not forge.has_method("build_from_code"):
+		_show_toast("Build codes unavailable.")
+		return
+	var code := ""
+	if _code_input != null:
+		code = _code_input.text.strip_edges()
+	if code.is_empty():
+		_show_toast("Paste a build code first.")
+		return
+	forge.call("build_from_code", code)
+	_play("ui_click")
+
+
+func _on_code_copy_pressed() -> void:
+	var forge := _get_forge()
+	var code := ""
+	if forge != null and forge.has_method("get_last_build_code"):
+		code = str(forge.call("get_last_build_code"))
+	if code.is_empty():
+		_show_toast("No build to copy yet — forge something first.")
+		return
+	DisplayServer.clipboard_set(code)
+	if _code_input != null:
+		_code_input.text = code
+	_show_toast("Build code copied to clipboard.")
+	_play("ui_click")
+
+
 # ------------------------------------------------------------------ refresh
 func _refresh_budget() -> void:
+	# Directive A: the budget label stays HIDDEN while budget
+	# enforcement is off. The text is still refreshed behind the scenes
+	# so flipping the manager's BUDGET_ENABLED back on only needs the
+	# visibility flip in _build.
 	var forge := _get_forge()
 	var amount := -1
 	if forge != null and forge.has_method("get_budget"):
@@ -671,6 +912,7 @@ func _refresh_budget() -> void:
 		_budget_label.text = "BUDGET: %d" % amount
 	else:
 		_budget_label.text = "BUDGET: —"
+	_budget_label.visible = false
 
 
 func _refresh_undo_visibility() -> void:
@@ -681,15 +923,22 @@ func _refresh_undo_visibility() -> void:
 func _refresh_history() -> void:
 	for child in _history_list.get_children():
 		child.queue_free()
+	var query := "" if _history_search_input == null else _history_search_input.text.strip_edges()
 	var entries: Array[String] = []
 	var forge := _get_forge()
-	if forge != null and forge.has_method("get_history"):
+	if forge != null and forge.has_method("search_history"):
+		var raw: Variant = forge.call("search_history", query)
+		if raw is Array:
+			for item in raw:
+				entries.append(str(item))
+	elif forge != null and forge.has_method("get_history"):
 		var raw: Variant = forge.call("get_history")
 		if raw is Array:
 			for item in raw:
 				entries.append(str(item))
+		entries = _filter_history(entries, query)
 	else:
-		entries = _local_history.duplicate()
+		entries = _filter_history(_local_history.duplicate(), query)
 	if entries.is_empty():
 		var empty := Label.new()
 		StencilStyle.apply_body(empty, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
@@ -711,6 +960,19 @@ func _refresh_history() -> void:
 		_history_list.add_child(b)
 
 
+## Local history filter (fallback when the backend has no
+## search_history): case-insensitive substring. "" = everything.
+func _filter_history(entries: Array[String], query: String) -> Array[String]:
+	var q := query.strip_edges().to_lower()
+	if q.is_empty():
+		return entries
+	var out: Array[String] = []
+	for entry in entries:
+		if entry.to_lower().contains(q):
+			out.append(entry)
+	return out
+
+
 func _update_preview() -> void:
 	var prompt := _prompt_input.text.strip_edges()
 	var forge := _get_forge()
@@ -723,7 +985,8 @@ func _update_preview() -> void:
 		return
 	var d := raw as Dictionary
 	if bool(d.get("ok", false)):
-		_preview_label.text = "COST: %d" % int(d.get("cost", 0))
+		# Directive A: cost computed + shown, but building is free.
+		_preview_label.text = "COST: %d (free)" % int(d.get("cost", 0))
 	else:
 		var err := str(d.get("error", ""))
 		_preview_label.text = "COST: —  %s" % err if not err.is_empty() else "COST: —"
@@ -863,121 +1126,13 @@ func _build_mods_tab() -> void:
 	StencilStyle.style_button(_mods_rescan_button)
 	_mods_rescan_button.pressed.connect(_on_mods_rescan_pressed)
 	rescan_row.add_child(_mods_rescan_button)
-	# v0.8 CREATE MOD: opens the idea -> generate -> approval flow below.
-	_mods_create_button = Button.new()
-	_mods_create_button.name = "ModsCreateModButton"
-	_mods_create_button.text = "CREATE MOD"
-	StencilStyle.style_button(_mods_create_button)
-	_mods_create_button.pressed.connect(_on_create_mod_pressed)
-	rescan_row.add_child(_mods_create_button)
 	var hint := Label.new()
 	hint.name = "ModsHintLabel"
 	hint.text = "Drop a mod folder in, then Rescan."
 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	StencilStyle.apply_body(hint, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
 	rescan_row.add_child(hint)
-	# v0.8 CREATE MOD panel (hidden until CREATE MOD is tapped).
-	_create_panel = VBoxContainer.new()
-	_create_panel.name = "CreateModPanel"
-	_create_panel.visible = false
-	box.add_child(_create_panel)
-	var create_title := Label.new()
-	create_title.name = "CreateModTitle"
-	create_title.text = "CREATE MOD — describe it, review the code, then Install."
-	create_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	StencilStyle.apply_body(create_title, UiScale.scaled_font(18, _vp_size()), StencilStyle.TEXT, 2)
-	_create_panel.add_child(create_title)
-	_create_idea_input = LineEdit.new()
-	_create_idea_input.name = "CreateModIdeaInput"
-	_create_idea_input.placeholder_text = "Describe your mod idea… e.g. a railgun that fires explosive rounds"
-	_create_idea_input.clear_button_enabled = true
-	_create_idea_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	StencilStyle.style_lineedit(_create_idea_input)
-	# Same focus rule as the prompt field: keyboard only on tap.
-	_create_idea_input.focus_mode = Control.FOCUS_CLICK
-	_create_idea_input.text_submitted.connect(_on_create_generate_submitted)
-	_create_panel.add_child(_create_idea_input)
-	var create_btn_row := HBoxContainer.new()
-	create_btn_row.name = "CreateModButtonRow"
-	_create_panel.add_child(create_btn_row)
-	_create_generate_button = Button.new()
-	_create_generate_button.name = "CreateModGenerateButton"
-	_create_generate_button.text = "GENERATE"
-	StencilStyle.style_button(_create_generate_button)
-	_create_generate_button.pressed.connect(_on_create_generate_pressed)
-	create_btn_row.add_child(_create_generate_button)
-	_create_regenerate_button = Button.new()
-	_create_regenerate_button.name = "CreateModRegenerateButton"
-	_create_regenerate_button.text = "REGENERATE"
-	_create_regenerate_button.visible = false
-	StencilStyle.style_button(_create_regenerate_button)
-	_create_regenerate_button.pressed.connect(_on_create_regenerate_pressed)
-	create_btn_row.add_child(_create_regenerate_button)
-	_create_close_button = Button.new()
-	_create_close_button.name = "CreateModCloseButton"
-	_create_close_button.text = "CLOSE"
-	StencilStyle.style_button(_create_close_button)
-	_create_close_button.pressed.connect(_on_create_close_pressed)
-	create_btn_row.add_child(_create_close_button)
-	_create_status = Label.new()
-	_create_status.name = "CreateModStatus"
-	_create_status.text = ""
-	_create_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	StencilStyle.apply_body(_create_status, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
-	_create_panel.add_child(_create_status)
-	# v0.8 APPROVAL panel: plain-language summary + FULL generated code
-	# (scrollable, read-only) + Install / Discard / Regenerate. Nothing
-	# is installed until the Install tap.
-	_approval_panel = VBoxContainer.new()
-	_approval_panel.name = "CreateModApprovalPanel"
-	_approval_panel.visible = false
-	box.add_child(_approval_panel)
-	var approval_title := Label.new()
-	approval_title.name = "ApprovalTitle"
-	approval_title.text = "REVIEW — nothing is installed until you tap Install."
-	approval_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	StencilStyle.apply_body(approval_title, UiScale.scaled_font(18, _vp_size()), StencilStyle.ORANGE, 2)
-	_approval_panel.add_child(approval_title)
-	_approval_summary = Label.new()
-	_approval_summary.name = "ApprovalSummary"
-	_approval_summary.text = ""
-	_approval_summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	StencilStyle.apply_body(_approval_summary, UiScale.scaled_font(18, _vp_size()), StencilStyle.TEXT, 2)
-	_approval_panel.add_child(_approval_summary)
-	_approval_code = TextEdit.new()
-	_approval_code.name = "ApprovalCode"
-	_approval_code.editable = false
-	_approval_code.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-	_approval_code.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_approval_code.custom_minimum_size = Vector2(0, UiScale.scaled_size(240, _vp_size()))
-	_approval_panel.add_child(_approval_code)
-	_approval_status = Label.new()
-	_approval_status.name = "ApprovalStatus"
-	_approval_status.text = ""
-	_approval_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	StencilStyle.apply_body(_approval_status, UiScale.scaled_font(17, _vp_size()), StencilStyle.RED, 2)
-	_approval_panel.add_child(_approval_status)
-	var approval_btn_row := HBoxContainer.new()
-	approval_btn_row.name = "ApprovalButtonRow"
-	_approval_panel.add_child(approval_btn_row)
-	_approval_install_button = Button.new()
-	_approval_install_button.name = "ApprovalInstallButton"
-	_approval_install_button.text = "INSTALL"
-	StencilStyle.style_button(_approval_install_button)
-	_approval_install_button.pressed.connect(_on_approval_install_pressed)
-	approval_btn_row.add_child(_approval_install_button)
-	_approval_discard_button = Button.new()
-	_approval_discard_button.name = "ApprovalDiscardButton"
-	_approval_discard_button.text = "DISCARD"
-	StencilStyle.style_button(_approval_discard_button)
-	_approval_discard_button.pressed.connect(_on_approval_discard_pressed)
-	approval_btn_row.add_child(_approval_discard_button)
-	_approval_regenerate_button = Button.new()
-	_approval_regenerate_button.name = "ApprovalRegenerateButton"
-	_approval_regenerate_button.text = "REGENERATE"
-	StencilStyle.style_button(_approval_regenerate_button)
-	_approval_regenerate_button.pressed.connect(_on_approval_regenerate_pressed)
-	approval_btn_row.add_child(_approval_regenerate_button)
+	# Create-Mod lives in the standalone Mod Creator menu (main menu -> CREATE A MOD).
 	_mods_scroll = ScrollContainer.new()
 	_mods_scroll.name = "ModsScroll"
 	_mods_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -1150,27 +1305,6 @@ func _scale_mods_rows(vp: Vector2) -> void:
 	if _mods_rescan_button != null:
 		_mods_rescan_button.custom_minimum_size = Vector2(UiScale.scaled_size(180, vp), UiScale.scaled_size(56, vp))
 		_mods_rescan_button.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
-	# v0.8 CREATE MOD + approval controls scale with the rest of the menu.
-	if _mods_create_button != null:
-		_mods_create_button.custom_minimum_size = Vector2(UiScale.scaled_size(200, vp), UiScale.scaled_size(56, vp))
-		_mods_create_button.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
-	if _create_idea_input != null:
-		_create_idea_input.custom_minimum_size = Vector2(0, UiScale.scaled_size(56, vp))
-		_create_idea_input.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
-	for _cb in [_create_generate_button, _create_regenerate_button, _create_close_button,
-			_approval_install_button, _approval_discard_button, _approval_regenerate_button]:
-		if _cb != null:
-			(_cb as Button).custom_minimum_size = Vector2(UiScale.scaled_size(180, vp), UiScale.scaled_size(56, vp))
-			(_cb as Button).add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
-	if _create_status != null:
-		_create_status.add_theme_font_size_override("font_size", UiScale.scaled_font(17, vp))
-	if _approval_summary != null:
-		_approval_summary.add_theme_font_size_override("font_size", UiScale.scaled_font(18, vp))
-	if _approval_code != null:
-		_approval_code.custom_minimum_size = Vector2(0, UiScale.scaled_size(240, vp))
-		_approval_code.add_theme_font_size_override("font_size", UiScale.scaled_font(17, vp))
-	if _approval_status != null:
-		_approval_status.add_theme_font_size_override("font_size", UiScale.scaled_font(17, vp))
 	if _mods_list == null:
 		return
 	for wrap in _mods_rows:
@@ -1190,264 +1324,3 @@ func _scale_mods_rows(vp: Vector2) -> void:
 				(child as Label).add_theme_font_size_override("font_size", UiScale.scaled_font(16, vp))
 
 
-# ------------------------------------------------------------------ v0.8 CREATE MOD
-# Idea -> Generate -> approval (summary + FULL code) -> Install/Discard.
-# The ModCreator script (Worker A: scripts/mods/mod_creator.gd) is loaded
-# the same defensive way as ModLoader — no hard class reference — so this
-# menu still parses and opens when the creator has not landed yet: the
-# panel then reports creation unavailable instead of breaking the menu.
-# Contract (exact, per the v0.8 chunk-2 spec):
-#   generate(idea: String) -> void, async, emits generation_ready(candidate)
-#   install(candidate: Dictionary) -> String ("" = OK, else error)
-#   candidate = {mod_id, name, kind ["block"/"script"], manifest,
-#                payload (JSON block text or GDScript source),
-#                summary (plain-language), error ("" when valid)}
-# install() is the ONLY write path in this flow; generation and
-# validation alone write nothing, and Install is the only call site.
-
-const MOD_CREATOR_PATH := "res://scripts/mods/mod_creator.gd"
-
-
-func _on_create_mod_pressed() -> void:
-	if _create_panel == null:
-		return
-	var show := not _create_panel.visible
-	_create_panel.visible = show
-	if not show:
-		# Hiding the create panel drops any pending approval too — the
-		# candidate is only meaningful inside this flow.
-		_clear_create_candidate()
-	elif _create_status != null and _create_status.text.is_empty():
-		_create_status.text = "Describe your mod idea, then tap GENERATE."
-	_play("ui_click")
-
-
-func _on_create_close_pressed() -> void:
-	if _create_panel != null:
-		_create_panel.visible = false
-	_clear_create_candidate()
-	_play("ui_click")
-
-
-func _on_create_generate_submitted(_text: String) -> void:
-	_on_create_generate_pressed()
-
-
-func _on_create_generate_pressed() -> void:
-	var idea := ""
-	if _create_idea_input != null:
-		idea = _create_idea_input.text.strip_edges()
-	if idea.is_empty():
-		if _create_status != null:
-			_create_status.text = "Describe your mod idea first."
-		return
-	_pending_idea = idea
-	_start_generation(idea)
-	_play("ui_click")
-
-
-func _on_create_regenerate_pressed() -> void:
-	var idea := _pending_idea
-	if idea.is_empty() and _create_idea_input != null:
-		idea = _create_idea_input.text.strip_edges()
-		_pending_idea = idea
-	if idea.is_empty():
-		if _create_status != null:
-			_create_status.text = "Describe your mod idea first."
-		return
-	_start_generation(idea)
-	_play("ui_click")
-
-
-## Disables Generate, hides any stale approval, and fires the async
-## generation. The result arrives via _on_generation_ready.
-func _start_generation(idea: String) -> void:
-	if _create_generating:
-		return
-	var creator := _mod_creator_instance()
-	if creator == null or not creator.has_method("generate"):
-		if _create_status != null:
-			_create_status.text = "Mod creation unavailable — creator not found."
-		return
-	_create_generating = true
-	if _create_generate_button != null:
-		_create_generate_button.disabled = true
-	if _create_regenerate_button != null:
-		_create_regenerate_button.visible = false
-	if _approval_panel != null:
-		_approval_panel.visible = false
-	if _create_status != null:
-		_create_status.text = "Generating…"
-	creator.callv("generate", [idea])
-
-
-func _on_generation_ready(candidate: Dictionary) -> void:
-	_create_generating = false
-	if _create_generate_button != null:
-		_create_generate_button.disabled = false
-	var err := str(candidate.get("error", ""))
-	if not err.is_empty():
-		# Error path: nothing is installed, the stale approval (if any)
-		# stays hidden, and REGENERATE re-runs for the same idea.
-		_pending_candidate = {}
-		if _approval_panel != null:
-			_approval_panel.visible = false
-		if _create_status != null:
-			_create_status.text = "Generation failed: " + err
-		if _create_regenerate_button != null:
-			_create_regenerate_button.visible = true
-		_show_toast("Mod generation failed — nothing installed.")
-		return
-	_pending_candidate = candidate
-	if _create_status != null:
-		_create_status.text = "Review the mod below — nothing is installed until you tap Install."
-	if _create_regenerate_button != null:
-		_create_regenerate_button.visible = false
-	_show_approval(candidate)
-
-
-## Fills the approval panel: plain-language summary + kind/ID + key
-## manifest stats, and the ENTIRE payload in the read-only code area.
-func _show_approval(candidate: Dictionary) -> void:
-	if _approval_panel == null:
-		return
-	var lines: Array[String] = []
-	var name_txt := str(candidate.get("name", ""))
-	var mod_id := str(candidate.get("mod_id", ""))
-	var kind := str(candidate.get("kind", ""))
-	if not name_txt.is_empty():
-		lines.append("Name: " + name_txt)
-	if not mod_id.is_empty():
-		lines.append("ID: " + mod_id)
-	if not kind.is_empty():
-		lines.append("Kind: " + kind)
-	var manifest: Variant = candidate.get("manifest", {})
-	if manifest is Dictionary:
-		for key in (manifest as Dictionary).keys():
-			if lines.size() >= 16:
-				break
-			var v: Variant = (manifest as Dictionary)[key]
-			if v is String or v is int or v is float or v is bool:
-				lines.append("%s: %s" % [str(key), str(v)])
-	var summary := str(candidate.get("summary", ""))
-	if not summary.is_empty():
-		lines.append("")
-		lines.append(summary)
-	if _approval_summary != null:
-		_approval_summary.text = "\n".join(lines)
-	if _approval_code != null:
-		_approval_code.text = str(candidate.get("payload", ""))
-		_approval_code.scroll_vertical = 0
-		_approval_code.scroll_horizontal = 0
-	if _approval_status != null:
-		_approval_status.text = ""
-	_approval_panel.visible = true
-
-
-func _on_approval_install_pressed() -> void:
-	if _pending_candidate.is_empty():
-		return
-	var creator := _mod_creator_instance()
-	if creator == null or not creator.has_method("install"):
-		if _approval_status != null:
-			_approval_status.text = "Mod creation unavailable — creator not found."
-		return
-	var result: Variant = creator.callv("install", [_pending_candidate])
-	var err := ""
-	if result is String:
-		err = result as String
-	if err.is_empty():
-		_pending_candidate = {}
-		if _approval_panel != null:
-			_approval_panel.visible = false
-		if _create_panel != null:
-			_create_panel.visible = false
-		if _create_status != null:
-			_create_status.text = ""
-		_refresh_mods()
-		_show_toast("mod installed")
-		_play("ui_click")
-	else:
-		if _approval_status != null:
-			_approval_status.text = "Install failed: " + err
-
-
-func _on_approval_discard_pressed() -> void:
-	# Discard drops the candidate — nothing was written, nothing to undo.
-	_pending_candidate = {}
-	if _approval_panel != null:
-		_approval_panel.visible = false
-	if _create_status != null:
-		_create_status.text = "Discarded — nothing installed."
-	_play("ui_click")
-
-
-func _on_approval_regenerate_pressed() -> void:
-	var idea := _pending_idea
-	if idea.is_empty() and _create_idea_input != null:
-		idea = _create_idea_input.text.strip_edges()
-		_pending_idea = idea
-	if idea.is_empty():
-		if _approval_status != null:
-			_approval_status.text = "Describe your mod idea first."
-		return
-	# The old candidate is replaced by the fresh generation, never kept.
-	_pending_candidate = {}
-	if _approval_panel != null:
-		_approval_panel.visible = false
-	_start_generation(idea)
-	_play("ui_click")
-
-
-## The ModCreator instance, or null when its file has not landed yet.
-## Cached; a Node instance is added to the tree so async work (HTTP,
-## awaits) can run. The generation_ready signal is wired once here.
-func _mod_creator_instance() -> Object:
-	if _mod_creator != null and is_instance_valid(_mod_creator):
-		return _mod_creator
-	if not ResourceLoader.exists(MOD_CREATOR_PATH):
-		return null
-	var script: GDScript = load(MOD_CREATOR_PATH) as GDScript
-	if script == null:
-		return null
-	var inst: Object = script.new()
-	if inst == null:
-		return null
-	if inst.has_signal("generation_ready") and not inst.is_connected("generation_ready", _on_generation_ready):
-		inst.connect("generation_ready", _on_generation_ready)
-	if inst is Node and not (inst as Node).is_inside_tree():
-		add_child(inst as Node)
-	_mod_creator = inst
-	return inst
-
-
-## Drops the pending candidate + hides the approval panel + resets the
-## Generate button. Called on Discard-equivalent exits (panel close,
-## menu close, CREATE MOD toggle-off). Never writes anything.
-func _clear_create_candidate() -> void:
-	_pending_candidate = {}
-	if _approval_panel != null:
-		_approval_panel.visible = false
-	if _approval_summary != null:
-		_approval_summary.text = ""
-	if _approval_code != null:
-		_approval_code.text = ""
-	if _approval_status != null:
-		_approval_status.text = ""
-	if _create_regenerate_button != null:
-		_create_regenerate_button.visible = false
-	if _create_generate_button != null:
-		_create_generate_button.disabled = false
-	_create_generating = false
-
-
-## Full Create-Mod reset for menu close: candidate + idea + panels.
-func _clear_create_mod_state() -> void:
-	_clear_create_candidate()
-	_pending_idea = ""
-	if _create_panel != null:
-		_create_panel.visible = false
-	if _create_status != null:
-		_create_status.text = ""
-	if _create_idea_input != null:
-		_create_idea_input.text = ""
