@@ -59,6 +59,7 @@ var _creator: ModCreator
 var _pending_candidate: Dictionary = {}
 var _pending_prompt: String = ""
 var _pending_asset: Dictionary = {}
+var _pending_projectile_asset: Dictionary = {}
 var _generating := false
 var _last_sandbox_result: Dictionary = {}
 
@@ -88,6 +89,31 @@ static func behavior_for(categories: Array, logic: String, payload: String) -> D
 	var projectile := categories.has("Weapon") or l.contains("shoot") or l.contains("projectile") or l.contains("fire") or l.contains("launch") or p.contains("spawn_voxel_box")
 	var explodes := l.contains("explod") or p.contains("explosion") or p.contains("fire_effect")
 	return {"projectile": projectile, "explodes_on_impact": explodes}
+
+
+## Visual description of what the mod FIRES (its projectile), derived
+## from the logic + payload — NEVER the weapon visual. A pistol mod's
+## visual ("a pistol with a long barrel") describes the WEAPON; the
+## sandbox must fly its projectile (laser beam / bullet / watermelon),
+## not a barrel-shaped tube. "" = non-weapon mod, no projectile.
+static func projectile_description_for(categories: Array, logic: String, payload: String) -> String:
+	var l := logic.to_lower()
+	var p := payload.to_lower()
+	if l.contains("watermelon") or p.contains("watermelon"):
+		return "watermelon"
+	if l.contains("laser") or l.contains("beam") or p.contains("laser") or p.contains("beam"):
+		return "glowing laser beam"
+	if l.contains("bullet") or l.contains("round") or l.contains("shell") or p.contains("bullet"):
+		return "small metal bullet"
+	if l.contains("fireball") or l.contains("plasma") or p.contains("fireball") or p.contains("plasma"):
+		return "glowing plasma fireball"
+	if l.contains("rocket") or l.contains("missile") or p.contains("rocket") or p.contains("missile"):
+		return "rocket"
+	if l.contains("grenade") or p.contains("grenade"):
+		return "grenade"
+	if categories.has("Weapon") or l.contains("shoot") or l.contains("projectile") or l.contains("fire") or l.contains("launch") or p.contains("spawn_voxel_box"):
+		return "glowing energy bolt"
+	return ""
 
 
 func _ready() -> void:
@@ -274,12 +300,16 @@ func _build_create_tab() -> void:
 # --- MODS tab (same ModLoader list as the Forge menu) --------------------------
 
 func _build_mods_tab() -> void:
-	var scroll := _tab_scroll("ModsTab")
-	_tabs.set_tab_title(1, CREATOR_TABS[1])
+	# NOTE: NO outer ScrollContainer here (unlike Create/Import-Export):
+	# the mod list itself scrolls (ModsListScroll), and a wrapping
+	# ScrollContainer sizes this VBox to its content minimum, which
+	# leaves the EXPAND list ScrollContainer at 0px tall — an invisible
+	# list (the v0.5.1 "installed mod doesn't show up" bug).
 	var box := VBoxContainer.new()
 	box.name = "ModsBox"
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(box)
+	_tabs.add_child(box)
+	_tabs.set_tab_title(1, CREATOR_TABS[1])
 	_mods_path_label = Label.new()
 	_mods_path_label.name = "ModsPathLabel"
 	_mods_path_label.text = "Mods folder: " + OS.get_user_data_dir() + "/mods"
@@ -297,6 +327,10 @@ func _build_mods_tab() -> void:
 	var hint := Label.new()
 	hint.text = "Same installed mods as the Forge menu — list / enable / disable / Rescan."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# EXPAND_FILL is REQUIRED: without it the HBox gives this autowrap
+	# label its minimum size (1px wide, ~1617px tall wrapped), rendering
+	# one character per line and squeezing the mod list to 0px tall.
+	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	StencilStyle.apply_body(hint, 17, StencilStyle.TEXT_DIM, 2)
 	row.add_child(hint)
 	var list_scroll := ScrollContainer.new()
@@ -371,6 +405,7 @@ func _on_tab_changed(tab: int) -> void:
 
 func _on_close_pressed() -> void:
 	_pending_candidate = {}
+	_pending_projectile_asset = {}
 	creator_closed.emit()
 	queue_free()
 
@@ -425,8 +460,15 @@ func _on_generation_ready(candidate: Dictionary) -> void:
 		_status.text = "Generation failed: " + err
 		return
 	_pending_candidate = candidate
-	# Voxel asset from the VISUAL DESCRIPTION (local, cached).
+	# Voxel asset from the VISUAL DESCRIPTION (local, cached) — the WEAPON.
 	_pending_asset = VoxelAssetGenerator.get_or_generate(_visual_input.text)
+	# Projectile asset: what the mod FIRES, derived from logic/payload —
+	# never the weapon visual (a pistol's barrel is not its bullet).
+	var proj_desc := projectile_description_for(get_selected_categories(), _logic_input.text, str(candidate.get("payload", "")))
+	if proj_desc.is_empty():
+		_pending_projectile_asset = _pending_asset
+	else:
+		_pending_projectile_asset = VoxelAssetGenerator.get_or_generate(proj_desc)
 	_status.text = "Review the mod below — nothing is installed until you tap Install."
 	_show_approval(candidate)
 
@@ -454,6 +496,8 @@ func _show_approval(candidate: Dictionary) -> void:
 	_approval_code.scroll_vertical = 0
 	_approval_code.scroll_horizontal = 0
 	_asset_info.text = "Voxel asset: " + VoxelAssetGenerator.summarize(_pending_asset) + " — visual: " + _visual_input.text.strip_edges().left(120)
+	if bool(_pending_asset.get("cache_hit", false)):
+		_asset_info.text += " (reused from an earlier generation with the same description)"
 	_approval_status.text = ""
 	_approval_panel.visible = true
 
@@ -476,6 +520,7 @@ func _on_install_pressed() -> void:
 	var err := creator.install(_pending_candidate)
 	if err.is_empty():
 		_pending_candidate = {}
+		_pending_projectile_asset = {}
 		_approval_panel.visible = false
 		_status.text = "Installed."
 		_refresh_mods()
@@ -486,6 +531,7 @@ func _on_install_pressed() -> void:
 func _on_discard_pressed() -> void:
 	_pending_candidate = {}
 	_pending_asset = {}
+	_pending_projectile_asset = {}
 	_approval_panel.visible = false
 	_status.text = "Discarded — nothing installed."
 
@@ -503,7 +549,10 @@ func _on_sandbox_pressed() -> void:
 	sandbox.name = "SandboxTestRoom"
 	add_child(sandbox)
 	sandbox.sandbox_closed.connect(_on_sandbox_closed)
-	sandbox.open(_pending_candidate, _pending_asset, behavior)
+	# 1st asset arg = the PROJECTILE (what flies); 4th arg = the weapon
+	# visual, shown static at the shooter.
+	var proj := _pending_projectile_asset if not _pending_projectile_asset.is_empty() else _pending_asset
+	sandbox.open(_pending_candidate, proj, behavior, _pending_asset)
 
 
 func _on_sandbox_closed(result: Dictionary) -> void:
@@ -553,6 +602,7 @@ func _add_mod_row(mod: Dictionary) -> void:
 	wrap.name = "ModRow_" + mod_id
 	_mods_list.add_child(wrap)
 	var row := HBoxContainer.new()
+	row.name = "ModRow"
 	wrap.add_child(row)
 	var name_lbl := Label.new()
 	name_lbl.name = "ModName"
