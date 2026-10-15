@@ -53,30 +53,146 @@ const WEAPON_NAMES := {
 	"p9": "P9 Sidearm",
 	"raptor": "Raptor LMG",
 	"lmg": "LMG-9 ANVIL",
+	"trident": "BR-3 Trident",
+	"judge": "HV-44 Judge",
 }
 ## v0.6.2: Forge prompt ids -> Arsenal.WEAPONS ids. Forge speaks
 ## "manticore/longeye/breacher/hornet"; Arsenal only knows
 ## "ar7/lr8/sg12/smg9". Without this map give_weapon() silently no-ops
 ## (WeaponManager.set_slot rejects unknown ids). "p9"/"raptor"/"lmg"
 ## match on both sides and pass through via the .get() fallback.
+## New weapons: Forge "trident" -> Arsenal "br3" (BR-3 Trident burst
+## rifle), Forge "judge" -> Arsenal "hv44" (HV-44 Judge heavy revolver).
 const FORGE_WEAPON_IDS := {
 	"manticore": "ar7",
 	"longeye": "lr8",
 	"breacher": "sg12",
 	"hornet": "smg9",
+	"trident": "br3",
+	"judge": "hv44",
 }
 ## v0.6.2: base HP recorded on solid structures (metadata "hp"/"max_hp").
-## Structures stay solid/indestructible in gameplay — no damage path reads
-## this yet — but the value is the composition surface: "reinforced"
-## multiplies it by REINFORCED_HP_MULT, and undo/verify can read it.
+## vNext (Forge batch, Worker B): structures are DESTRUCTIBLE — the
+## Node3D above is now a ForgeStructure carrying live HP, damage
+## feedback, and destroy-at-0 behaviour (see forge_structure.gd). The
+## table below is the single source of truth for structure HP; costs
+## live in STRUCTURE_COST. HP scales with size/cost: bunker > wall >
+## sniper nest > bridge > stairs/ramp > cover piece / jump pad.
 const STRUCTURE_BASE_HP := {
 	"bridge": 300.0,
 	"bunker": 600.0,
 	"watchtower": 400.0,
 	"ammo_depot": 300.0,
+	"stairs": 250.0,
+	"ramp": 250.0,
+	"wall": 400.0,
+	"jump_pad": 200.0,
+	"cover_piece": 200.0,
+	"sniper_nest": 350.0,
+}
+## Forge preset costs (computed; enforcement off on the direct preset
+## path — see build_preset). The LLM/prompt path keeps its own cost
+## handling in ForgeManager / ForgeLLM.
+const STRUCTURE_COST := {
+	"bridge": 120,
+	"bunker": 180,
+	"watchtower": 200,
+	"ammo_depot": 150,
+	"stairs": 100,
+	"ramp": 90,
+	"wall": 120,
+	"jump_pad": 150,
+	"cover_piece": 60,
+	"sniper_nest": 220,
+}
+## Approx. overall bounds per structure shape (metres), used for the
+## ForgeStructure damage overlay / crack / smoke / destroy centre.
+const STRUCTURE_BOUNDS := {
+	"bridge": Vector3(2.2, 2.6, 8.0),
+	"bunker": Vector3(4.4, 2.8, 4.4),
+	"watchtower": Vector3(3.6, 5.1, 3.6),
+	"ammo_depot": Vector3(3.8, 2.4, 1.2),
+	"stairs": Vector3(2.2, 3.6, 9.0),
+	"ramp": Vector3(2.2, 2.4, 8.0),
+	"wall": Vector3(6.0, 3.0, 0.6),
+	"jump_pad": Vector3(2.0, 0.8, 2.0),
+	"cover_piece": Vector3(3.0, 1.2, 0.6),
+	"sniper_nest": Vector3(3.6, 4.4, 3.6),
 }
 const REINFORCED_HP_MULT := 1.5
 const TURRET_SCRIPT := preload("res://scripts/forge/forge_turret.gd")
+
+
+## True when `shape` is a buildable Forge structure (Worker B: the
+## geometry dispatcher + ghost + placement all key off this table).
+static func is_structure_shape(shape: String) -> bool:
+	return STRUCTURE_BASE_HP.has(shape)
+
+
+## Computed cost of a structure preset, or -1 for unknown shapes.
+## Enforcement is OFF on the direct preset path (build_preset) — the
+## value is for display / the prompt path's recompute.
+static func structure_cost(shape: String) -> int:
+	return int(STRUCTURE_COST.get(shape, -1))
+
+
+static func structure_bounds(shape: String) -> Vector3:
+	return STRUCTURE_BOUNDS.get(shape, Vector3(2.0, 2.0, 2.0)) as Vector3
+
+
+## True when the structure cap (12) is already reached.
+static func structure_cap_reached() -> bool:
+	return _structure_count() >= MAX_STRUCTURES
+
+
+## Direct preset build (Worker B): builds one structure preset at
+## "near_player" without going through the ForgeManager budget pipeline.
+## Cost is computed via structure_cost() but NOT charged (enforcement
+## off); the structure-cap check still applies. The Forge menu preset
+## buttons call this; the LLM/prompt path keeps using build() via the
+## manager with its own budget handling.
+static func build_preset(shape: String, player: Node3D, root: Node) -> String:
+	if not is_structure_shape(shape):
+		return FAIL_PREFIX + "unknown structure '%s'." % shape
+	return build({
+		"spec_version": 1,
+		"action": "spawn",
+		"target": "structure",
+		"params": {"shape": shape, "position": "near_player"},
+		"cost": 0,
+		"ttl": 0,
+	}, {"player": player, "root": root})
+
+
+## Shared geometry dispatcher (Worker B): builds one structure shape's
+## voxel geometry into `parent` (visuals) + `body` (colliders). Used by
+## _build_structure for real builds AND by ForgeGhost for previews, so
+## the ghost shows the exact geometry that will be placed. Behaviour
+## nodes (e.g. the jump-pad Area3D) are added to `parent`; the ghost
+## strips them after building.
+static func build_shape_geometry(shape: String, parent: Node3D, body: StaticBody3D) -> void:
+	var pal := VoxelBuilder.PALETTE
+	match shape:
+		"bridge":
+			_build_bridge(parent, body, pal)
+		"bunker":
+			_build_bunker(parent, body, pal)
+		"watchtower":
+			_build_watchtower(parent, body, pal)
+		"ammo_depot":
+			_build_ammo_depot(parent, body, pal)
+		"stairs":
+			_build_stairs(parent, body, pal)
+		"ramp":
+			_build_ramp(parent, body, pal)
+		"wall":
+			_build_wall_structure(parent, body, pal)
+		"jump_pad":
+			_build_jump_pad(parent, body, pal)
+		"cover_piece":
+			_build_cover_piece(parent, body, pal)
+		"sniper_nest":
+			_build_sniper_nest(parent, body, pal)
 
 
 static func build(spec: Dictionary, ctx: Dictionary) -> String:
@@ -247,7 +363,7 @@ static func _build_script_mod(rec: Dictionary, spec: Dictionary, params: Diction
 	var call_params := params.duplicate()
 	call_params["_target"] = target
 	if target in ["cover", "structure", "turret", "pickup"]:
-		call_params["_position"] = _snap_to_ground(_resolve_position(params.get("position", "near_player"), player, root), root)
+		call_params["_position"] = snap_to_ground(_resolve_position(params.get("position", "near_player"), player, root), root)
 	else:
 		call_params["_position"] = Vector3.ZERO
 	var result: Variant = (inst as ModBlock).apply(api, call_params)
@@ -357,7 +473,7 @@ static func _build_cover(params: Dictionary, player: Node3D, root: Node) -> Stri
 	var reinforced := str(params.get("property", "standard")) == "reinforced"
 	if reinforced:
 		hp *= REINFORCED_HP_MULT
-	var pos := _snap_to_ground(_resolve_position(params.get("position", "near_player"), player, root), root)
+	var pos := snap_to_ground(_resolve_position(params.get("position", "near_player"), player, root), root)
 	var cover := DestructibleCover.new()
 	cover.vox_size = size
 	cover.pitch = COVER_PITCH_M
@@ -373,6 +489,12 @@ static func _build_cover(params: Dictionary, player: Node3D, root: Node) -> Stri
 	else:
 		cover.palette.assign(_cover_palette(shape))  # typed Array[Color]: assign() converts
 	cover.hp = hp
+	# Worker B: max HP for repair (ForgeStructure.repair_target) + the
+	# enemy-pressure tick (ForgeEnemyPressure child) so enemies can
+	# damage and destroy Forge-built covers, same as structures.
+	cover.set_meta("max_hp", hp)
+	cover.set_meta("forge_kind", "cover")
+	cover.add_child(ForgeEnemyPressure.new())
 	cover.position = pos
 	root.add_child(cover)
 	_register_build(cover, pos, root, true)
@@ -380,32 +502,33 @@ static func _build_cover(params: Dictionary, player: Node3D, root: Node) -> Stri
 	return "Forge fabricated %s (%.1fx%.1fx%.1f m, %d HP%s)." % [shape, meters.x, meters.y, meters.z, int(hp), ", reinforced" if reinforced else ""]
 
 
-# --- Forge structures (bridge / bunker / watchtower / ammo depot) -----------
-# Solid voxel assemblies: one Node3D + one StaticBody3D carrying a box
-# collider per voxel block. _solid() adds the visible cube AND its collider
-# at the same local offset. Structures face the player's facing direction
-# (local -Z = forward after look_at), so bridges/stairs ascend away from
-# the player. Deliberately not destructible (no HP): DestructibleCover
-# owns the fracture path; these are solid emplacements.
+# --- Forge structures (all 10 shapes) --------------------------------------
+# Solid voxel assemblies: one ForgeStructure + one StructureBody carrying
+# a box collider per voxel block. _solid() adds the visible cube AND its
+# collider at the same local offset. Structures face the player's facing
+# direction (local -Z = forward after look_at), so bridges/stairs ascend
+# away from the player. Structures are DESTRUCTIBLE (Worker B): the
+# ForgeStructure node owns HP, damage feedback, repair, and destroy-at-0
+# behaviour; its StructureBody forwards take_damage() from weapon /
+# explosion hits, and ForgeEnemyPressure lets enemies batter them down.
 
 static func _build_structure(params: Dictionary, player: Node3D, root: Node) -> String:
 	var cap := _cap_check()
 	if not cap.is_empty():
 		return cap
 	var shape := str(params.get("shape", "bridge"))
-	if not (shape in ["bridge", "bunker", "watchtower", "ammo_depot"]):
+	if not is_structure_shape(shape):
 		return FAIL_PREFIX + "unknown structure '%s'." % shape
-	# v0.6.2 composition: property "reinforced" -> +50% HP (recorded as
-	# metadata; structures have no damage path yet, see STRUCTURE_BASE_HP).
+	# v0.6.2 composition: property "reinforced" -> +50% HP (live now:
+	# ForgeStructure reads the same value as its max HP).
 	var reinforced := str(params.get("property", "standard")) == "reinforced"
 	var hp := float(STRUCTURE_BASE_HP.get(shape, 300.0))
 	if reinforced:
 		hp *= REINFORCED_HP_MULT
-	var pos := _snap_to_ground(_resolve_position(params.get("position", "near_player"), player, root), root)
-	var s := Node3D.new()
-	s.name = "ForgeStructure_" + shape
-	s.set_meta("hp", hp)
-	s.set_meta("max_hp", hp)
+	var pos := snap_to_ground(_resolve_position(params.get("position", "near_player"), player, root), root)
+	var s := ForgeStructure.new()
+	var pal := VoxelBuilder.PALETTE
+	s.setup(shape, hp, structure_bounds(shape), _debris_colors_for(shape, pal))
 	root.add_child(s)
 	s.global_position = pos
 	if player != null:
@@ -413,18 +536,11 @@ static func _build_structure(params: Dictionary, player: Node3D, root: Node) -> 
 		fwd.y = 0.0
 		if fwd.length() > 0.1:
 			s.look_at(pos + fwd.normalized(), Vector3.UP)
-	var body := StaticBody3D.new()
+	# StructureBody forwards take_damage() to the ForgeStructure — a
+	# plain StaticBody3D would swallow weapon/explosion hits silently.
+	var body := ForgeStructure.StructureBody.new()
 	s.add_child(body)
-	var pal := VoxelBuilder.PALETTE
-	match shape:
-		"bridge":
-			_build_bridge(s, body, pal)
-		"bunker":
-			_build_bunker(s, body, pal)
-		"watchtower":
-			_build_watchtower(s, body, pal)
-		"ammo_depot":
-			_build_ammo_depot(s, body, pal)
+	build_shape_geometry(shape, s, body)
 	_register_build(s, pos, root, true)
 	var hp_note := " (reinforced, %d HP)" % int(hp) if reinforced else ""
 	if shape == "ammo_depot":
@@ -438,7 +554,31 @@ static func _build_structure(params: Dictionary, player: Node3D, root: Node) -> 
 			return "Forge fabricated bunker (roofed pillbox, firing gap)%s." % hp_note
 		"watchtower":
 			return "Forge fabricated watchtower (3 m platform, stairs, roof)%s." % hp_note
+		"stairs":
+			return "Forge fabricated stairs (8 steps to a 3.4 m platform)%s." % hp_note
+		"ramp":
+			return "Forge fabricated ramp (sloped slabs to a 2.3 m deck)%s." % hp_note
+		"wall":
+			return "Forge fabricated wall (6 m barrier, 3 m tall)%s." % hp_note
+		"jump_pad":
+			return "Forge fabricated jump pad (launch pad)%s." % hp_note
+		"cover_piece":
+			return "Forge fabricated cover piece (low wall)%s." % hp_note
+		"sniper_nest":
+			return "Forge fabricated sniper nest (elevated platform with rails)%s." % hp_note
 	return "Forge fabricated %s%s." % [shape, hp_note]
+
+
+## Debris palette per structure shape (destruction burst colors).
+static func _debris_colors_for(shape: String, pal: Dictionary) -> Array[Color]:
+	match shape:
+		"bunker", "wall", "cover_piece", "bridge":
+			return [pal["concrete"], pal["olive"], pal["forge_orange"]] as Array[Color]
+		"watchtower", "sniper_nest", "stairs", "ramp", "ammo_depot":
+			return [pal["wood"], pal["olive"], pal["forge_orange"]] as Array[Color]
+		"jump_pad":
+			return [pal["concrete"], pal["forge_orange"], pal["darkmetal"]] as Array[Color]
+	return [pal["concrete"], pal["wood"], pal["olive"]] as Array[Color]
 
 
 ## One voxel block: visible cube + matching box collider, same local offset.
@@ -510,16 +650,109 @@ static func _build_ammo_depot(s: Node3D, body: StaticBody3D, pal: Dictionary) ->
 	_visual(s, Vector3(1.24, 0.25, 1.24), orange, Vector3(0, 1.8, 0))
 
 
+# --- New presets (Worker B, item 6) -----------------------------------------
+# stairs / ramp / wall / jump_pad / cover_piece / sniper_nest. Same
+# _solid()/_visual() vocabulary as the original four, so poly/draw
+# budgets stay phone-sane (each _solid is one mesh + one collider).
+
+## Straight staircase: 8 steps rising away from the player (-Z) to a
+## 3.4 m top platform. 2.2 m wide — same footprint language as bridge.
+static func _build_stairs(s: Node3D, body: StaticBody3D, pal: Dictionary) -> void:
+	var concrete: Color = pal["concrete"]
+	var orange: Color = pal["forge_orange"]
+	for i in range(8):
+		_solid(s, body, Vector3(2.2, 0.4, 1.1), concrete, Vector3(0, 0.2 + i * 0.4, -0.55 - i * 1.1))
+	_solid(s, body, Vector3(2.2, 0.4, 1.4), concrete, Vector3(0, 3.4, -9.3))
+	_visual(s, Vector3(0.12, 0.9, 8.8), orange, Vector3(1.05, 2.4, -4.4))
+	_visual(s, Vector3(0.12, 0.9, 8.8), orange, Vector3(-1.05, 2.4, -4.4))
+
+
+## Sloped ramp: overlapping slabs (no stair lip) to a 2.3 m deck.
+## Slabs overlap by 0.1 m so there are no gaps to snag on.
+static func _build_ramp(s: Node3D, body: StaticBody3D, pal: Dictionary) -> void:
+	var concrete: Color = pal["concrete"]
+	var orange: Color = pal["forge_orange"]
+	for i in range(6):
+		_solid(s, body, Vector3(2.2, 0.3, 1.35), concrete, Vector3(0, 0.15 + i * 0.36, -0.65 - i * 1.2))
+	_solid(s, body, Vector3(2.2, 0.3, 1.5), concrete, Vector3(0, 2.32, -7.9))
+	_visual(s, Vector3(0.12, 0.12, 7.4), orange, Vector3(1.12, 1.35, -3.9))
+	_visual(s, Vector3(0.12, 0.12, 7.4), orange, Vector3(-1.12, 1.35, -3.9))
+
+
+## Tall barrier wall: 6 m wide, 3 m tall, with end posts, a base trim
+## and a forge-orange cap stripe. Distinct from the cover-target "wall"
+## (a DestructibleCover slab) — this one is a ForgeStructure.
+static func _build_wall_structure(s: Node3D, body: StaticBody3D, pal: Dictionary) -> void:
+	var concrete: Color = pal["concrete"]
+	var orange: Color = pal["forge_orange"]
+	_solid(s, body, Vector3(6.2, 0.3, 0.8), concrete, Vector3(0, 0.15, 0))
+	_solid(s, body, Vector3(6.0, 3.0, 0.6), concrete, Vector3(0, 1.5, 0))
+	_solid(s, body, Vector3(0.6, 3.2, 0.8), concrete, Vector3(-2.7, 1.6, 0))
+	_solid(s, body, Vector3(0.6, 3.2, 0.8), concrete, Vector3(2.7, 1.6, 0))
+	_visual(s, Vector3(6.05, 0.18, 0.64), orange, Vector3(0, 2.95, 0))
+
+
+## Jump pad: low concrete base + orange launch plate + a ForgeJumpPad
+## Area3D trigger that launches the player (see forge_jump_pad.gd).
+static func _build_jump_pad(s: Node3D, body: StaticBody3D, pal: Dictionary) -> void:
+	var concrete: Color = pal["concrete"]
+	var darkmetal: Color = pal["darkmetal"]
+	var orange: Color = pal["forge_orange"]
+	_solid(s, body, Vector3(2.0, 0.3, 2.0), concrete, Vector3(0, 0.15, 0))
+	_visual(s, Vector3(1.6, 0.15, 1.6), orange, Vector3(0, 0.38, 0))
+	for sx in [-0.85, 0.85]:
+		for sz in [-0.85, 0.85]:
+			_visual(s, Vector3(0.2, 0.5, 0.2), darkmetal, Vector3(sx, 0.25, sz))
+	var pad := ForgeJumpPad.new()
+	pad.position = Vector3(0, 0.45, 0)
+	s.add_child(pad)
+
+
+## Cover piece: a low wall (3 m wide, 1.1 m tall) for crouch cover,
+## with an olive top rail and canvas sandbag blocks.
+static func _build_cover_piece(s: Node3D, body: StaticBody3D, pal: Dictionary) -> void:
+	var concrete: Color = pal["concrete"]
+	var olive: Color = pal["olive"]
+	var canvas: Color = pal["canvas"]
+	_solid(s, body, Vector3(3.0, 1.1, 0.6), concrete, Vector3(0, 0.55, 0))
+	_visual(s, Vector3(3.05, 0.12, 0.65), olive, Vector3(0, 1.15, 0))
+	_visual(s, Vector3(0.8, 0.25, 0.5), canvas, Vector3(-0.9, 1.32, 0))
+	_visual(s, Vector3(0.8, 0.25, 0.5), canvas, Vector3(0.9, 1.32, 0))
+
+
+## Sniper nest: watchtower's open-air cousin — legs + elevated platform
+## with full rails and a solid front shooting-rest lip, reached by rear
+## stairs. No roof, so the sightline stays clear.
+static func _build_sniper_nest(s: Node3D, body: StaticBody3D, pal: Dictionary) -> void:
+	var wood: Color = pal["wood"]
+	var olive: Color = pal["olive"]
+	for sx in [-1.2, 1.2]:
+		for sz in [-1.2, 1.2]:
+			_solid(s, body, Vector3(0.4, 3.0, 0.4), wood, Vector3(sx, 1.5, sz))
+	_solid(s, body, Vector3(3.2, 0.4, 3.2), wood, Vector3(0, 3.2, 0))
+	# Rear stairs: five steps to the platform top (~3.4 m).
+	for i in range(5):
+		_solid(s, body, Vector3(1.4, 0.4, 0.9), wood, Vector3(0, 0.2 + i * 0.6, 2.0 + i * 0.75))
+	# Front shooting-rest lip (solid) + rails (visual) on the other sides.
+	_solid(s, body, Vector3(3.2, 0.6, 0.2), wood, Vector3(0, 3.7, -1.5))
+	_visual(s, Vector3(3.2, 0.15, 0.15), olive, Vector3(0, 3.95, 1.55))
+	_visual(s, Vector3(0.15, 0.15, 3.2), olive, Vector3(-1.55, 3.95, 0))
+	_visual(s, Vector3(0.15, 0.15, 3.2), olive, Vector3(1.55, 3.95, 0))
+
+
 static func _build_turret(params: Dictionary, player: Node3D, root: Node) -> String:
 	var cap := _cap_check()
 	if not cap.is_empty():
 		return cap
-	var pos := _snap_to_ground(_resolve_position(params.get("position", "near_player"), player, root), root)
+	var pos := snap_to_ground(_resolve_position(params.get("position", "near_player"), player, root), root)
 	var ttl := clampf(float(params.get("duration_sec", 45.0)), 5.0, 120.0)
 	var ammo_type := str(params.get("ammo_type", "standard"))
 	var t = TURRET_SCRIPT.new()
 	_apply_turret_ammo(t, ammo_type)
 	t.ttl_seconds = ttl
+	# Worker B: enemy-pressure tick so enemies can damage the turret
+	# (its take_damage() previously had no enemy caller).
+	t.add_child(ForgeEnemyPressure.new())
 	t.position = pos
 	if player != null:
 		var away: Vector3 = pos - player.global_position
@@ -562,7 +795,7 @@ static func _build_pickup(params: Dictionary, player: Node3D, root: Node) -> Str
 	var kind := str(params.get("kind", "ammo"))
 	if kind != "health":
 		kind = "ammo"
-	var pos := _snap_to_ground(_resolve_position(params.get("position", "near_player"), player, root), root)
+	var pos := snap_to_ground(_resolve_position(params.get("position", "near_player"), player, root), root)
 	pos.y += 0.6
 	var node := spawn_pickup(root, pos, kind)
 	last_built_node = node
@@ -808,7 +1041,7 @@ static func _drop_position(player: Node3D, root: Node) -> Vector3:
 					found = true
 	if found:
 		return best
-	return _snap_to_ground(_resolve_position("near_player", player, root), root)
+	return snap_to_ground(_resolve_position("near_player", player, root), root)
 
 
 ## Voxel crate that falls from the sky, lands, pops a random pickup plus an
@@ -937,7 +1170,9 @@ static func _resolve_position(spec: Variant, player: Node3D, root: Node) -> Vect
 	return Vector3(0, 0, NEAR_PLAYER_DIST)
 
 
-static func _snap_to_ground(pos: Vector3, ref: Node) -> Vector3:
+## Public (Worker B): ground-snaps `pos` by raycasting down. Used by
+## ForgePlacement for ghost + move, and by the builders.
+static func snap_to_ground(pos: Vector3, ref: Node) -> Vector3:
 	var hit := _ray(ref, pos + Vector3(0, 12, 0), pos + Vector3(0, -12, 0), [])
 	if hit.is_empty():
 		return pos
