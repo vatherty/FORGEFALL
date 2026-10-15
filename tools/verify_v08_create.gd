@@ -1,7 +1,7 @@
 # verify_v08_create.gd — headless checks for FORGEFALL v0.8.0 chunk 2,
 # WORKER C (verification): LLM MOD CREATION (Worker A: ModCreator,
-# scripts/mods/mod_creator.gd; Worker B: Forge menu Create-Mod flow,
-# scripts/ui/forge_menu.gd) on top of the v0.7 chunk-1 user-mods system.
+# scripts/mods/mod_creator.gd; Forge batch: standalone creator menu,
+# scripts/ui/mod_creator_menu.gd) on top of the v0.7 chunk-1 user-mods system.
 # Usage: godot --headless --path <project> --script res://tools/verify_v08_create.gd
 #
 # Contract under test (exact, per ModCreator's header + the menu's own
@@ -42,14 +42,16 @@
 #   (6) Regenerate produces a second candidate: two generate() calls with
 #       different mock_generation payloads -> two distinct candidates
 #       (different mod_id / summary / payload).
-#   (7) Menu-level: CREATE MOD button present in the Mods tab;
-#       create-mod panel present; approval panel shows the full payload
-#       text; Install/Discard buttons present. If the menu cannot be
-#       instantiated headless, source assertions on forge_menu.gd are
-#       used instead (said plainly in the output).
+#   (7) Menu-level: the standalone ModCreatorMenu (main-menu CREATE A
+#       MOD widget, Forge batch directive B) has the structured CREATE
+#       form (multi-choice categories, name, visual, logic), the
+#       approval panel showing the full payload text, and
+#       Install/Discard buttons. If the menu cannot be instantiated
+#       headless, source assertions on mod_creator_menu.gd are used
+#       instead (said plainly in the output).
 #   (8) The UI Install tap itself installs (menu approval -> INSTALL
 #       pressed -> mod appears in get_mods() with no manual rescan).
-#   (9) The UI Generate tap end-to-end (idea typed in -> GENERATE
+#   (9) The UI Generate tap end-to-end (structured form filled in ->
 #       pressed -> approval appears with the generated candidate).
 #       This exercises the menu's own creator call, not the test's.
 #   PLUS: install() is the ONLY write path — every generate/validation/
@@ -278,6 +280,12 @@ func _list_recursive(abs: String, rel: String, out: Array) -> void:
 	var entry := dir.get_next()
 	while entry != "":
 		if entry != "." and entry != "..":
+			# The voxel-asset cache (user://mods/assets/) is NOT a mod:
+			# approval generates + caches the voxel asset by design
+			# (directive D), so cache files must not count as mod writes.
+			if entry == "assets" and dir.current_is_dir() and rel.is_empty():
+				entry = dir.get_next()
+				continue
 			var r := entry if rel.is_empty() else rel + "/" + entry
 			if dir.current_is_dir():
 				_list_recursive(abs.path_join(entry), r, out)
@@ -532,16 +540,16 @@ func _skip_creator_dependent(reason: String) -> void:
 
 
 func _setup_menu() -> void:
-	if not ResourceLoader.exists("res://scenes/ui/forge_menu.tscn"):
-		print("V08CREATE NOTE: forge_menu.tscn not found — menu checks fall back to source assertions")
+	if not ResourceLoader.exists("res://scenes/ui/mod_creator_menu.tscn"):
+		print("V08CREATE NOTE: mod_creator_menu.tscn not found — menu checks fall back to source assertions")
 		return
-	var ps := load("res://scenes/ui/forge_menu.tscn") as PackedScene
+	var ps := load("res://scenes/ui/mod_creator_menu.tscn") as PackedScene
 	if ps == null:
-		print("V08CREATE NOTE: forge_menu.tscn failed to load — menu checks fall back to source assertions")
+		print("V08CREATE NOTE: mod_creator_menu.tscn failed to load — menu checks fall back to source assertions")
 		return
 	_menu = ps.instantiate() as Control
 	if _menu == null:
-		print("V08CREATE NOTE: forge_menu.tscn did not instantiate — menu checks fall back to source assertions")
+		print("V08CREATE NOTE: mod_creator_menu.tscn did not instantiate — menu checks fall back to source assertions")
 		return
 	root.add_child(_menu)
 	_menu_live = true
@@ -552,30 +560,29 @@ func _setup_menu() -> void:
 
 func _check_menu_presence() -> void:
 	if not _menu_live or _menu == null:
-		var src := FileAccess.get_file_as_string("res://scripts/ui/forge_menu.gd")
-		_check(src.contains("ModsCreateModButton") and src.contains("CREATE MOD"),
-			"v08create(7): SOURCE fallback — forge_menu.gd has CREATE MOD button")
-		_check(src.contains("CreateModPanel"),
-			"v08create(7): SOURCE fallback — forge_menu.gd has create-mod panel")
-		_check(src.contains("CreateModApprovalPanel"),
-			"v08create(7): SOURCE fallback — forge_menu.gd has approval panel")
+		var src := FileAccess.get_file_as_string("res://scripts/ui/mod_creator_menu.gd")
+		_check(src.contains("CategoryRow") and src.contains("ModNameInput") and src.contains("VisualInput") and src.contains("LogicInput"),
+			"v08create(7): SOURCE fallback — mod_creator_menu.gd has structured CREATE form (categories, name, visual, logic)")
+		_check(src.contains("ApprovalPanel"),
+			"v08create(7): SOURCE fallback — mod_creator_menu.gd has approval panel")
 		_check(src.contains("ApprovalInstallButton") and src.contains("ApprovalDiscardButton"),
-			"v08create(7): SOURCE fallback — forge_menu.gd has Install/Discard buttons")
+			"v08create(7): SOURCE fallback — mod_creator_menu.gd has Install/Discard buttons")
 		_check(src.contains("_approval_code.text = str(candidate.get(\"payload\""),
 			"v08create(7): SOURCE fallback — approval panel is wired to show the full payload")
 		print("V08CREATE NOTE: menu could not be instantiated headless — live menu checks SKIPPED, source assertions used instead")
 		return
-	var create_btn := _find_named(_menu, "ModsCreateModButton") as Button
-	_check(create_btn != null and create_btn.text == "CREATE MOD",
-		"v08create(7): CREATE MOD button present in Mods tab (text 'CREATE MOD')")
-	_check(_find_named(_menu, "CreateModPanel") != null,
-		"v08create(7): create-mod panel (CreateModPanel) present")
-	_check(_find_named(_menu, "CreateModIdeaInput") != null,
-		"v08create(7): create-mod idea input present")
-	_check(_find_named(_menu, "CreateModGenerateButton") != null,
+	_check(_find_named(_menu, "ModNameInput") != null,
+		"v08create(7): structured CREATE form — name input present")
+	_check(_find_named(_menu, "VisualInput") != null,
+		"v08create(7): structured CREATE form — visual description input present")
+	_check(_find_named(_menu, "LogicInput") != null,
+		"v08create(7): structured CREATE form — logic input present")
+	_check(_find_named(_menu, "CategoryRow") != null,
+		"v08create(7): structured CREATE form — multi-choice category row present")
+	_check(_find_named(_menu, "GenerateButton") != null,
 		"v08create(7): create-mod GENERATE button present")
-	_check(_find_named(_menu, "CreateModApprovalPanel") != null,
-		"v08create(7): approval panel (CreateModApprovalPanel) present")
+	_check(_find_named(_menu, "ApprovalPanel") != null,
+		"v08create(7): approval panel (ApprovalPanel) present")
 	_check(_find_named(_menu, "ApprovalSummary") != null,
 		"v08create(7): approval summary label present")
 	_check(_find_named(_menu, "ApprovalCode") != null,
@@ -612,13 +619,27 @@ func _start_stage(stage: int) -> void:
 		6:
 			# Menu-driven generation: the MENU's own creator call, not
 			# the test's. The mock stays armed while the menu works.
+			# The creator is a structured form (directive C): fill
+			# name + visual + logic for a beacon-light cover block.
 			_set_mock(_mock_e())
-			var idea_input := _find_named(_menu, "CreateModIdeaInput") as LineEdit
-			if idea_input != null:
-				idea_input.text = "a beacon-light cover block"
+			var name_input := _find_named(_menu, "ModNameInput") as LineEdit
+			if name_input != null:
+				name_input.text = "Beacon Light"
+			var visual_input := _find_named(_menu, "VisualInput") as TextEdit
+			if visual_input != null:
+				visual_input.text = "a glowing beacon light on a small post"
+			var logic_input := _find_named(_menu, "LogicInput") as TextEdit
+			if logic_input != null:
+				logic_input.text = "a beacon-light cover block"
+			# The creator's Generate requires >= 1 category checked
+			# (it refuses with "Pick at least one category." otherwise).
+			# NOTE: the category controls are CheckButtons, not CheckBoxes.
+			var cat_cb := _find_named(_menu, "CategoryBlockStructure") as CheckButton
+			if cat_cb != null:
+				cat_cb.button_pressed = true
 			_step = "menu_wait6"
 			_wait = 0
-			_menu_press("CreateModGenerateButton")
+			_menu_press("GenerateButton")
 			return
 		_:
 			_step = "done"
@@ -635,7 +656,11 @@ func _process(_delta: float) -> bool:
 			return false
 		_step = "idle"
 		if _menu_live and _menu != null:
-			_menu.call("open")
+			# NOTE: do NOT call open() here — the old Forge menu had
+			# open(), but ModCreatorMenu is live as soon as it is in
+			# the tree, and calling a nonexistent open() via call()
+			# hangs this run (observed: no further _process frames).
+			pass
 		_check_menu_presence()
 		if _phase == -1:
 			_finish()
@@ -902,7 +927,7 @@ func _stage_menu_generate() -> void:
 		_stage_persist()
 		return
 	var pending := _menu_pending_candidate()
-	var status := _find_named(_menu, "CreateModStatus") as Label
+	var status := _find_named(_menu, "CreateStatus") as Label
 	var status_text := status.text if status != null else "<no status label>"
 	_check(not pending.is_empty(),
 		"v08create(9): menu Generate tap produces a candidate (menu status: '%s')" % status_text)
@@ -960,21 +985,17 @@ func _stage_persist() -> void:
 		"v08create(5): discarded mod still absent after rescan()")
 	_check(_mod_by_id(mods, _id_c).is_empty(),
 		"v08create(5): forbidden mod still absent after rescan()")
-	# Menu: CREATE MOD toggles the create panel open / closed.
+	# Menu: IMPORT/EXPORT tab is present but placeholder-only by design
+	# (directive B) — its buttons are disabled, no functionality wired.
 	if _menu_live:
-		var panel := _find_named(_menu, "CreateModPanel") as Control
-		if panel != null:
-			var before: bool = panel.visible
-			_check(_menu_press("ModsCreateModButton"), "v08create(7): CREATE MOD button press emits")
-			_check(panel.visible != before,
-				"v08create(7): CREATE MOD toggles the create panel (was %s, now %s)" % [before, panel.visible])
-			_menu_press("ModsCreateModButton")
-			_check(panel.visible == before,
-				"v08create(7): CREATE MOD toggles the create panel back")
-		else:
-			_check(false, "v08create(7): CreateModPanel found for toggle check")
+		var ie_tab := _find_named(_menu, "ImportExportTab") as Control
+		_check(ie_tab != null, "v08create(7): IMPORT/EXPORT tab present in the creator menu")
+		var imp_b := _find_named(_menu, "ImportButton") as Button
+		var exp_b := _find_named(_menu, "ExportButton") as Button
+		_check(imp_b != null and imp_b.disabled and exp_b != null and exp_b.disabled,
+			"v08create(7): IMPORT/EXPORT is placeholder-only (both buttons disabled)")
 	else:
-		_skip("v08create(7): CREATE MOD toggles the create panel", "menu not instantiated headless")
+		_skip("v08create(7): IMPORT/EXPORT placeholder tab", "menu not instantiated headless")
 	_finish()
 
 
