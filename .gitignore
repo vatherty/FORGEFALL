@@ -1,0 +1,46 @@
+# FORGEFALL — Godot 4.7.2
+
+# Godot editor import cache (regenerated on first open)
+/.godot/
+
+# Build outputs (local only — never committed)
+builds/
+updates/
+*.pck
+*.apk
+*.zip
+*.idsig
+
+# Local build/publish scratch
+*_staging/
+.apkmod/
+deploy_staging/
+github_deploy_staging/
+linux_staging/
+windows_staging/
+restore-staging/
+v090_staging/
+v091_staging/
+
+# Signing keys — NEVER commit a keystore or password
+*.keystore
+*.jks
+export_credentials.cfg
+.godot/export_credentials.cfg
+
+# Regenerable editor leftovers (recreated on import)
+*.import
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
+
+# NOTE: addons/*/bin/*.aar are intentionally COMMITTED — they are prebuilt
+# plugin binaries (ForgeUpdater, ForgeSpeech) that the Android export needs,
+# and no Java/Kotlin source for them exists in-tree. Do not gitignore *.aar.
