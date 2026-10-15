@@ -211,6 +211,13 @@ static func _watermelon_voxels() -> Array:
 # --- Generic keyword builder --------------------------------------------------
 
 static func _shape_for(norm: String) -> String:
+	# Beam/bullet FIRST: projectile descriptions ("glowing laser beam",
+	# "small metal bullet") must win over weapon-part words — a pistol
+	# visual's "barrel" must never turn its projectile into a cylinder.
+	if norm.contains("beam") or norm.contains("laser") or norm.contains("bolt"):
+		return "beam"
+	if norm.contains("bullet") or norm.contains("round") or norm.contains("shell"):
+		return "bullet"
 	if norm.contains("sphere") or norm.contains("ball") or norm.contains("orb") or norm.contains("globe"):
 		return "sphere"
 	if norm.contains("cube") or norm.contains("box") or norm.contains("block"):
@@ -272,6 +279,15 @@ static func _cells_for_shape(shape: String) -> Array:
 				out.append(Vector3i(x, 0, 0))
 				if w == 0:
 					out.append(Vector3i(x, 0, 1))
+		"beam":
+			# Thin elongated bolt along Z: the projectile of laser/energy
+			# weapons. 6 cells, deliberately small (it flies at a dummy).
+			for z in range(0, 6):
+				out.append(Vector3i(0, 0, z))
+		"bullet":
+			# A single round: 1x1x2 along Z.
+			out.append(Vector3i(0, 0, 0))
+			out.append(Vector3i(0, 0, 1))
 		_:
 			for x in range(-2, 3):
 				for y in range(-2, 3):
@@ -282,6 +298,8 @@ static func _cells_for_shape(shape: String) -> Array:
 
 
 ## First colour word -> primary, second -> secondary, else defaults.
+## Energy projectiles with no explicit colour read as a bright
+## yellow-white bolt (laser/glow/energy), not concrete grey.
 static func _colors_for(norm: String) -> Dictionary:
 	var found: Array[Color] = []
 	for word in norm.split(" "):
@@ -293,6 +311,9 @@ static func _colors_for(norm: String) -> Dictionary:
 	var secondary := DEFAULT_SECONDARY
 	if not found.is_empty():
 		primary = found[0]
+	elif norm.contains("laser") or norm.contains("glow") or norm.contains("energy"):
+		primary = Color("ffe066")
+		secondary = Color("ff7b1c")
 	if found.size() > 1:
 		secondary = found[1]
 	return {"primary": primary, "secondary": secondary}
