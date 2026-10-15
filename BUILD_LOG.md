@@ -1,5 +1,86 @@
 # FORGEFALL — Build Log
 
+## v0.5.2 — Create-a-Mod fixes: sandbox flies the projectile, Mods lists visible (2026-10-15)
+
+### Shipped (fixes landed by the creator + mirror workers; this entry covers version bump + rebuild + publish)
+- **Sandbox projectile fix:** the sandbox test room flew the WEAPON visual as the projectile (e.g. a pistol's barrel-cylinder as the thing that flies). `ModCreatorMenu.projectile_description_for()` now derives what the mod FIRES from logic/payload (watermelon → "watermelon"; laser/beam → "glowing laser beam"; bullet/round/shell → "small metal bullet"; fireball/plasma, rocket/missile, grenade, generic weapon fire → matching descriptions), generates it as a separate cached asset, and passes it to the sandbox as the projectile — the weapon visual renders static at the shooter (0.5x scale, 4th arg). `VoxelAssetGenerator` gains "beam" (1x1x6, checked FIRST so "laser beam" wins over "barrel") and "bullet" (1x1x2) shapes; laser/glow/energy with no explicit colour reads bright yellow + orange, not concrete grey. Sandbox gains a candidate-name header + `get_projectile()` / `get_weapon_visual()` getters; existing 3-arg callers keep working. Approval screen notes cache HITs as "(reused from an earlier generation with the same description)".
+- **Mods-list visibility fix (Create-a-Mod menu):** the Mods tab list rendered at **0px tall** (installed mods were in `get_mods()` but invisible) and the hint label rendered one character per line (~1617px tall row). Root causes: hint label in an HBox without `SIZE_EXPAND_FILL` (autowrap Label minimum = 1px wide) + outer ScrollContainer sizing the inner list to 0px. Fixed: hint gets EXPAND_FILL (row now 51px), outer ScrollContainer dropped (list is the only scroller, 0px → 1087px), mod rows named `"ModRow"`.
+- **Forge menu Mods-tab mirror fix:** the Forge menu's Mods tab had the SAME nested-scroll pattern (outer ScrollContainer > VBox > inner `_mods_scroll` at 0px — the Forge Mods list was invisible too). Mirrored the fix: NO outer ScrollContainer for the Mods tab (comment cites the creator-menu fix); hint already had EXPAND_FILL (no vertical text there).
+- **"Installed mod doesn't show up" resolved:** the install chain was fine all along (writes manifest + mod.gd, rescans, enabled by default, reachable via Forge `mod_block` specs) — the list was invisible. Installed mods now show up immediately after install.
+
+### Version bump (publish mechanics only — no game-source changes in this entry)
+- `export_presets.cfg`: `version/code=28`, `version/name="0.5.2"`; Windows preset export_path → `windows_staging/forgefall-v0.5.2-windows/`.
+- `scripts/core/tuning.gd`: `FALLBACK_VERSION_CODE := 28`.
+- `tools/verify_updater_pc.gd`: manifest expectations 0.5.0/code 26 → 0.5.2/code 28 (were stale since the v0.5.1 publish).
+
+### Verification (all headless, 2026-10-15)
+- `verify_forge_mods_layout`: **29/29 ALL PASS** (re-run on the bumped tree).
+- `verify_forge_batch`: **143/143 ALL PASS** (re-run).
+- `verify_creator_fix`: **48/48 ALL PASS** (re-run).
+- `verify_menu_layout`: **1060 passed, 0 failed** (re-run).
+- `verify_updater_pc`: **65 pass, 0 fail** (re-run, with the 0.5.2 manifest expectations).
+- 900-frame smoke: clean ("survived 900 frames, quitting clean", exit 0).
+- Shipped-artifact probes (Godot `--main-pack` against the built Linux PCK): `verify_forge_mods_layout` 29/29 + `verify_creator_fix` 48/48 — the fixes are IN the built artifacts, not just in source. (Note: Godot 4.7 `.gdc` bytecode is high-entropy; raw `strings` greps for identifiers return 0 even for known-present symbols like `FALLBACK_VERSION_CODE` — behavioral PCK probes are the correct check.)
+- Linux binary headless `--quit-after 120`, exit 0.
+- Android APK: apksigner OK (v2+v3 true), aapt `com.sparky.forgefall` versionCode 28 / 0.5.2, manifest UpdateStatusReceiver + ForgeUpdater + ForgeSpeech meta-data + REQUEST_INSTALL_PACKAGES + RECORD_AUDIO, classes2.dex = stock XRMode (1960 B), classes14.dex = ForgeUpdaterPlugin + UpdateStatusReceiver, classes15.dex = ForgeSpeechPlugin.
+
+### Builds (all from the same current source)
+- **Android** `updates/forgefall-v0.5.2-debug.apk` (30,814,962 bytes, SHA-256 `535bc7b88f195756229f7f4afa90f5dbd62f1bab73044a4c703241a0feed93bf`) + `.idsig`. Godot 4.7.2 headless `--export-debug "Android"`, unchanged custom template (Godot signs + emits the .idsig).
+- **Linux** `linux_staging/forgefall-v0.5.2-linux.zip` (29,907,883 bytes, SHA-256 `916df1edeebbe61337d3c77a7ba5d9db07ca19f9fd0ebb6dcdffe399aafcd3cb`): binary + forgefall.pck + forgefall.sh + README-LINUX.txt (0.5.1 → 0.5.2, + CREATE-A-MOD FIXES section).
+- **Windows** `windows_staging/forgefall-v0.5.2-windows.zip` (36,835,402 bytes, SHA-256 `f79d87d31ede7cef340cdbd5ad99dfc6f02f69562f4cb501f1f4cc0f03ebf472`): forgefall.exe + forgefall.console.exe + forgefall.pck + README-WINDOWS.txt (0.5.1 → 0.5.2, + CREATE-A-MOD FIXES section).
+- Windows export note: first attempt failed with "The given export path doesn't exist" — the `windows_staging/forgefall-v0.5.2-windows/` output dir must exist before export; created it and the retry succeeded. (Same gotcha as prior publishes.)
+
+### Publish
+- **GitHub Release** [v0.5.2](https://github.com/vatherty/FORGEFALL/releases/tag/v0.5.2) in `vatherty/FORGEFALL` — all 3 artifacts attached, all `uploaded`, sizes + sha256 digests match local builds.
+- **Pages** (`vatherty/Forgefall-updates`): binaries uploaded first, then `version.json` + `version_pc.json` (0.5.2 / code 28) + `index.html` (0.5.2 links). Changelog: "Creator fix: sandbox now flies the candidate's projectile (not a generic launcher); Mods lists fixed in both Create-a-Mod and Forge menus (were invisible at 0px); installed mods show up immediately." `.nojekyll` untouched (still present, empty). Old v0.5.1 files stay as unlisted archive.
+- **Filename collision, flagged:** `forgefall-v0.5.2-debug.apk` on Pages previously held the Oct-13 Netlify-era v0.5.2 build (code 15, 29,431,926 bytes, SHA-256 `d8fb19c608cca7395a16cb6eba9a282bf6fe3bdd9a076322d0f8ed4c344aa0ff`). This publish OVERWRITES that file with the new code-28 build at the same URL — intended per the v0.5.2/code-28 assignment (post-renumber 0.5.1 → 0.5.2). The superseded code-15 APK is preserved locally at `builds/forgefall-v0.5.2-code15-superseded.apk` (+ `.idsig`). The old build had no PC zips; the new `forgefall-v0.5.2-linux.zip` / `-windows.zip` are new files.
+- Local `updates/` mirror synced (new index.html + version.json + version_pc.json + APK).
+
+### Deferred / follow-ups (not in this release's scope)
+- Arsenal/Loadouts never list user mods (no ModLoader reference in Arsenal) — generated weapon mods remain reachable via Forge ("give me <mod name>"), not Arsenal. New UI work, not a bug fix.
+- In-game gap (pre-existing, by design of ModAPI): a generated weapon mod plays in-game as a tuned base weapon; ModAPI has NO custom-projectile/fire-mode hook, so the game cannot fire a laser beam / watermelon — the sandbox simulates behaviour the real game cannot express yet. Building a custom-projectile system is out of scope.
+- Re-installing an identical script mod fails fail-closed with "duplicate block_id" (correct per the never-repair rule; the error is shown, but the UX could name the existing mod).
+- Needs Colin's on-device verdict: sandbox projectile feel, Mods lists visible in both menus, installed mod showing immediately, creator flow end-to-end on the S23.
+
+
+## UNRELEASED — Create-a-Mod fixes: sandbox shows the projectile, Mods list layout (2026-10-15)
+
+**Status: SHIPPED in v0.5.2 (entry above). The Forge Mods-tab mirror fix landed after this section was written and ships in the same build.**
+
+Colin's four live reports on the v0.5.1 Create-a-Mod flow, and what each turned out to be:
+
+### 1. "It literally only creates a launcher. It finishes within seconds."
+**Not a fallback.** Generation WORKS with a key present: the creator uses `ForgeLLM.request_generation` (real DeepSeek call, `deepseek-flash`, thinking disabled) — proven headlessly (key present → HTTP branch: `_generation_http_outstanding` + HTTPRequest child; no silent offline fallback exists in the creator path — the Forge BUILD path's `_fallback_spec` is never called by the creator). "Finishes in seconds" is expected for `deepseek-flash` with thinking off. No-key → visible error "DeepSeek key required — add it in the Forge menu", never a template mod. HTTP failure → visible error "generation returned invalid JSON", never a silent substitute.
+
+### 2. "When I test it in sandbox it just shows a launcher."
+**Real bug — the sandbox flew the WEAPON visual as the projectile.** It rendered the visual-description asset ("a pistol with a long barrel" → "barrel" keyword → cylinder → grey/orange tube, 52 voxels) as the thing that flies at the dummy. For weapon mods the visual describes the WEAPON, not what it fires.
+- **Fix:** `ModCreatorMenu.projectile_description_for(categories, logic, payload)` derives what the mod FIRES from logic/payload (watermelon → "watermelon"; laser/beam → "glowing laser beam"; bullet/round/shell → "small metal bullet"; fireball/plasma → "glowing plasma fireball"; rocket/missile → "rocket"; grenade → "grenade"; generic Weapon/shoot/fire/launch → "glowing energy bolt"; else "" = no projectile). The menu generates that as a separate cached asset (`_pending_projectile_asset`, falls back to the weapon visual when "") and passes it to the sandbox as the projectile, with the weapon visual as a 4th arg.
+- **Fix:** `VoxelAssetGenerator` gains "beam" (thin 1×1×6 bolt along Z, 6 cells, checked FIRST so "laser beam" wins over "barrel") and "bullet" (1×1×2, 2 cells) shapes; laser/glow/energy descriptions with no explicit colour read as bright yellow (`ffe066`) + orange, not concrete grey. Watermelon path untouched. Pistol weapon visual still 52 voxels (shape path unchanged).
+- **Fix:** `SandboxTestRoom.open(candidate, asset, behavior, weapon_asset := {})` — `asset` is now the PROJECTILE; optional `weapon_asset` renders static at the shooter (offset, 0.5× scale, not animated). Added candidate-name header label + `get_projectile()` / `get_weapon_visual()` getters. Existing 3-arg callers keep working.
+- Approval screen: when the voxel asset is a cache HIT, the line now appends "(reused from an earlier generation with the same description)" — a HIT means the same normalized description was generated before on this device (cache key = sha256 of the normalized description; verified distinct descriptions → distinct keys, normalized variants → same key). Not a collision, not pre-seeded.
+
+### 3. "The mod also didn't show up."
+**The install chain was fine — the LIST was invisible (0px tall).** Install writes `user://mods/<id>/manifest.json + mod.gd`, rescans, verifies error-free; `ModLoader.get_mods()` lists it; the Mods tab refreshes after Install. But the Mods tab's list ScrollContainer rendered at **0px tall**, so nothing showed. Root cause is the layout bug in (4) below — same bug, not a read-side bug. (Verified: installed mod appears in `get_mods()`, is enabled by default, and is reachable in-game via Forge: LLM catalog → `mod_block` spec → `ForgeBuilder` script-mod `apply()`.)
+
+### 4. Mods tab text renders VERTICALLY, one character per line.
+**Real bug — two compounding layout defects in `ModCreatorMenu._build_mods_tab`, both fixed:**
+- (a) The hint label ("Same installed mods as the Forge menu — list / enable / disable / Rescan.") sat in an HBox with the RESCAN button WITHOUT `SIZE_EXPAND_FILL`, so the HBox gave it its minimum size — and an autowrap Label's minimum is **(1px wide, ~1617px tall wrapped at 1px)**. The label rendered one char per line and the row became 1617px tall. Fix: `hint.size_flags_horizontal = SIZE_EXPAND_FILL` (row now 51px).
+- (b) The Mods tab wrapped its content in an outer ScrollContainer; the outer ScrollContainer sizes its child VBox to content minimum, so the inner `ModsListScroll` (EXPAND vertical) got **0px**. Fix: the Mods tab has NO outer ScrollContainer now (the VBox is the direct tab child; the mod list itself is the only scroller). List height 0px → 1087px.
+- Also: `_add_mod_row` now names its row HBox `"ModRow"` (matching the Forge menu) so rows are path-addressable.
+- Layout check added to the verify suite: no visible label narrower than 40px rendering a multi-char string; hint horizontal; list height > 100px; rows readable.
+
+### Verification (all headless, 2026-10-15)
+- NEW `tools/verify_creator_fix.gd`: **48/48 ALL PASS** (llm-path 4, cache 11, sandbox 14, watermelon-e2e 8, menu-flow 6, layout 5). Cleans up after itself (test cache files + installed test mods removed, `mock_generation` reset).
+- Regressions ALL PASS: `verify_forge_batch` 143/143, `verify_v08_create` 74/74, `verify_v08_a_creator` 110/110, `verify_creator_redesign` 55/55, `verify_menu_layout` 1060/0, `verify_fixes` ALL PASS, 900-frame smoke clean, exit 0.
+- Scratch probes (`tools/_probe_layout*.gd`, `tools/_repro_creator_fix.gd`) deleted after use.
+
+### Follow-ups (NOT fixed here — out of this task's ownership / scope)
+- **Forge menu's Mods tab has the SAME nested-scroll pattern** (`ScrollContainer > VBox > [path, HBox row, inner ScrollContainer]`): its hint already has EXPAND_FILL (no vertical text), but its inner `_mods_scroll` almost certainly also gets 0px — the Forge Mods list is likely invisible too. Mirror fix in `scripts/ui/forge_menu.gd` (drop the outer ScrollContainer for the Mods tab). Not touched: `forge_menu.gd` is outside the creator-task ownership.
+- **Arsenal/Loadouts never list user mods** (no ModLoader reference anywhere in Arsenal). A generated weapon mod is usable via Forge ("give me <mod name>" → `mod_block` spec → `apply()`), not via Arsenal. Arsenal integration is new UI work, not a bug fix.
+- **In-game gap (pre-existing, by design of ModAPI):** a generated weapon mod plays in-game as a tuned base weapon (e.g. Long Laser Pistol = P9 with 1.2× damage, 2× mag, 3× range). ModAPI has NO custom-projectile/fire-mode hook, so the game cannot fire a laser beam / watermelon — the sandbox simulates behaviour the real game cannot express yet. Building a custom-projectile system is out of scope (touches weapon code).
+- **Re-installing an identical script mod fails fail-closed** with "duplicate block_id" (the script's `block_id` is fixed in its payload; folder-id dedup to `_2` does not rewrite it). Correct per the never-repair rule, and the error is shown — but the UX could name the existing mod. No change made.
+- Headless harness note: `DisplayServer.window_set_size` does not resize the headless window (menu stayed 1280×1280 in probes) — layout checks assert structural properties (widths/heights/min-sizes), which are resolution-independent, rather than per-resolution pixel values.
+
 ## v0.5.1 — FORGE BATCH: budget off, ghost preview, destructible structures, MP Forge, per-weapon costs, new presets, build codes, Create-a-Mod widget, voice v2 (2026-10-15)
 
 ### Shipped (Forge batch items 1–9 + directives A–D; item 10 Quick Forge SKIPPED per Colin)
@@ -2416,3 +2497,9 @@ fixes during this session are documented in the suite's own comments).
 - Synced the local source tree to `vatherty/FORGEFALL` (main) via the contents API: uploaded only files whose git blob SHA differed, deleted repo files no longer present locally (incl. the removed in-Forge create panel).
 - Exclusions (never pushed): builds/, updates/, .godot/, staging dirs, *.apk/*.zip/*.pck/*.keystore/*.import, android/ template, any credentials (export_presets.cfg keystore passwords stay blanked).
 - Tag v0.5.1 now points at the post-batch source.
+
+## Source sync — v0.5.2 tree to public repo
+- Synced the local source tree to `vatherty/FORGEFALL` (main) via the contents API: uploaded only files whose git blob SHA differed; no repo files needed deletion.
+- Changed set: creator fix (mod_creator_menu.gd, sandbox_test_room.gd, voxel_asset_generator.gd, verify_creator_fix.gd), Forge Mods-tab mirror fix (forge_menu.gd, verify_forge_mods_layout.gd), tuning.gd, verify_updater_pc.gd, export_presets.cfg, BUILD_LOG.md.
+- Exclusions (never pushed): builds/, updates/, .godot/, staging dirs, *.apk/*.zip/*.pck/*.keystore/*.import, top-level android/ template, any credentials (export_presets.cfg keystore passwords stay blanked/redacted placeholders).
+- Tag v0.5.2 points at the post-fix source.
