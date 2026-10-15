@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- FORGEFALL icon: voxel cube with a crosshair sight -->
+  <rect width="128" height="128" rx="20" fill="#23262a"/>
+  <!-- voxel cube: isometric-ish stack of squares -->
+  <g>
+    <rect x="34" y="52" width="24" height="24" fill="#3a3f44"/>
+    <rect x="58" y="52" width="24" height="24" fill="#4a5058"/>
+    <rect x="34" y="76" width="24" height="24" fill="#2c3034"/>
+    <rect x="58" y="76" width="24" height="24" fill="#3a3f44"/>
+    <rect x="46" y="28" width="24" height="24" fill="#5a616b"/>
+    <rect x="34" y="52" width="60" height="4" fill="#ff7b1c" opacity="0.9"/>
+  </g>
+  <!-- crosshair -->
+  <g stroke="#ff7b1c" stroke-width="5" stroke-linecap="round">
+    <line x1="64" y1="8" x2="64" y2="26"/>
+    <line x1="64" y1="102" x2="64" y2="120"/>
+    <line x1="8" y1="64" x2="26" y2="64"/>
+    <line x1="102" y1="64" x2="120" y2="64"/>
+  </g>
+  <circle cx="64" cy="64" r="7" fill="none" stroke="#ff7b1c" stroke-width="4"/>
+</svg>
