@@ -79,7 +79,7 @@ Debug Keystore**, or fill the preset's `keystore/debug`, `keystore/debug_user`
 ```bash
 export GODOT_ANDROID_KEYSTORE_DEBUG_PATH="$HOME/.android/forgefall-debug.keystore"
 export GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey
-export GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=""
+export GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android
 ```
 
 Keep **Export With Debug** checked while iterating — debug builds allow USB
