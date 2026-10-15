@@ -3,7 +3,7 @@
 # Asserts (v0.6.2, Colin loosened the gate):
 #   (1) Compositions of KNOWN blocks are ACCEPTED — "LMG with sniper
 #       bullets" (weapon lmg + ammo_type sniper) passes, cost = recomputed
-#       sum of block costs (200 + 50 = 250). Other compositions too.
+#       sum of block costs (350 + 50 = 400). Other compositions too.
 #   (2) Cost mismatch NEVER rejects anymore: a spec with a wrong
 #       LLM-supplied cost is accepted with the game's recomputed cost
 #       substituted into spec["cost"].
@@ -74,19 +74,19 @@ func _finish() -> void:
 # ------------------------------------------------------------------ (1)
 # "LMG with sniper bullets": the composed spec the LLM emits per the
 # SYSTEM_PROMPT example (weapon lmg + ammo_type sniper) must be ACCEPTED,
-# with cost = recomputed sum 200 (base) + 50 (sniper ammo) = 250.
+# with cost = recomputed sum 350 (per-weapon LMG cost) + 50 (sniper ammo) = 400.
 func _check_composition_lmg() -> void:
 	var spec := {
 		"spec_version": 1, "action": "spawn", "target": "weapon",
 		"params": {"weapon_id": "lmg", "ammo_type": "sniper"},
-		"cost": 250, "ttl": 0,
+		"cost": 400, "ttl": 0,
 	}
 	var v: Array = _llm.call("validate_modspec", spec)
 	_check(bool(v[0]), "v062(1): LMG + sniper ammo spec ACCEPTED (%s)" % str(v[1]))
-	_check(int(spec.get("cost", -1)) == 250,
-		"v062(1): LMG + sniper cost is recomputed sum 250 (got %s)" % str(spec.get("cost")))
+	_check(int(spec.get("cost", -1)) == 400,
+		"v062(1): LMG + sniper cost is recomputed sum 400 (got %s)" % str(spec.get("cost")))
 	var rc: int = _llm.call("recompute_cost", "weapon", {"weapon_id": "lmg", "ammo_type": "sniper"})
-	_check(rc == 250, "v062(1): recompute_cost(weapon lmg+sniper) == 250 (got %d)" % rc)
+	_check(rc == 400, "v062(1): recompute_cost(weapon lmg+sniper) == 400 (got %d)" % rc)
 	# Same composition with a WRONG model cost must still accept + correct.
 	var wrong := {
 		"spec_version": 1, "action": "spawn", "target": "weapon",
@@ -94,8 +94,8 @@ func _check_composition_lmg() -> void:
 		"cost": 1, "ttl": 0,
 	}
 	var v2: Array = _llm.call("validate_modspec", wrong)
-	_check(bool(v2[0]) and int(wrong.get("cost", -1)) == 250,
-		"v062(1): LMG + sniper with wrong cost 1 ACCEPTED, corrected to 250 (got %s)" % str(wrong.get("cost")))
+	_check(bool(v2[0]) and int(wrong.get("cost", -1)) == 400,
+		"v062(1): LMG + sniper with wrong cost 1 ACCEPTED, corrected to 400 (got %s)" % str(wrong.get("cost")))
 
 
 # ------------------------------------------------------------------ (1b)
@@ -111,13 +111,13 @@ func _check_composition_more() -> void:
 		["turret + armor-piercing", "turret",
 			{"position": "near_player", "duration_sec": 45, "ammo_type": "armor_piercing"}, 325],
 		["manticore + buckshot", "weapon",
-			{"weapon_id": "manticore", "ammo_type": "buckshot"}, 250],
+			{"weapon_id": "manticore", "ammo_type": "buckshot"}, 330],
 		["longeye + standard ammo", "weapon",
-			{"weapon_id": "longeye", "ammo_type": "standard"}, 200],
+			{"weapon_id": "longeye", "ammo_type": "standard"}, 235],
 		["plain tower (no composition)", "cover",
 			{"shape": "tower", "size_voxels": [4, 10, 4], "position": "near_player", "hp": 350}, 150],
 		["plain weapon (no composition)", "weapon",
-			{"weapon_id": "longeye"}, 200],
+			{"weapon_id": "longeye"}, 235],
 	]
 	for c in cases:
 		var label: String = c[0]
@@ -157,8 +157,8 @@ func _check_cost_mismatch_accepted() -> void:
 		"params": {"weapon_id": "longeye"}, "cost": 0, "ttl": 0,
 	}
 	var v2: Array = _llm.call("validate_modspec", weapon)
-	_check(bool(v2[0]) and int(weapon.get("cost", -1)) == 200,
-		"v062(2): weapon with wrong cost 0 ACCEPTED, corrected to 200 (got ok=%s cost=%s)"
+	_check(bool(v2[0]) and int(weapon.get("cost", -1)) == 235,
+		"v062(2): weapon with wrong cost 0 ACCEPTED, corrected to 235 (got ok=%s cost=%s)"
 		% [str(v2[0]), str(weapon.get("cost"))])
 	# A non-numeric cost is still a rejection (recompute needs a number).
 	var bad_cost := {
