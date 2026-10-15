@@ -166,6 +166,10 @@ const FORGE_COST_TOWER := 150
 const FORGE_COST_BARRICADE := 100
 const FORGE_COST_TURRET := 250
 const FORGE_COST_PICKUP := 75
+## DEPRECATED (Forge batch): the flat per-weapon Forge cost is gone —
+## weapons are priced per-weapon by ForgeLLM.weapon_cost() (computed,
+## shown, never enforced while budget is OFF per directive A). Kept so
+## old references don't break; do not use for new pricing.
 const FORGE_COST_WEAPON := 200
 const FORGE_COST_UAV := 150
 const FORGE_COST_AIRSTRIKE := 300
@@ -211,5 +215,5 @@ const UPDATE_BASE_URL := "https://vatherty.github.io/Forgefall-updates/"
 const UPDATE_TIMEOUT_SEC := 8
 ## Installed version code used when the ForgeUpdater Android plugin is absent
 ## (desktop/editor builds). KEEP IN SYNC with export_presets.cfg version/code.
-const FALLBACK_VERSION_CODE := 26
+const FALLBACK_VERSION_CODE := 27
 #endregion
