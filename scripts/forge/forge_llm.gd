@@ -54,13 +54,13 @@ const HTTP_TIMEOUT_SEC := 20.0
 const MAX_TOKENS := 400
 const TEMPERATURE := 0.2
 # Fallback costs (must match the costs quoted to the model in SYSTEM_PROMPT
-# and the base costs recomputed by validate_modspec()).
+# and the base costs recomputed by validate_modspec()). Weapon costs are
+# NOT flat: weapon_cost() prices each weapon by power (see WEAPON_POWER).
 const COST_WALL := 100
 const COST_TOWER := 150
 const COST_BARRICADE := 100
 const COST_TURRET := 250
 const COST_PICKUP := 75
-const COST_WEAPON := 200
 const COST_UAV := 150
 const COST_AIRSTRIKE := 300
 const COST_CHOPPER := 450
@@ -71,7 +71,30 @@ const COST_BRIDGE := 120
 const COST_BUNKER := 180
 const COST_WATCHTOWER := 200
 const COST_AMMO_DEPOT := 150
+const COST_STAIRS := 100
+const COST_RAMP := 90
+const COST_STRUCTURE_WALL := 120
+const COST_JUMP_PAD := 150
+const COST_COVER_PIECE := 60
+const COST_SNIPER_NEST := 220
 const COST_SPAWN_ENEMIES := 150
+## Per-weapon power inputs for weapon_cost(): [damage, pellets, rpm, mag]
+## — the Arsenal stats for each Forge weapon id. RAPTOR is 0-damage
+## utility (grab/throw), so the formula does not apply to it; weapon_cost()
+## returns its fixed utility price instead. TRIDENT's 900 rpm is the
+## INTRA-BURST rate (bursts are re-press gated, so sustained DPS is lower);
+## the formula prices the per-burst alpha, which is what the player feels.
+const WEAPON_POWER := {
+	"manticore": [25.0, 1, 700.0, 30],
+	"longeye": [120.0, 1, 40.0, 5],
+	"breacher": [12.0, 8, 65.0, 6],
+	"hornet": [18.0, 1, 850.0, 32],
+	"p9": [22.0, 1, 420.0, 12],
+	"raptor": [0.0, 0, 0.0, 0],
+	"lmg": [22.0, 1, 600.0, 100],
+	"trident": [26.0, 1, 900.0, 30],
+	"judge": [65.0, 1, 150.0, 6],
+}
 ## v0.6.2 COMPOSITION surcharges: the cost of a composed block, added to
 ## the base block's cost by recompute_cost(). Quoted to the model in
 ## SYSTEM_PROMPT; the game-computed sum is truth, never the model number.
@@ -84,13 +107,43 @@ const COST_REINFORCED := 50
 const AMMO_TYPES := ["standard", "sniper", "armor_piercing", "buckshot"]
 const BLOCK_PROPERTIES := ["standard", "reinforced"]
 ## Helpful error for prompts the parser cannot map to any buildable.
-const UNKNOWN_HINT := "I don't know how to build that — try: wall, tower, turret, bridge, bunker, watchtower, ammo depot, sniper, UAV"
+const UNKNOWN_HINT := "I don't know how to build that — try: wall, tower, turret, bridge, bunker, watchtower, ammo depot, stairs, ramp, jump pad, sniper nest, sniper, UAV"
 ## Suggestion list used by unknown_error() and refusal_message() — keep in
 ## sync with the preset prompts the offline parser actually understands.
-const UNKNOWN_SUGGESTIONS := "wall, tower, turret, bridge, bunker, watchtower, ammo depot, sniper, UAV"
+const UNKNOWN_SUGGESTIONS := "wall, tower, turret, bridge, bunker, watchtower, ammo depot, stairs, ramp, jump pad, sniper nest, sniper, burst rifle, judge, UAV"
 ## Max chars of a model-supplied refusal reason that reach the player.
 const MAX_REFUSAL_REASON_CHARS := 120
 #endregion
+
+## Per-weapon Forge cost, COMPUTED from power, never flat. Formula:
+##   cost = clamp(round5(75 + sqrt(damage x pellets x rpm x mag) / 4
+##                       + damage x pellets), 100, 350)
+## The sqrt() curve keeps the spread sane against structure costs
+## (100-200) and the turret (250): the LMG's huge mag would otherwise
+## price it out of the game (raw 384 -> clamped 350). The per-shot term
+## (damage x pellets) is what keeps slow, hard-hitting weapons honest:
+## without it the Longeye (40 rpm, 5-round mag) would cost less than a
+## pistol despite 120 damage a shot. Results: manticore 280, longeye
+## 235, breacher 220, hornet 270, p9 180, raptor 150 (utility, fixed),
+## lmg 350 (clamped), trident 310, judge 200. Costs are computed +
+## shown, never blocking (Forge manager: BUDGET_ENABLED = false).
+static func weapon_cost(forge_weapon_id: String) -> int:
+	if forge_weapon_id == "raptor":
+		# 0-damage utility (grab/throw) — the power formula is N/A,
+		# so the claw carries a fixed utility price between a pistol
+		# and a rifle.
+		return 150
+	var row: Array = WEAPON_POWER.get(forge_weapon_id, [])
+	if row.size() != 4:
+		return -1
+	return _weapon_power_cost(float(row[0]), int(row[1]), float(row[2]), int(row[3]))
+
+
+static func _weapon_power_cost(damage: float, pellets: int, rpm: float, mag: int) -> int:
+	var raw := damage * float(pellets) * rpm * float(mag)
+	var cost := 75.0 + sqrt(raw) / 4.0 + damage * float(pellets)
+	return clampi(int(round(cost / 5.0)) * 5, 100, 350)
+
 
 ## THE system prompt. One stable constant, byte-identical on every call.
 ## The variable user prompt is appended LAST (in the user message), never
@@ -102,10 +155,10 @@ BUILD: {"spec_version":1,"action":"spawn|modify|event","target":"weapon|cover|tu
 REFUSAL (use when the request cannot be built from the catalog below): {"spec_version":1,"action":"refuse","target":"none","params":{"reason":"<short reason, max 120 chars>"},"cost":0,"ttl":0}
 CATALOG — build ONLY from these blocks. Never invent targets, params, blocks, scripts, or code. There is no code/script output; you compose pre-made blocks only.
 - cover: params {"shape":"wall"|"tower"|"barricade","size_voxels":[x,y,z] each 1-12,"position":"near_player"|"marked"|[x,y,z],"hp":50-500,"property":"standard"|"reinforced" optional}. Costs: wall 100, tower 150, barricade 100, reinforced +50. action "spawn".
-- structure: params {"shape":"bridge"|"bunker"|"watchtower"|"ammo_depot","position":"near_player"|"marked","property":"standard"|"reinforced" optional}. Costs: bridge 120, bunker 180, watchtower 200, ammo depot 150, reinforced +50. action "spawn". (bridge = stepped ramp up to a platform; bunker = roofed concrete pillbox; watchtower = tall platform on legs with stairs; ammo depot = crates plus an ammo cache)
+- structure: params {"shape":"bridge"|"bunker"|"watchtower"|"ammo_depot"|"stairs"|"ramp"|"wall"|"jump_pad"|"cover_piece"|"sniper_nest","position":"near_player"|"marked","property":"standard"|"reinforced" optional}. Costs: bridge 120, bunker 180, watchtower 200, ammo depot 150, stairs 100, ramp 90, wall 120, jump pad 150, cover piece 60, sniper nest 220, reinforced +50. action "spawn". (bridge = stepped ramp up to a platform; bunker = roofed concrete pillbox; watchtower = tall platform on legs with stairs; ammo depot = crates plus an ammo cache; stairs = voxel staircase; ramp = sloped walkway; wall = tall voxel wall; jump pad = launches the player; cover piece = low voxel cover; sniper nest = elevated platform with rails)
 - turret: params {"position":"near_player"|"marked"|[x,y,z],"duration_sec":5-120,"ammo_type":"standard"|"sniper"|"armor_piercing"|"buckshot" optional}. Cost 250 + ammo surcharge (standard 0, sniper 50, armor_piercing 75, buckshot 50). action "spawn".
 - pickup: params {"kind":"ammo"|"health","position":"near_player"|"marked"}. Cost 75. action "spawn".
-- weapon: params {"weapon_id":"manticore"|"longeye"|"breacher"|"hornet"|"p9"|"raptor"|"lmg","ammo_type":"standard"|"sniper"|"armor_piercing"|"buckshot" optional}. Cost 200 + ammo surcharge (standard 0, sniper 50, armor_piercing 75, buckshot 50). action "spawn". (manticore=assault rifle, longeye=sniper rifle, breacher=shotgun, hornet=smg, p9=pistol, raptor=prototype claw, lmg=light machine gun — high capacity, slower handling)
+- weapon: params {"weapon_id":"manticore"|"longeye"|"breacher"|"hornet"|"p9"|"raptor"|"lmg"|"trident"|"judge","ammo_type":"standard"|"sniper"|"armor_piercing"|"buckshot" optional}. Costs by weapon (the game recomputes them; emit your best estimate): manticore 280, longeye 235, breacher 220, hornet 270, p9 180, raptor 150, lmg 350, trident 310, judge 200 — + ammo surcharge (standard 0, sniper 50, armor_piercing 75, buckshot 50). action "spawn". (manticore=assault rifle, longeye=sniper rifle, breacher=shotgun, hornet=smg, p9=pistol, raptor=prototype claw, lmg=light machine gun — high capacity, slower handling, trident=burst rifle — 3-round burst, precise mid-range, judge=heavy revolver — huge damage per shot, 6-round cylinder)
 - enemy_mod: params {"mod":"weaken"}. Player requisitions may ONLY weaken enemies — never enrage. Cost 150. action "modify".
 - enemy_spawn: params {"type":"grunt"|"rusher"|"marksman","count":1-6}. Spawns hostile enemies for target practice / a challenge. Cost 150. action "spawn".
 - killstreak: params {"streak":"uav"|"airstrike"|"chopper","target":"marked"|"auto"}. Costs: uav 150, airstrike 300, chopper 450. action "spawn".
@@ -113,8 +166,10 @@ CATALOG — build ONLY from these blocks. Never invent targets, params, blocks, 
 Rules: default "position" to "near_player"; use "marked" only when the prompt says "there", "where I'm looking", or "where I'm aiming". COMPOSITION: combine any known blocks — any known weapon + any known ammo_type, any known cover/structure + a known property — even when that exact combo has no preset. The game computes the final cost as the SUM of the composed blocks' costs (base block + each added block's surcharge); emit your best estimate of that sum. If the prompt is unclear or asks for anything outside this catalog (vehicles, flying things, lasers, new weapons, new enemies, scripts, code, behaviour changes), emit the REFUSAL shape — never improvise a build as a substitute.
 Examples:
 Player: "build a tower near me" -> {"spec_version":1,"action":"spawn","target":"cover","params":{"shape":"tower","size_voxels":[4,10,4],"position":"near_player","hp":350},"cost":150,"ttl":0}
-Player: "give me a sniper rifle" -> {"spec_version":1,"action":"spawn","target":"weapon","params":{"weapon_id":"longeye"},"cost":200,"ttl":0}
-Player: "give me an LMG with sniper bullets" -> {"spec_version":1,"action":"spawn","target":"weapon","params":{"weapon_id":"lmg","ammo_type":"sniper"},"cost":250,"ttl":0}
+Player: "give me a sniper rifle" -> {"spec_version":1,"action":"spawn","target":"weapon","params":{"weapon_id":"longeye"},"cost":235,"ttl":0}
+Player: "give me an LMG with sniper bullets" -> {"spec_version":1,"action":"spawn","target":"weapon","params":{"weapon_id":"lmg","ammo_type":"sniper"},"cost":400,"ttl":0}
+Player: "give me a burst rifle" -> {"spec_version":1,"action":"spawn","target":"weapon","params":{"weapon_id":"trident"},"cost":310,"ttl":0}
+Player: "give me a judge" -> {"spec_version":1,"action":"spawn","target":"weapon","params":{"weapon_id":"judge"},"cost":200,"ttl":0}
 Player: "build a reinforced bunker" -> {"spec_version":1,"action":"spawn","target":"structure","params":{"shape":"bunker","position":"near_player","property":"reinforced"},"cost":230,"ttl":0}
 Player: "make a flying car that shoots lasers" -> {"spec_version":1,"action":"refuse","target":"none","params":{"reason":"flying cars and lasers are not in the build catalog"},"cost":0,"ttl":0}"""
 
@@ -172,22 +227,21 @@ func is_busy() -> bool:
 
 
 func _request_remote(prompt: String, key: String) -> void:
-	var budget := 0
-	var b: Variant = Game.get("forge_budget")
-	if b is int or b is float:
-		budget = int(b)
 	# CACHE LAYOUT: messages[0] is the stable SYSTEM_PROMPT (byte-identical
 	# every call, a whole-message cache unit); messages[1] is the user-mods
 	# section (the only variable system content, clearly delimited);
 	# messages[2] carries ALL other variable content, with the user prompt
 	# LAST. Never reorder these, and never put variable text in
 	# messages[0] — either breaks DeepSeek's prefix-cache match.
+	# Directive A: Forge building is FREE (BUDGET_ENABLED = false in the
+	# manager) — no budget figure rides along, so the model never rations
+	# a build against a budget that does not gate anything.
 	var body := {
 		"model": MODEL,
 		"messages": [
 			{"role": "system", "content": SYSTEM_PROMPT},
 			{"role": "system", "content": user_mods_section()},
-			{"role": "user", "content": "Forge budget: %d. Player requisition: %s" % [budget, prompt]},
+			{"role": "user", "content": "Forge building is free (no budget limit). Player requisition: %s" % prompt},
 		],
 		"response_format": {"type": "json_object"},
 		"temperature": TEMPERATURE,
@@ -469,12 +523,24 @@ static func _base_cost(target: String, params: Dictionary) -> int:
 					return COST_WATCHTOWER
 				"ammo_depot":
 					return COST_AMMO_DEPOT
+				"stairs":
+					return COST_STAIRS
+				"ramp":
+					return COST_RAMP
+				"wall":
+					return COST_STRUCTURE_WALL
+				"jump_pad":
+					return COST_JUMP_PAD
+				"cover_piece":
+					return COST_COVER_PIECE
+				"sniper_nest":
+					return COST_SNIPER_NEST
 		"turret":
 			return COST_TURRET
 		"pickup":
 			return COST_PICKUP
 		"weapon":
-			return COST_WEAPON
+			return weapon_cost(str(params.get("weapon_id", "")))
 		"enemy_mod":
 			return COST_ENEMYMOD
 		"enemy_spawn":
@@ -530,7 +596,7 @@ static func _validate_params(target: String, params: Dictionary) -> Array:
 		"structure":
 			if not _keys_with_optional(params, ["shape", "position"], ["shape", "position", "property"]):
 				return [false, "structure params must be shape/position (+optional property)"]
-			if not (str(params.get("shape", "")) in ["bridge", "bunker", "watchtower", "ammo_depot"]):
+			if not (str(params.get("shape", "")) in ["bridge", "bunker", "watchtower", "ammo_depot", "stairs", "ramp", "wall", "jump_pad", "cover_piece", "sniper_nest"]):
 				return [false, "bad structure '%s'" % str(params.get("shape", ""))]
 			if not _is_position(params.get("position", null)):
 				return [false, "bad position"]
@@ -555,7 +621,7 @@ static func _validate_params(target: String, params: Dictionary) -> Array:
 		"weapon":
 			if not _keys_with_optional(params, ["weapon_id"], ["weapon_id", "ammo_type"]):
 				return [false, "weapon params must be weapon_id (+optional ammo_type)"]
-			if not (str(params.get("weapon_id", "")) in ["manticore", "longeye", "breacher", "hornet", "p9", "raptor", "lmg"]):
+			if not (str(params.get("weapon_id", "")) in ["manticore", "longeye", "breacher", "hornet", "p9", "raptor", "lmg", "trident", "judge"]):
 				return [false, "bad weapon_id '%s'" % str(params.get("weapon_id", ""))]
 			if params.has("ammo_type") and not (str(params.get("ammo_type", "")) in AMMO_TYPES):
 				return [false, "bad ammo_type '%s'" % str(params.get("ammo_type", ""))]
@@ -703,7 +769,15 @@ static func _is_num_in(v: Variant, lo: float, hi: float) -> bool:
 
 
 static func _is_int_in(v: Variant, lo: int, hi: int) -> bool:
-	return v is int and int(v) >= lo and int(v) <= hi
+	# Accepts int, or a float with an integral value (Godot's JSON parser
+	# returns ALL numbers as float, so a JSON block's 4 arrives as 4.0).
+	# Mirrors ModLoader._is_int_in — the live LLM path parses JSON, so a
+	# strict int-only check rejected valid cover/enemy_spawn specs.
+	if v is int:
+		return int(v) >= lo and int(v) <= hi
+	if v is float and float(v) == floor(float(v)):
+		return int(v) >= lo and int(v) <= hi
+	return false
 
 
 static func _is_size_voxels(v: Variant) -> bool:
@@ -770,8 +844,187 @@ static func unknown_error(prompt: String) -> String:
 	return "Don't know '%s' — try: %s" % [clean, UNKNOWN_SUGGESTIONS]
 
 
+## Resolves an installed user mod by NAME in an offline prompt. Returns
+## a mod_block spec for the first enabled mod whose multi-word name
+## (mod id, name, display_name, or block_id — underscores/hyphens become
+## spaces) appears in the prompt, or {} when nothing matches. The cost is
+## the mod's declared cost; validate_modspec recomputes it as truth.
+## Single-word names never match (see _fallback_spec).
+static func _mod_spec_for_prompt(p: String) -> Dictionary:
+	for m in ModLoader.get_enabled_mods():
+		if not (m is Dictionary):
+			continue
+		var rec := ModLoader.find_mod(str((m as Dictionary).get("id", "")))
+		if rec.is_empty():
+			continue
+		var info: Dictionary = rec.get("block_info", {})
+		var target := str(info.get("target", ""))
+		if target not in ["weapon", "cover", "structure", "turret", "pickup"]:
+			continue
+		var names: Array[String] = [
+			str((m as Dictionary).get("id", "")),
+			str((m as Dictionary).get("name", "")),
+			str(info.get("display_name", "")),
+			str(info.get("block_id", "")),
+		]
+		for raw_name in names:
+			var norm := _normalize_mod_name(raw_name)
+			if norm.is_empty() or not norm.contains(" "):
+				continue
+			if p.contains(norm):
+				var params := {"mod_block": str((m as Dictionary).get("id", ""))}
+				if target in ["cover", "structure", "turret", "pickup"]:
+					params["position"] = "near_player"
+				return _spec("spawn", target, params, int(info.get("cost", 0)))
+	return {}
+
+
+## Lowercase, underscores/hyphens -> spaces, collapsed whitespace.
+static func _normalize_mod_name(raw: String) -> String:
+	var s := raw.to_lower().replace("_", " ").replace("-", " ").strip_edges()
+	while s.contains("  "):
+		s = s.replace("  ", " ")
+	return s
+
+
+## Offline weapon + ammo composition: a known weapon (by Forge id, alias,
+## or class keyword) PLUS an ammo keyword with a trigger word -> the
+## composed spec. {} when the prompt is not a composition. The cost is
+## weapon_cost() + the ammo surcharge; validate_modspec recomputes it.
+static func _offline_weapon_ammo_composition(p: String) -> Dictionary:
+	var ammo_type := ""
+	if p.contains("buckshot"):
+		ammo_type = "buckshot"
+	elif p.contains("armor-piercing") or p.contains("armor piercing") \
+			or p.contains("ap bullets") or p.contains("ap rounds") or p.contains("ap ammo"):
+		ammo_type = "armor_piercing"
+	elif p.contains("sniper") and (p.contains("bullet") or p.contains("round") or p.contains("ammo") or p.contains("shell")):
+		ammo_type = "sniper"
+	if ammo_type.is_empty():
+		return {}
+	var wid := _offline_weapon_id(p)
+	if wid.is_empty():
+		return {}
+	# "sniper ammo" alone is an AMMO pickup, not a composition: the only
+	# weapon signal is the word "sniper" itself. Require an explicit
+	# longeye marker ("sniper rifle", "dmr", ...) for a sniper-weapon
+	# composition; anything else falls through to the ammo pickup branch.
+	if ammo_type == "sniper" and wid == "longeye" \
+			and not (p.contains("longeye") or p.contains("sniper rifle") \
+			or p.contains("dmr") or p.contains("marksman rifle")):
+		return {}
+	var surcharge := 0
+	match ammo_type:
+		"sniper":
+			surcharge = COST_AMMO_SNIPER
+		"armor_piercing":
+			surcharge = COST_AMMO_ARMOR_PIERCING
+		"buckshot":
+			surcharge = COST_AMMO_BUCKSHOT
+	return _spec("spawn", "weapon", {"weapon_id": wid, "ammo_type": ammo_type},
+		weapon_cost(wid) + surcharge)
+
+
+## Offline weapon resolution shared by the composition check and (via the
+## chain in _fallback_spec) plain weapon prompts. "" when no weapon.
+static func _offline_weapon_id(p: String) -> String:
+	for wid in ["manticore", "longeye", "breacher", "hornet", "p9", "raptor", "lmg", "trident", "judge"]:
+		if wid in p:
+			return wid
+	if "shotgun" in p:
+		return "breacher"
+	if "sniper" in p or "dmr" in p or "marksman rifle" in p:
+		return "longeye"
+	if _ph(p, ["smg", "submachine"]):
+		return "hornet"
+	if _ph(p, ["pistol", "sidearm", "handgun"]):
+		return "p9"
+	if _ph(p, ["lmg", "machine gun", "minigun"]):
+		return "lmg"
+	if _ph(p, ["trident", "burst", "three-round", "3-round", "three round"]):
+		return "trident"
+	if _ph(p, ["judge", "revolver", "six-shooter", "six shooter"]):
+		return "judge"
+	if _ph(p, ["rifle", "gun", "weapon", "armed"]):
+		return "manticore"
+	return ""
+
+
+# --- Shareable build codes --------------------------------------------------
+# A build code is one copy-pasteable string for a whole build action:
+#   "FORGE1-" + base64url(JSON of the ModSpec)
+# base64url = standard base64 with + -> -, / -> _, padding stripped, so the
+# code survives chat/clipboard without escaping. encode/decode are pure
+# and total: encode always succeeds on a Dictionary; decode returns {}
+# for garbage, non-JSON, or non-Dictionary input. A decoded spec is
+# NEVER trusted: the manager runs it through validate_modspec (which
+# rejects invented fields, unknown blocks, code content, out-of-range
+# numbers) before anything builds. Cost in the code is informational —
+# validation recomputes it as truth.
+
+const BUILD_CODE_PREFIX := "FORGE1-"
+
+
+static func encode_build_code(spec: Dictionary) -> String:
+	var b64 := Marshalls.raw_to_base64(JSON.stringify(spec).to_utf8_buffer())
+	return BUILD_CODE_PREFIX + b64.replace("+", "-").replace("/", "_").rstrip("=")
+
+
+static func decode_build_code(code: String) -> Dictionary:
+	var s := code.strip_edges()
+	if s.begins_with(BUILD_CODE_PREFIX):
+		s = s.substr(BUILD_CODE_PREFIX.length())
+	if s.is_empty():
+		return {}
+	s = s.replace("-", "+").replace("_", "/")
+	while s.length() % 4 != 0:
+		s += "="
+	var raw := Marshalls.base64_to_raw(s)
+	if raw.is_empty():
+		return {}
+	var parsed: Variant = JSON.parse_string(raw.get_string_from_utf8())
+	if parsed is Dictionary:
+		# JSON round-trip loses int-ness: Godot's JSON parser returns
+		# ALL numbers as float, but the strict gate requires true ints
+		# for size_voxels / count (see _is_int_in). Normalize integral
+		# floats back to ints recursively, so a decoded spec validates
+		# exactly like the spec it was encoded from. Non-integral floats
+		# (hp, duration) pass through untouched.
+		return _normalize_json_numbers(parsed)
+	return {}
+
+
+## Recursively converts integral floats (4.0) to ints (4) in a decoded
+## JSON value. Mirrors the ModLoader._is_int_in tolerance (int OR
+## integral float) at the boundary where JSON re-enters the game, instead
+## of loosening the gate itself.
+static func _normalize_json_numbers(v: Variant) -> Variant:
+	if v is float and float(v) == floor(float(v)) and abs(float(v)) < 9007199254740992.0:
+		return int(v)
+	if v is Dictionary:
+		var out := {}
+		for k in (v as Dictionary).keys():
+			out[k] = _normalize_json_numbers((v as Dictionary)[k])
+		return out
+	if v is Array:
+		var arr: Array = []
+		for item in (v as Array):
+			arr.append(_normalize_json_numbers(item))
+		return arr
+	return v
+
+
 static func _fallback_spec(prompt: String) -> Dictionary:
 	var p := prompt.to_lower()
+	# Installed user mods by NAME first: a multi-word mod name in the
+	# prompt ("give me a chunky wall") is a stronger signal than any base
+	# keyword, so the mod wins over the base catalog. Single-word mod
+	# names are deliberately NOT matched here — a mod named "wall" or
+	# "sniper" would hijack every base prompt with that word. Single-word
+	# mods stay reachable through the LLM path (its catalog lists them).
+	var mod_spec := _mod_spec_for_prompt(p)
+	if not mod_spec.is_empty():
+		return mod_spec
 	if _ph(p, ["turret", "sentry", "auto gun", "auto-gun"]):
 		return _spec("spawn", "turret", {"position": "near_player", "duration_sec": 45}, COST_TURRET)
 	# "watchtower" first: it contains "tower", and is its own buildable.
@@ -782,14 +1035,33 @@ static func _fallback_spec(prompt: String) -> Dictionary:
 	# "ammo depot" before the generic ammo pickup ("ammo") and supply ("drop").
 	if _ph(p, ["ammo depot", "ammo dump", "supply depot", "armory", "armoury", "ammo cache"]):
 		return _spec("spawn", "structure", {"shape": "ammo_depot", "position": "near_player"}, COST_AMMO_DEPOT)
-	if _ph(p, ["bridge", "ramp", "crossing", "walkway", "overpass"]):
+	# New structure shapes (Forge batch): checked BEFORE the generic
+	# branches below — "sniper nest" contains "tower", "ramp" used to
+	# fall into "bridge", "cover piece" contains "cover", and bare
+	# "wall" is now the destructible structure wall (cover wall stays
+	# reachable via "cover wall" / "barrier" / "blockade").
+	if _ph(p, ["sniper nest", "sniper's nest", "sniper-nest"]):
+		return _spec("spawn", "structure", {"shape": "sniper_nest", "position": "near_player"}, COST_SNIPER_NEST)
+	if _ph(p, ["jump pad", "jump-pad", "launch pad", "launchpad"]):
+		return _spec("spawn", "structure", {"shape": "jump_pad", "position": "near_player"}, COST_JUMP_PAD)
+	if _ph(p, ["cover piece"]):
+		return _spec("spawn", "structure", {"shape": "cover_piece", "position": "near_player"}, COST_COVER_PIECE)
+	if _ph(p, ["stairs", "staircase", "steps"]):
+		return _spec("spawn", "structure", {"shape": "stairs", "position": "near_player"}, COST_STAIRS)
+	if _ph(p, ["ramp"]):
+		return _spec("spawn", "structure", {"shape": "ramp", "position": "near_player"}, COST_RAMP)
+	if _ph(p, ["bridge", "crossing", "walkway", "overpass"]):
 		return _spec("spawn", "structure", {"shape": "bridge", "position": "near_player"}, COST_BRIDGE)
 	# "tower" first: "build a sniper tower" is cover; bare "sniper" is a rifle.
-	if _ph(p, ["tower", "sniper nest", "overwatch", "lookout"]):
+	if _ph(p, ["tower", "overwatch", "lookout"]):
 		return _spec("spawn", "cover", {"shape": "tower", "size_voxels": [4, 10, 4], "position": "near_player", "hp": 350}, COST_TOWER)
 	if _ph(p, ["barricade"]):
 		return _spec("spawn", "cover", {"shape": "barricade", "size_voxels": [6, 4, 2], "position": "near_player", "hp": 200}, COST_BARRICADE)
-	if _ph(p, ["wall", "cover", "barrier", "blockade", "hide", "fortif", "defense", "defence"]):
+	if _ph(p, ["cover wall"]):
+		return _spec("spawn", "cover", {"shape": "wall", "size_voxels": [8, 5, 2], "position": "near_player", "hp": 250}, COST_WALL)
+	if _ph(p, ["wall", "fortif", "defense", "defence"]):
+		return _spec("spawn", "structure", {"shape": "wall", "position": "near_player"}, COST_STRUCTURE_WALL)
+	if _ph(p, ["cover", "barrier", "blockade", "hide"]):
 		return _spec("spawn", "cover", {"shape": "wall", "size_voxels": [8, 5, 2], "position": "near_player", "hp": 250}, COST_WALL)
 	if _ph(p, ["chopper", "helicopter", "heli", "air support"]):
 		return _spec("spawn", "killstreak", {"streak": "chopper", "target": "auto"}, COST_CHOPPER)
@@ -801,30 +1073,43 @@ static func _fallback_spec(prompt: String) -> Dictionary:
 		return _spec("event", "arena_event", {"event": "smoke", "duration_sec": 20}, COST_SMOKE)
 	if _ph(p, ["spawn enemies", "summon enemies", "send enemies", "more enemies", "call in enemies", "bring enemies", "spawn foes", "spawn hostiles"]):
 		return _spec("spawn", "enemy_spawn", {"type": "grunt", "count": 3}, COST_SPAWN_ENEMIES)
-	# v0.6.2 COMPOSITION: "LMG with sniper bullets" is a weapon + ammo
-	# composition, NOT an ammo pickup — check it before the generic ammo
-	# branch below (which fires on "bullets").
-	if _ph(p, ["lmg", "machine gun", "minigun"]) and "sniper" in p:
-		return _spec("spawn", "weapon", {"weapon_id": "lmg", "ammo_type": "sniper"}, COST_WEAPON + COST_AMMO_SNIPER)
+	# COMPOSITION (generalized from the old LMG-only branch): a known
+	# weapon + an ammo keyword with a trigger word ("bullets"/"rounds"/
+	# "ammo"/"shells", or bare "buckshot") is a weapon + ammo_type
+	# composition, NOT an ammo pickup — checked before the generic ammo
+	# branch below (which fires on "bullets"). "sniper rifle" alone is
+	# NOT composition: it has no trigger word, so it stays a plain
+	# longeye (see the sniper branch further down).
+	var composed := _offline_weapon_ammo_composition(p)
+	if not composed.is_empty():
+		return composed
 	if _ph(p, ["ammo", "reload", "bullets", "mags", "rounds"]):
 		return _spec("spawn", "pickup", {"kind": "ammo", "position": "near_player"}, COST_PICKUP)
 	if _ph(p, ["health", "heal", "medic", "medkit", "patch me", "hurt"]):
 		return _spec("spawn", "pickup", {"kind": "health", "position": "near_player"}, COST_PICKUP)
-	for wid in ["manticore", "longeye", "breacher", "hornet", "p9", "raptor", "lmg"]:
+	for wid in ["manticore", "longeye", "breacher", "hornet", "p9", "raptor", "lmg", "trident", "judge"]:
 		if wid in p:
-			return _spec("spawn", "weapon", {"weapon_id": wid}, COST_WEAPON)
+			return _spec("spawn", "weapon", {"weapon_id": wid}, weapon_cost(wid))
 	if "shotgun" in p:
-		return _spec("spawn", "weapon", {"weapon_id": "breacher"}, COST_WEAPON)
+		return _spec("spawn", "weapon", {"weapon_id": "breacher"}, weapon_cost("breacher"))
 	if "sniper" in p or "dmr" in p or "marksman rifle" in p or "sniper rifle" in p:
-		return _spec("spawn", "weapon", {"weapon_id": "longeye"}, COST_WEAPON)
+		return _spec("spawn", "weapon", {"weapon_id": "longeye"}, weapon_cost("longeye"))
 	if _ph(p, ["smg", "submachine"]):
-		return _spec("spawn", "weapon", {"weapon_id": "hornet"}, COST_WEAPON)
+		return _spec("spawn", "weapon", {"weapon_id": "hornet"}, weapon_cost("hornet"))
 	if _ph(p, ["pistol", "sidearm", "handgun"]):
-		return _spec("spawn", "weapon", {"weapon_id": "p9"}, COST_WEAPON)
+		return _spec("spawn", "weapon", {"weapon_id": "p9"}, weapon_cost("p9"))
 	if _ph(p, ["lmg", "machine gun", "minigun"]):
-		return _spec("spawn", "weapon", {"weapon_id": "lmg"}, COST_WEAPON)
+		return _spec("spawn", "weapon", {"weapon_id": "lmg"}, weapon_cost("lmg"))
+	# New weapons by alias: "burst rifle" / "trident" -> BR-3 Trident,
+	# "judge" / "revolver" -> HV-44 Judge. Checked before the generic
+	# "rifle"/"gun" branch (which would swallow "burst rifle" as a
+	# manticore) and after the specific branches above.
+	if _ph(p, ["trident", "burst", "three-round", "3-round", "three round"]):
+		return _spec("spawn", "weapon", {"weapon_id": "trident"}, weapon_cost("trident"))
+	if _ph(p, ["judge", "revolver", "six-shooter", "six shooter"]):
+		return _spec("spawn", "weapon", {"weapon_id": "judge"}, weapon_cost("judge"))
 	if _ph(p, ["rifle", "gun", "weapon", "armed"]):
-		return _spec("spawn", "weapon", {"weapon_id": "manticore"}, COST_WEAPON)
+		return _spec("spawn", "weapon", {"weapon_id": "manticore"}, weapon_cost("manticore"))
 	# NOTE: "enrage" maps to weaken — player requisitions may only weaken
 	# (enrage is director-only and rejected in validation).
 	if _ph(p, ["weaken", "enrage", "soften", "kill them", "take them out", "wreck them"]):
@@ -887,7 +1172,7 @@ MODBLOCK CONTRACT — every script mod MUST follow this exactly:
 - Implement `apply(api: ModAPI, params: Dictionary) -> String`: build via ONLY the ModAPI methods above; return a non-empty success message, or "" on failure. params carries "_position" (Vector3 build point) and "_target" (the spec target). _init() must stay side-effect free — all building in apply().
 - NEVER emit filesystem, network, OS, eval, or code-loading code: NO FileAccess, DirAccess, OS, Engine, load(), preload(), ResourceLoader, Expression, GDScript.new, ClassDB, HTTPRequest, HTTPClient, sockets, Thread, .new(), call(), call_deferred(), @tool. The game rejects any mod containing them. A script mod runs with game trust — only ModAPI, full stop.
 MANIFEST SCHEMA: {"name": str (non-empty), "kind": "block"|"script", "version": str (e.g. "1.0"), "description": str (max 300 chars)}.
-BLOCK SCHEMA (payload for kind=block): {"block_id": "<lowercase [a-z0-9_]>", "target": "weapon"|"cover"|"structure"|"turret"|"pickup", "cost": 0-2000 int, "display_name": str, "description": str?, ...per-target fields...}. Per-target fields: weapon: base_weapon_id (manticore|longeye|breacher|hornet|p9|raptor|lmg), damage_mult 0.1-5, mag_mult 0.25-4, range_mult 0.1-5, ammo_type? (standard|sniper|armor_piercing|buckshot). cover: shape wall|tower|barricade, size_voxels [x,y,z] each 1-12, hp 50-500, property? standard|reinforced, color? (palette name or "#rrggbb"). structure: shape bridge|bunker|watchtower|ammo_depot, property? standard|reinforced. turret: duration_sec 5-120, damage_mult 0.1-5, range_mult 0.1-3, ammo_type?. pickup: kind ammo|health, amount 1-500. No other fields — unknown fields are rejected.
+BLOCK SCHEMA (payload for kind=block): {"block_id": "<lowercase [a-z0-9_]>", "target": "weapon"|"cover"|"structure"|"turret"|"pickup", "cost": 0-2000 int, "display_name": str, "description": str?, ...per-target fields...}. Per-target fields: weapon: base_weapon_id (manticore|longeye|breacher|hornet|p9|raptor|lmg|trident|judge), damage_mult 0.1-5, mag_mult 0.25-4, range_mult 0.1-5, ammo_type? (standard|sniper|armor_piercing|buckshot). cover: shape wall|tower|barricade, size_voxels [x,y,z] each 1-12, hp 50-500, property? standard|reinforced, color? (palette name or "#rrggbb"). structure: shape bridge|bunker|watchtower|ammo_depot|stairs|ramp|wall|jump_pad|cover_piece|sniper_nest, property? standard|reinforced. turret: duration_sec 5-120, damage_mult 0.1-5, range_mult 0.1-3, ammo_type?. pickup: kind ammo|health, amount 1-500. No other fields — unknown fields are rejected.
 Examples:
 Player idea: "a chunky concrete wall" -> {"manifest": {"name": "Chunky Wall", "kind": "block", "version": "1.0", "description": "A thick concrete wall."}, "payload": "{\\"block_id\\": \\"chunky_wall\\", \\"target\\": \\"cover\\", \\"cost\\": 150, \\"display_name\\": \\"Chunky Wall\\", \\"description\\": \\"A thick concrete wall.\\", \\"shape\\": \\"wall\\", \\"size_voxels\\": [8, 6, 3], \\"hp\\": 500}", "summary": "A thick concrete wall with 500 HP for 150."}
 Player idea: "a beacon that drops a glowing marker where I'm looking" -> {"manifest": {"name": "Aim Beacon", "kind": "script", "version": "1.0", "description": "Drops a glowing marker at the aim point."}, "payload": "extends ModBlock\\n\\nfunc get_block_info() -> Dictionary:\\n\\treturn {\\"block_id\\": \\"aim_beacon\\", \\"target\\": \\"cover\\", \\"cost\\": 100, \\"display_name\\": \\"Aim Beacon\\", \\"description\\": \\"Drops a glowing marker at the aim point.\\", \\"shape\\": \\"wall\\", \\"size_voxels\\": [1, 1, 1], \\"hp\\": 100.0}\\n\\nfunc apply(api: ModAPI, params: Dictionary) -> String:\\n\\tvar at: Vector3 = params.get(\\"_position\\", Vector3.ZERO)\\n\\tvar node: Node3D = api.spawn_voxel_box(Vector3(1, 1, 1), Color(1, 0.8, 0), at, false)\\n\\tif node == null:\\n\\t\\treturn \\"\\"\\n\\tapi.announce(\\"Beacon\\", \\"Marker placed.\\")\\n\\treturn \\"Forge fabricated: Aim Beacon (mod).\\"\\n", "summary": "Drops a glowing marker at your aim point."}
