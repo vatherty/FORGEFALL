@@ -358,6 +358,13 @@ func _buttons_overlap() -> bool:
 func _input(event: InputEvent) -> void:
 	if not _touch_active or not _interactive or not visible:
 		return
+	# VOICE V2: while the voice CONFIRM prompt is open, its buttons own
+	# the screen — the manual dispatcher below does not respect Control
+	# mouse_filter, so gate it or taps on CONFIRM/RETRY/CANCEL would
+	# also fire game buttons underneath. LISTENING is not gated: the
+	# player must keep moving/looking while holding MIC to talk.
+	if _voice_confirm_open():
+		return
 	if event is InputEventScreenTouch:
 		var t := event as InputEventScreenTouch
 		if t.pressed:
@@ -510,7 +517,11 @@ func _btn_up(d: Dictionary) -> void:
 			pass  # stays latched until tapped again
 		"mic":
 			b.modulate = Color.WHITE
-			# SpeechInput handles its own lifecycle; nothing to release.
+			# VOICE V2 push-to-talk release: arms the confirm step.
+			# Nothing is sent on release — the transcript still waits
+			# for CONFIRM. SpeechInput handles its own lifecycle.
+			if _speech != null and _speech.has_method("end_ptt"):
+				_speech.call("end_ptt")
 
 
 func _click_feedback() -> void:
@@ -519,10 +530,20 @@ func _click_feedback() -> void:
 		_sfx.call("play_2d", "ui_click")
 
 
+## VOICE V2: true while SpeechInput's CONFIRM prompt is open. The
+## confirm overlay is modal — _input() returns early while it is up.
+func _voice_confirm_open() -> bool:
+	if _speech == null or not _speech.has_method("is_confirm_open"):
+		return false
+	return bool(_speech.call("is_confirm_open"))
+
+
 func _on_voice_text(text: String) -> void:
-	# Plugin path delivered a transcription: hand it straight to the Forge.
-	# Empty transcripts never submit (SpeechInput already filters them;
-	# this is defense-in-depth so a stray "" can't become an empty prompt).
+	# Plugin path delivered a CONFIRMED transcription: SpeechInput only
+	# calls this after the player tapped CONFIRM on the heard text, so
+	# hand it straight to the Forge. Empty transcripts never submit
+	# (SpeechInput already filters them; this is defense-in-depth so a
+	# stray "" can't become an empty prompt).
 	var transcript := text.strip_edges()
 	if transcript.is_empty():
 		return
