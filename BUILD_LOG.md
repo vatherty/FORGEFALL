@@ -1590,3 +1590,79 @@ looking down at it) must yield virtual forward ~(0,-0.37,-0.93) — DOWN out
 of the partner — and pure position (10,3.5,-5). Re-verified: my suite
 31/31 headless AND xvfb (was 28/28), D's suite see_through 17/17 with all
 sections green, 900-frame smoke clean (exit 0, 0 script errors).
+
+## v0.5.0 — RENUMBER from 0.9.5 (open-source release) — 2026-10-15 ~16:30 MDT
+
+### Why
+- The game is earlier than the old 0.9.5 numbering implied. Renumbered to
+  0.5.0. Gameplay is byte-identical to the former 0.9.5 — version strings
+  only. `version_code` stays 26 so in-game updaters keep working.
+- Worker A amended the version strings (export_presets.cfg: version/name
+  0.5.0, version/code 26; Windows export_path ->
+  windows_staging/forgefall-v0.5.0-windows/) and published the clean source
+  tree to `vatherty/FORGEFALL`. Worker B rebuilt + released + decluttered
+  (this entry). Build from the WORKING tree, not the public repo: the public
+  copy has blanked keystore passwords; the working source keeps the real
+  (public-default) value so signing still works.
+
+### FILENAME COLLISION — old code-13 v0.5.0 replaced (deliberate)
+- A legacy `forgefall-v0.5.0-debug.apk` (version_code 13, Oct 13 milestone,
+  SHA-256 `63728576…7cca23`, 29,381,965 bytes) already existed in `updates/`
+  and in the Pages repo archive. Reusing the v0.5.0 filename for the code-26
+  build is the right call (matches the renumber), but the old file was
+  REPLACED, not duplicated: the new build overwrote `updates/` copy and the
+  Pages-repo copy in place (same URL now serves the new build), and the
+  stale code-13 copies in `deploy_staging/` and `github_deploy_staging/`
+  were deleted. No two different builds share the v0.5.0 filename anywhere.
+
+### Builds (all from the amended working source, Godot 4.7.2 headless)
+- **Android** `updates/forgefall-v0.5.0-debug.apk` (30,603,146 bytes, SHA-256
+  `f35cd72093695f65b73851539658debd1fb1a78c20c337e28bc61eff621dba19`) +
+  `.idsig`. `--export-debug "Android"`, unchanged custom template.
+  Verified: aapt com.sparky.forgefall versionCode 26 / 0.5.0, apksigner v2+v3
+  true, manifest UpdateStatusReceiver + ForgeUpdater + ForgeSpeech meta-data
+  + REQUEST_INSTALL_PACKAGES + RECORD_AUDIO, classes2.dex = stock XRMode
+  (1960 B, never overwritten), classes14/15 present.
+- **Linux** `linux_staging/forgefall-v0.5.0-linux.zip` (29,709,263 bytes,
+  SHA-256 `d7674bed2a48130a9301ea013adac95b760b35e53385bdaf63c5e7ec93eaedd0`):
+  forgefall.x86_64 + forgefall.pck + forgefall.sh + README-LINUX.txt (0.5.0,
+  + renumber note). Shipped binary headless --quit-after 900, exit 0.
+- **Windows** `windows_staging/forgefall-v0.5.0-windows.zip` (36,636,512 bytes,
+  SHA-256 `07fb119687f2bcdd3d670f6ea30ba795a3d56c10ef686c3d635f8b5256320632`):
+  forgefall.exe + forgefall.console.exe + forgefall.pck + README-WINDOWS.txt
+  (0.5.0, + renumber note).
+- PCK strings: no 0.9.5 anywhere (version lives in the export manifest /
+  updater manifests, not game strings).
+
+### GitHub Release (repo `vatherty/FORGEFALL`)
+- Release **v0.5.0**, tag v0.5.0 on main:
+  https://github.com/vatherty/FORGEFALL/releases/tag/v0.5.0
+  Changelog: the v0.9.5 changelog retitled 0.5.0 + the renumber line.
+- **BLOCKER — assets NOT attached:** the registered GitHub credential is
+  scoped to api.github.com only; release-asset upload goes to
+  uploads.github.com and returns 401 Bad credentials (surrogate not swapped
+  for that host). Fallback applied: the release body links the three
+  downloads directly from the Pages update site (same files the in-game
+  updater serves). To attach assets properly, reconnect/extend the GitHub
+  credential to include uploads.github.com, or attach the three files in the
+  GitHub UI. Release page currently lists 0 attached assets.
+- Repo description still reads "FORGEFALL update hosting..." (wrong — that
+  describes the updates repo). github.py has no repo-update command; Colin
+  to fix in the GitHub UI.
+
+### Pages declutter (repo `vatherty/Forgefall-updates`)
+- Uploaded artifacts first, manifests + index last. version.json +
+  version_pc.json -> version_name 0.5.0, version_code 26, URLs to the new
+  v0.5.0 files. index.html rewritten: LATEST 0.5.0 prominent, three
+  downloads, link to https://github.com/vatherty/FORGEFALL/releases for
+  history, old-version list REMOVED (old artifact files stay in the repo as
+  archive, unlisted). Deleted the v0.9.5-named duplicates
+  (forgefall-v0.9.5-debug.apk / -linux.zip / -windows.zip — same build, new
+  name). `.nojekyll` kept at repo root. Pages status: `built`.
+- Local `updates/` mirror synced (new index.html + version.json +
+  version_pc.json + APK).
+- Live verified: version.json 200 (0.5.0/code 26); version_pc.json 200
+  (0.5.0/code 26, both platform URLs); all three v0.5.0 artifacts 206;
+  index.html 200 with 0.5.0 + Releases link, no old-version list; v0.9.5
+  trio 404; repo tree has zero 0.9.5-named files, .nojekyll present;
+  downloaded APK SHA-256 matches the local build hash.
