@@ -38,7 +38,7 @@ const STRUCTURE_BLOCK_FIELDS := ["shape", "property"]
 const TURRET_BLOCK_FIELDS := ["duration_sec", "damage_mult", "range_mult", "ammo_type"]
 const PICKUP_BLOCK_FIELDS := ["kind", "amount"]
 
-const BASE_WEAPON_IDS := ["manticore", "longeye", "breacher", "hornet", "p9", "raptor", "lmg"]
+const BASE_WEAPON_IDS := ["manticore", "longeye", "breacher", "hornet", "p9", "raptor", "lmg", "trident", "judge"]
 const AMMO_TYPES := ["standard", "sniper", "armor_piercing", "buckshot"]
 const BLOCK_PROPERTIES := ["standard", "reinforced"]
 
@@ -77,7 +77,10 @@ static func scan_mods() -> void:
 	dir.list_dir_begin()
 	var entry := dir.get_next()
 	while entry != "":
-		if not entry.begins_with("."):
+		# "assets" is the voxel-asset cache (VoxelAssetGenerator), not a
+		# mod — skip it here so it never shows as a broken mod entry
+		# (missing manifest) in the Forge Mods tab.
+		if not entry.begins_with(".") and entry != "assets":
 			var full := MODS_DIR.path_join(entry)
 			if dir.current_is_dir():
 				_scan_folder(entry, full)
