@@ -107,18 +107,23 @@ func _initialize() -> void:
 		["build a bunker", "structure", "bunker", 180],
 		["build a watchtower", "structure", "watchtower", 200],
 		["build an ammo depot", "structure", "ammo_depot", 150],
-		["give me a sniper", "weapon", "longeye", 200],
-		["sniper rifle", "weapon", "longeye", 200],
+		["build stairs", "structure", "stairs", 100],
+		["build a ramp", "structure", "ramp", 90],
+		["build a jump pad", "structure", "jump_pad", 150],
+		["build a cover piece", "structure", "cover_piece", 60],
+		["build a sniper nest", "structure", "sniper_nest", 220],
+		["give me a sniper", "weapon", "longeye", 235],
+		["sniper rifle", "weapon", "longeye", 235],
 		["call in a UAV", "killstreak", "uav", 150],
 		["send in a drone", "killstreak", "uav", 150],
 		["spawn enemies", "enemy_spawn", "grunt", 150],
 		["deploy a sentry", "turret", "", 250],
 		["deploy a turret", "turret", "", 250],
-		["build a wall", "cover", "wall", 100],
+		["build a wall", "structure", "wall", 120],
+		["build a cover wall", "cover", "wall", 100],
 		["smoke", "arena_event", "smoke", 100],
 		["supply drop", "arena_event", "supply_drop", 50],
 		["build a sniper tower", "cover", "tower", 150],
-		["build a ramp", "structure", "bridge", 120],
 	]
 	for c in cases:
 		var spec := _spec_for(str(c[0]))
@@ -171,19 +176,22 @@ func _process(_delta: float) -> bool:
 			if not _result_received:
 				return false
 			_check(_result_success, "submit_prompt wall succeeds (msg: %s)" % _result_msg)
-			_check(int(_game.get("forge_budget")) == _budget_before - 100,
-				"wall charged exactly 100 (budget %d -> %d)" % [_budget_before, int(_game.get("forge_budget"))])
+			# Forge budget OFF (directive A): building is free — the
+			# wall charges 0, and the budget never moves.
+			_check(int(_game.get("forge_budget")) == _budget_before,
+				"wall charged 0 with budget OFF (budget %d -> %d)" % [_budget_before, int(_game.get("forge_budget"))])
 			_wall_node = _builder_script.last_built_node
 			_check(_wall_node != null and is_instance_valid(_wall_node),
 				"wall node recorded for undo")
-			_check(get_nodes_in_group("cover").size() >= 1, "wall node in cover group")
+			_check(get_nodes_in_group("forge_structure").size() >= 1,
+				"wall node in forge_structure group (bare 'wall' = structure wall)")
 			var hist: Array = _forge.call("get_history")
 			_check(hist.size() >= 1 and str(hist[0]) == "build a wall in front of me",
 				"history records prompt most-recent-first")
-			# Undo: removes the wall + refunds exactly 100.
+			# Undo: removes the wall + refunds 0 (budget OFF).
 			var undone: Dictionary = _forge.call("undo_last")
-			_check(bool(undone.get("ok", false)) and int(undone.get("refund", -1)) == 100,
-				"undo_last ok refund 100 (got %s)" % str(undone))
+			_check(bool(undone.get("ok", false)) and int(undone.get("refund", -1)) == 0,
+				"undo_last ok refund 0 with budget OFF (got %s)" % str(undone))
 			_check(int(_game.get("forge_budget")) == _budget_before,
 				"undo refunded budget exactly (%d)" % int(_game.get("forge_budget")))
 			_stage = 2
@@ -229,8 +237,11 @@ func _process(_delta: float) -> bool:
 			var wmsg: String = _builder_script.build(
 				{"spec_version": 1, "action": "spawn", "target": "weapon",
 				"params": {"weapon_id": "longeye"}, "cost": 0, "ttl": 0}, _ctx())
-			_check(not wmsg.begins_with(_builder_script.FAIL_PREFIX) and _wm.given.has("longeye"),
-				"weapon longeye given to player (%s)" % wmsg)
+			# Weapon via stub WeaponManager. The builder passes the ARSENAL
+			# id ("lr8") — FORGE_WEAPON_IDS maps longeye -> lr8 — so the
+			# stub records "lr8", not "longeye".
+			_check(not wmsg.begins_with(_builder_script.FAIL_PREFIX) and _wm.given.has("lr8"),
+				"weapon longeye given to player as arsenal id lr8 (%s)" % wmsg)
 			# Smoke event still works.
 			var smsg: String = _builder_script.build(
 				{"spec_version": 1, "action": "event", "target": "arena_event",
