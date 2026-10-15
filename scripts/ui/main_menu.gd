@@ -59,13 +59,20 @@ func _layout_stack() -> void:
 	var vp := size
 	if vp.x <= 0 or vp.y <= 0:
 		return
-	var title_px := clampi(int(minf(vp.y * 0.095, vp.x * 0.12)), 48, 110)
+	# Forge batch: 8 menu buttons + header rows overflow 800px-tall
+	# screens (measured stack min 827 at 1280x800). Buttons are
+	# floored at 56px by the theme, so the win comes from the title
+	# + stack gaps: shrink the title and drop gaps on short screens.
+	var title_factor := 0.095 if vp.y >= 900 else 0.075
+	var title_px := clampi(int(minf(vp.y * title_factor, vp.x * 0.12)), 48, 110)
 	StencilStyle.apply_title(_title_label, title_px, StencilStyle.TEXT, 10)
-	var btn_h := 64 if vp.y >= 900 else 54
-	# Goal 6: 7 menu buttons overflow 800px-tall screens at 5px gaps
-	# (stack measured 830 at 1280x800). Tighten gaps on short screens
-	# (14 gaps x 3px = 42px saved -> stack ~788, footer back inside).
-	_stack.add_theme_constant_override("separation", 5 if vp.y >= 900 else 2)
+	# Button custom-min below the 56px theme floor is a no-op (the
+	# theme min wins); 56 documents the real floor on short screens.
+	var btn_h := 64 if vp.y >= 900 else 56
+	# Forge batch: 8 menu buttons (CREATE A MOD added). Tighten further
+	# on short screens so the stack fits 800px-tall viewports again
+	# (separation 0 on short screens saves 16px of gaps).
+	_stack.add_theme_constant_override("separation", 5 if vp.y >= 900 else 0)
 	for b in _menu_buttons:
 		b.custom_minimum_size.y = btn_h
 	_stack.custom_minimum_size = Vector2.ZERO
@@ -278,6 +285,14 @@ func _build() -> void:
 	stats.pressed.connect(_on_stats)
 	_stack.add_child(stats)
 	_menu_buttons.append(stats)
+	# CREATE A MOD (Forge batch, Worker D): opens the standalone Mod
+	# Creator menu — CREATE / MODS / IMPORT-EXPORT tabs. This button is
+	# the menu's only addition to main_menu.gd.
+	var create_mod := _menu_button("CREATE A MOD")
+	create_mod.name = "CreateAModButton"
+	create_mod.pressed.connect(_on_create_mod)
+	_stack.add_child(create_mod)
+	_menu_buttons.append(create_mod)
 	var options := _menu_button("OPTIONS")
 	options.name = "OptionsButton"
 	options.pressed.connect(_on_options)
@@ -530,6 +545,25 @@ func _on_stats() -> void:
 	var main := get_tree().current_scene
 	if main != null and main.has_method("open_stats_screen"):
 		main.open_stats_screen()
+
+
+# CREATE A MOD (Forge batch, Worker D): opens the standalone Mod Creator
+# menu (a self-contained overlay scene, like the picker). Closing it
+# frees it. Missing scene -> no-op, never a crash.
+func _on_create_mod() -> void:
+	_click()
+	if not ResourceLoader.exists("res://scenes/ui/mod_creator_menu.tscn"):
+		return
+	var menu: Node = (load("res://scenes/ui/mod_creator_menu.tscn") as PackedScene).instantiate()
+	menu.name = "ModCreatorMenu"
+	add_child(menu)
+	if menu.has_signal("creator_closed"):
+		menu.connect("creator_closed", _on_creator_menu_closed.bind(menu))
+
+
+func _on_creator_menu_closed(menu: Node) -> void:
+	if menu != null and is_instance_valid(menu):
+		menu.queue_free()
 
 
 func _on_options() -> void:
