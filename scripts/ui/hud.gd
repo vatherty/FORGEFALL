@@ -750,6 +750,10 @@ func _build_forge() -> void:
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title)
 	_forge_budget_label = Label.new()
+	# Forge budget is OFF (directive A: "remove budget for now").
+	# The label stays wired (hidden) so re-enabling budget later is a
+	# one-line change; costs are still computed and shown in Forge.
+	_forge_budget_label.visible = false
 	StencilStyle.apply_body(_forge_budget_label, _scaled_font(20), StencilStyle.TEXT, 2)
 	header.add_child(_forge_budget_label)
 
@@ -786,7 +790,7 @@ func _build_forge() -> void:
 	_forge_feed.add_theme_color_override("default_color", StencilStyle.TEXT)
 	_forge_feed.add_theme_stylebox_override("normal", StencilStyle.panel(Color(0.02, 0.025, 0.03, 0.95), StencilStyle.GUNMETAL, 1))
 	vb.add_child(_forge_feed)
-	_push_forge_entry("Forge online. Describe cover, turrets, traps — budget is real.", true)
+	_push_forge_entry("Forge online. Describe cover, turrets, traps.", true)
 
 
 func _build_touch_hints() -> void:
@@ -1131,8 +1135,7 @@ func _on_wave_cleared(n: int) -> void:
 
 func _on_build_phase(seconds: int) -> void:
 	_play(SFX_BUILD)
-	var budget := int(_game_get("forge_budget", 0))
-	announce("BUILD PHASE", "Forge console open — spend budget: %d" % budget)
+	announce("BUILD PHASE", "Forge console open")
 	_open_forge(true)
 	refresh_topbar()
 
@@ -1172,8 +1175,10 @@ func _on_budget_changed(amount: int) -> void:
 func refresh_topbar() -> void:
 	var wave: int = int(_game_get("wave", 0))
 	var score: int = int(_game_get("score", 0))
-	var budget: int = int(_game_get("forge_budget", 0))
-	_topbar.text = "WAVE %d   —   SCORE %d   —   BUDGET %d" % [wave, score, budget]
+	# Budget display removed (directive A: budget OFF — building is
+	# free). The topbar shows wave + score only; the budget value still
+	# exists in game state for a future re-enable.
+	_topbar.text = "WAVE %d   —   SCORE %d" % [wave, score]
 
 
 # ------------------------------------------------------------ player signals
