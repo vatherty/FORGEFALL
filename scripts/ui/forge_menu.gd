@@ -1099,17 +1099,22 @@ const MOD_LOADER_PATH := "res://scripts/mods/mod_loader.gd"
 
 
 func _build_mods_tab() -> void:
-	var scroll := ScrollContainer.new()
-	scroll.name = "Mods"
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	_tabs.add_child(scroll)
+	# NOTE: NO outer ScrollContainer here (mirrors the creator-menu fix):
+	# a wrapping ScrollContainer sizes this VBox to its content minimum,
+	# which leaves the EXPAND list ScrollContainer at 0px tall — an
+	# invisible list. The mod list itself scrolls (ModsScroll), and this
+	# box is the direct TabContainer child so it gets the full tab area.
+	# The box is named "Mods" (not "ModsBox") so the tab keeps its
+	# existing name/title — verify_v07_b asserts the 6 tab child names.
+	var box := VBoxContainer.new()
+	box.name = "Mods"
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_tabs.add_child(box)
 	_mods_tab_idx = _tabs.get_tab_count() - 1
+	_tabs.set_tab_title(_mods_tab_idx, "Mods")
 	if not _tabs.tab_changed.is_connected(_on_tab_changed):
 		_tabs.tab_changed.connect(_on_tab_changed)
-	var box := VBoxContainer.new()
-	box.name = "ModsBox"
-	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(box)
 	# Where to drop mods (user://mods/ == OS.get_user_data_dir() + "/mods").
 	_mods_path_label = Label.new()
 	_mods_path_label.name = "ModsPathLabel"
@@ -1129,6 +1134,11 @@ func _build_mods_tab() -> void:
 	var hint := Label.new()
 	hint.name = "ModsHintLabel"
 	hint.text = "Drop a mod folder in, then Rescan."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# EXPAND_FILL is REQUIRED (creator-menu fix): without it the HBox
+	# gives this autowrap label its minimum size (1px wide, ~1617px
+	# tall wrapped), rendering one character per line and squeezing
+	# the mod list to 0px tall. It was already present here — kept.
 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	StencilStyle.apply_body(hint, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
 	rescan_row.add_child(hint)
