@@ -381,6 +381,12 @@ func _on_mp_start(map_id: String, mode_id: String, is_host: bool) -> void:
 	_wire_hud()
 	_wire_net_match()
 	state = State.PLAYING
+	# Forge batch: late-join Forge snapshot for peers that connected
+	# before this map loaded (NetManager also snapshots on
+	# peer_connected; this covers the host + already-connected peers).
+	var nm2 := get_node_or_null("/root/NetManager")
+	if nm2 != null and nm2.has_method("forge_request_resync"):
+		nm2.call("forge_request_resync")
 	if is_host:
 		_maybe_host_begin_match()
 
