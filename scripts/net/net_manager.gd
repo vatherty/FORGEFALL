@@ -61,8 +61,16 @@ extends Node
 # All lookups use the node path /root/NetManager.
 
 const NetworkPlayerScript := preload("res://scripts/net/network_player.gd")
+const ForgeSyncScript := preload("res://scripts/net/net_forge_sync.gd")
 
 signal player_joined(peer_id: int, player_name: String)
+# Forge in multiplayer (Forge batch, Worker C): forwarded from NetForgeSync.
+# forge_structure_placed carries a wire entry (no "node"); removed/updated
+# carry the instance id / wire entry. See net_forge_sync.gd for the shape.
+signal forge_structure_placed(entry: Dictionary)
+signal forge_structure_removed(instance_id: int)
+signal forge_structure_updated(entry: Dictionary)
+signal forge_structures_synced(count: int)
 signal player_left(peer_id: int)
 signal connection_failed()
 signal server_disconnected()
@@ -80,6 +88,7 @@ const MAX_DAMAGE_PER_HIT := 200.0
 const MAX_DAMAGE_REQUESTS_PER_SEC := 30
 const KILL_SCORE := 100
 const HEADSHOT_KILL_SCORE := 150
+const MAX_FORGE_REQUESTS_PER_SEC := 10
 
 var is_host: bool = false
 var local_id: int = 0
@@ -102,6 +111,12 @@ var _signals_connected: bool = false
 var _state_seq: int = 0
 var _last_state_seq: Dictionary = {}
 var _damage_request_times: Dictionary = {}
+# Forge sync (Worker C): NetForgeSync node (child "NetForgeSync"), owned
+# here so its _process polling runs whenever the autoload is in the tree.
+# Created lazily via _ensure_forge_sync() — never null after first use.
+var forge_sync: Node = null
+var _forge_request_times: Dictionary = {}
+var _forge_signals_connected: bool = false
 # Optional host spawn provider: Callable() -> Vector3. If unset, the host
 # picks a random node in group "player_spawn", else Vector3(0, 1, 0).
 var spawn_provider: Callable = Callable()
@@ -113,6 +128,152 @@ func is_online() -> bool:
 
 func is_server() -> bool:
 	return is_host
+
+
+func _ready() -> void:
+	_ensure_forge_sync()
+
+
+# --- Forge sync (Worker C) ---------------------------------------------------
+# Host-authoritative placed-structure sync. All Forge RPCs live here (the
+# single-RPC-endpoint rule); the registry/validation/spawn logic lives in
+# NetForgeSync (scripts/net/net_forge_sync.gd). Every forge_* call is a
+# no-op while offline, so single-player Forge is untouched.
+
+func _ensure_forge_sync() -> Node:
+	if forge_sync != null and is_instance_valid(forge_sync):
+		return forge_sync
+	forge_sync = ForgeSyncScript.new()
+	forge_sync.name = "NetForgeSync"
+	if is_inside_tree():
+		add_child(forge_sync)
+	if not _forge_signals_connected:
+		_forge_signals_connected = true
+		forge_sync.connect("structure_placed", _on_forge_placed)
+		forge_sync.connect("structure_removed", _on_forge_removed)
+		forge_sync.connect("structure_updated", _on_forge_updated)
+		forge_sync.connect("local_place_detected", _on_forge_local_place)
+		forge_sync.connect("local_remove_detected", _on_forge_local_remove)
+		forge_sync.connect("local_update_detected", _on_forge_local_update)
+	return forge_sync
+
+
+func _on_forge_placed(entry: Dictionary) -> void:
+	forge_structure_placed.emit(entry)
+
+
+func _on_forge_removed(instance_id: int) -> void:
+	forge_structure_removed.emit(instance_id)
+
+
+func _on_forge_updated(entry: Dictionary) -> void:
+	forge_structure_updated.emit(entry)
+
+
+## Polling detected a local build: host broadcasts, client asks the host.
+func _on_forge_local_place(entry: Dictionary, _node: Node) -> void:
+	if not is_online():
+		return
+	if is_host:
+		_forge_broadcast_place(entry)
+	else:
+		rpc_id(1, "_rpc_forge_request_place",
+			entry.get("spec", {}), entry.get("pos", Vector3.ZERO),
+			entry.get("rot", Vector3.ZERO))
+
+
+## Polling detected a host-side destruction (fracture / undo / TTL).
+func _on_forge_local_remove(instance_id: int) -> void:
+	if is_online() and is_host:
+		rpc("_rpc_forge_remove", instance_id)
+
+
+## Polling detected a host-side transform drift (move/rotate).
+func _on_forge_local_update(entry: Dictionary) -> void:
+	if is_online() and is_host:
+		_forge_broadcast_place(entry, "_rpc_forge_update")
+
+
+func _forge_broadcast_place(entry: Dictionary, method: String = "_rpc_forge_place") -> void:
+	if not is_online():
+		return
+	if method == "_rpc_forge_update":
+		rpc("_rpc_forge_update", entry)
+	else:
+		rpc("_rpc_forge_place", entry)
+
+
+## ForgeManager hook: a build just landed on this peer. Host: register +
+## broadcast. Client: store a provisional + request the host. No-op
+## offline (single-player). Returns the wire entry ({} when ignored).
+func forge_notify_placed(node: Node, spec: Dictionary) -> Dictionary:
+	if not is_online():
+		return {}
+	var sync := _ensure_forge_sync()
+	var entry: Dictionary = sync.call("notify_local_placed", node, spec)
+	if entry.is_empty():
+		return {}
+	if is_host:
+		_forge_broadcast_place(entry)
+	else:
+		rpc_id(1, "_rpc_forge_request_place",
+			entry.get("spec", {}), entry.get("pos", Vector3.ZERO),
+			entry.get("rot", Vector3.ZERO))
+	return entry
+
+
+## Worker B integration: a structure was destroyed (explicit destroy
+## call). Host: remove + broadcast. Client: ask the host. No-op offline.
+func forge_notify_removed(instance_id: int) -> void:
+	if not is_online():
+		return
+	if is_host:
+		if _ensure_forge_sync().call("host_remove", instance_id):
+			rpc("_rpc_forge_remove", instance_id)
+	else:
+		rpc_id(1, "_rpc_forge_request_remove", instance_id)
+
+
+## Worker B integration: a structure was moved / rotated. Host: update +
+## broadcast. Client: ask the host. No-op offline.
+func forge_notify_updated(instance_id: int, world_transform: Transform3D) -> void:
+	if not is_online():
+		return
+	var pos := world_transform.origin
+	var rot := world_transform.basis.get_euler()
+	if is_host:
+		var entry: Dictionary = _ensure_forge_sync().call("host_update", instance_id, pos, rot)
+		if not entry.is_empty():
+			rpc("_rpc_forge_update", entry)
+	else:
+		rpc_id(1, "_rpc_forge_request_update", instance_id, pos, rot)
+
+
+## Current placed structures (wire entries) — for HUD/debug/late-join checks.
+func forge_get_placed() -> Array:
+	return _ensure_forge_sync().call("get_wire_entries")
+
+
+## Ask the host for the full placed-structure list (call after the MP map
+## loads — a snapshot sent at lobby join may arrive before the world
+## exists). No-op offline / on the host.
+func forge_request_resync() -> void:
+	if is_online() and not is_host:
+		rpc_id(1, "_rpc_forge_request_sync")
+
+
+func _forge_rate_limited(peer_id: int) -> bool:
+	var now := Time.get_ticks_msec() / 1000.0
+	var times: Array = _forge_request_times.get(peer_id, [])
+	var kept: Array = []
+	for t in times:
+		if now - float(t) < 1.0:
+			kept.append(t)
+	if kept.size() >= MAX_FORGE_REQUESTS_PER_SEC:
+		return true
+	kept.append(now)
+	_forge_request_times[peer_id] = kept
+	return false
 
 
 # --- lifecycle ------------------------------------------------------------
@@ -168,6 +329,9 @@ func leave() -> void:
 	_local_player = null
 	_last_state_seq.clear()
 	_damage_request_times.clear()
+	_forge_request_times.clear()
+	if forge_sync != null and is_instance_valid(forge_sync):
+		forge_sync.call("clear")
 
 
 func _connect_api_signals() -> void:
@@ -392,6 +556,12 @@ func _on_peer_connected(peer_id: int) -> void:
 	hp_mirror[peer_id] = MAX_HP
 	player_joined.emit(peer_id, str(players[peer_id]["name"]))
 	_broadcast_player_sync()
+	# Late join: send the current placed-structure list to the joiner.
+	# A snapshot sent at lobby join may arrive before the client's map
+	# loads; the client re-requests via forge_request_resync() after map
+	# load (apply_place dedupes by instance_id, so a double send is safe).
+	if forge_sync != null and is_instance_valid(forge_sync):
+		rpc_id(peer_id, "_rpc_forge_sync", forge_sync.call("get_wire_entries"))
 
 
 func _on_peer_disconnected(peer_id: int) -> void:
@@ -593,3 +763,103 @@ func _rpc_state(peer_id: int, seq: int, pos: Vector3, yaw: float, pitch: float,
 			"position": pos, "yaw": yaw, "pitch": pitch,
 			"velocity": vel, "health": hp, "weapon": weapon, "flags": flags,
 		})
+
+
+# --- Forge RPCs (Worker C) ---------------------------------------------------
+# Same sender rules as above: broadcasts accept host (1) only; requests
+# accept any connected peer, host-only resolution, per-peer rate limit.
+# Unknown presets / malformed entries are dropped by NetForgeSync's
+# sanitize_entry — a forged place broadcast can never crash a peer or
+# spawn an unbuildable structure.
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_forge_request_place(spec: Dictionary, pos: Vector3, rot: Vector3) -> void:
+	if not is_host:
+		return  # Only the host assigns instance ids / spawns the host copy.
+	var sender := multiplayer.get_remote_sender_id()
+	if sender <= 0 or not players.has(sender):
+		return
+	if _forge_rate_limited(sender):
+		return
+	if not pos.is_finite() or not rot.is_finite():
+		return
+	var entry: Dictionary = _ensure_forge_sync().call(
+		"host_place", spec, sender, pos, rot, null)
+	if not entry.is_empty():
+		rpc("_rpc_forge_place", entry)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_forge_place(entry: Dictionary) -> void:
+	if multiplayer.get_remote_sender_id() != 1:
+		return  # Only the host may broadcast placements.
+	if is_host:
+		return  # Host already registered its copy in host_place.
+	_ensure_forge_sync().call("apply_place", entry)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_forge_request_remove(instance_id: int) -> void:
+	if not is_host:
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender <= 0 or not players.has(sender):
+		return
+	if _forge_rate_limited(sender):
+		return
+	if _ensure_forge_sync().call("host_remove", instance_id):
+		rpc("_rpc_forge_remove", instance_id)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_forge_remove(instance_id: int) -> void:
+	if multiplayer.get_remote_sender_id() != 1:
+		return  # Only the host may broadcast removals.
+	if is_host:
+		return
+	_ensure_forge_sync().call("apply_remove", instance_id)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_forge_request_update(instance_id: int, pos: Vector3, rot: Vector3) -> void:
+	if not is_host:
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender <= 0 or not players.has(sender):
+		return
+	if _forge_rate_limited(sender):
+		return
+	if not pos.is_finite() or not rot.is_finite():
+		return
+	var entry: Dictionary = _ensure_forge_sync().call("host_update", instance_id, pos, rot)
+	if not entry.is_empty():
+		rpc("_rpc_forge_update", entry)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_forge_update(entry: Dictionary) -> void:
+	if multiplayer.get_remote_sender_id() != 1:
+		return  # Only the host may broadcast updates.
+	if is_host:
+		return
+	_ensure_forge_sync().call("apply_update", entry)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_forge_sync(entries: Array) -> void:
+	if multiplayer.get_remote_sender_id() != 1:
+		return  # Only the host may broadcast the full list.
+	if is_host:
+		return
+	_ensure_forge_sync().call("apply_snapshot", entries)
+	forge_structures_synced.emit(_ensure_forge_sync().call("entry_count"))
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_forge_request_sync() -> void:
+	if not is_host:
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender <= 0 or not players.has(sender):
+		return
+	rpc_id(sender, "_rpc_forge_sync", _ensure_forge_sync().call("get_wire_entries"))
