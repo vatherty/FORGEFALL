@@ -3,8 +3,18 @@
 #   submit_prompt(text) -> busy/cooldown gates -> ForgeLLM.request_spec()
 #   -> refusal check -> STRICT ForgeLLM.validate_modspec (reject, never
 #   repair; the lenient _validate_spec survives for preview/back-compat) ->
-#   Game.spend_budget(cost) -> ForgeBuilder.build(spec, ctx) ->
-#   forge_result(success, message).
+#   [budget gate — OFF while BUDGET_ENABLED = false, directive A] ->
+#   ForgeBuilder.build(spec, ctx) -> forge_result(success, message).
+#   build_from_code(code) runs the same pipeline from a shareable build
+#   code (ForgeLLM.encode/decode_build_code) instead of a prompt.
+#
+# BUDGET (directive A, Colin): building is FREE for now. Costs are still
+# computed (ForgeLLM.recompute_cost) and shown (preview_cost / Forge menu
+# COST line), but they never block a build and nothing is spent or
+# refunded. The spend/refund code paths are NOT deleted — they are gated
+# behind BUDGET_ENABLED below and come back by flipping it to true.
+# The structure cap (12, ForgeBuilder.MAX_STRUCTURES) is a perf guard,
+# not budget, and STAYS enforced.
 #
 # Game is the source of truth for budget; this node only echoes
 # Game.forge_budget_changed as its own budget_changed signal.
@@ -17,6 +27,12 @@ const BUILD_COOLDOWN_SEC := 3.0
 const MAX_VOXEL_AXIS := 12
 const MAX_TTL_SEC := 120.0
 const MAX_PROMPT_CHARS := 500
+## Directive A: Forge budget enforcement. false = building is free —
+## costs are computed + shown but never block, spend, or refund. true =
+## the original behavior returns (spend on build, refund on failure /
+## undo, "Insufficient Forge budget" when short). Flip this one flag;
+## every spend/refund site in this file honors it.
+const BUDGET_ENABLED := false
 #endregion
 
 signal forge_result(success: bool, message: String)
@@ -27,7 +43,7 @@ const DirectorScript := preload("res://scripts/forge/forge_director.gd")
 const VALID_ACTIONS := ["spawn", "modify", "event"]
 const VALID_TARGETS := ["weapon", "cover", "turret", "pickup", "enemy_mod", "killstreak", "arena_event", "structure", "enemy_spawn"]
 const VALID_SHAPES := ["wall", "tower", "barricade"]
-const VALID_STRUCTURES := ["bridge", "bunker", "watchtower", "ammo_depot"]
+const VALID_STRUCTURES := ["bridge", "bunker", "watchtower", "ammo_depot", "stairs", "ramp", "wall", "jump_pad", "cover_piece", "sniper_nest"]
 const VALID_STREAKS := ["uav", "airstrike", "chopper"]
 const VALID_EVENTS := ["smoke", "supply_drop"]
 const HISTORY_CAP := 10
@@ -38,6 +54,12 @@ var _director: Node = null
 var _killstreaks: Killstreaks = null
 ## Submitted prompts, most recent first (cap HISTORY_CAP).
 var _history: Array[String] = []
+## Last SUCCESSFUL build spec (post-validation, cost recomputed) and its
+## shareable build code (ForgeLLM.encode_build_code). Empty until the
+## first successful build. A build-from-code success replaces both, so
+## codes chain: paste -> rebuild -> copy the same code again.
+var _last_spec: Dictionary = {}
+var _last_build_code: String = ""
 ## One level of undo: {cost: int, node: Node, label: String, structural: bool}.
 ## structural=true means a node exists that undo removes; false means the
 ## effect already happened (weapon/killstreak/event) and undo only refunds.
@@ -112,7 +134,9 @@ func preview_cost(prompt: String) -> Dictionary:
 
 
 ## One level of undo: removes the last Forge-built structure (or, for
-## effect-only actions, just refunds) and refunds the exact cost charged.
+## effect-only actions, just refunds when BUDGET_ENABLED) and refunds
+## the exact cost charged. With budget OFF there is nothing to refund,
+## so the messages say so and refund is 0.
 ## {ok: bool, message: String, refund: int}.
 func undo_last() -> Dictionary:
 	if not _undo_valid:
@@ -123,25 +147,98 @@ func undo_last() -> Dictionary:
 	var node: Node = _undo.get("node")
 	_undo = {}
 	_undo_valid = false
+	# The refund is the amount actually spent: cost when budget is ON,
+	# 0 when OFF (building was free — nothing to give back).
+	var refund := cost if BUDGET_ENABLED else 0
 	if structural:
 		if node == null or not is_instance_valid(node):
 			return {"ok": false, "message": "Nothing to undo — the last build is already gone.", "refund": 0}
 		node.queue_free()
-		if cost > 0:
-			Game.grant_budget(cost)
+		if refund > 0:
+			Game.grant_budget(refund)
 		Sfx.play_2d("forge_fail")
-		forge_result.emit(true, "Undid: %s (refunded %d budget)." % [label, cost])
-		return {"ok": true, "message": "Undid: %s (refunded %d budget)." % [label, cost], "refund": cost}
-	if cost > 0:
-		Game.grant_budget(cost)
+		var msg := "Undid: %s." % label if not BUDGET_ENABLED else "Undid: %s (refunded %d budget)." % [label, refund]
+		forge_result.emit(true, msg)
+		return {"ok": true, "message": msg, "refund": refund}
+	if refund > 0:
+		Game.grant_budget(refund)
 	Sfx.play_2d("forge_fail")
-	forge_result.emit(true, "Undid: %s (refunded %d budget — the effect itself stands)." % [label, cost])
-	return {"ok": true, "message": "Undid: %s (refunded %d budget — the effect itself stands)." % [label, cost], "refund": cost}
+	var msg2 := "Undid: %s (the effect itself stands)." % label if not BUDGET_ENABLED else "Undid: %s (refunded %d budget — the effect itself stands)." % [label, refund]
+	forge_result.emit(true, msg2)
+	return {"ok": true, "message": msg2, "refund": refund}
 
 
 ## Recent submitted prompts, most recent first (cap ~10).
 func get_history() -> Array[String]:
 	return _history.duplicate()
+
+
+## History filtered by text (case-insensitive substring). "" = all.
+func search_history(query: String) -> Array[String]:
+	var q := query.strip_edges().to_lower()
+	if q.is_empty():
+		return get_history()
+	var out: Array[String] = []
+	for entry in _history:
+		if entry.to_lower().contains(q):
+			out.append(entry)
+	return out
+
+
+## Shareable code for the last successful build ("" until the first
+## successful build). Copy it, send it to a friend, paste it back via
+## build_from_code() to rebuild the identical spec.
+func get_last_build_code() -> String:
+	return _last_build_code
+
+
+## Rebuilds the spec encoded in a build code (see
+## ForgeLLM.encode/decode_build_code). Same busy/cooldown gates as
+## submit_prompt, same validation as a fresh prompt (a pasted code is
+## untrusted input: validate_modspec rejects anything outside the
+## catalog). Does NOT add the code itself to prompt history.
+func build_from_code(code: String) -> void:
+	var trimmed := code.strip_edges()
+	if trimmed.is_empty():
+		Sfx.play_2d("forge_fail")
+		forge_result.emit(false, "Paste a build code first.")
+		return
+	if _busy:
+		Sfx.play_2d("forge_fail")
+		forge_result.emit(false, "Forge is already fabricating — one requisition at a time.")
+		return
+	var remaining := cooldown_remaining()
+	if remaining > 0.0:
+		Sfx.play_2d("forge_fail")
+		forge_result.emit(false, "Forge cooling down: %.1fs." % remaining)
+		return
+	var spec := ForgeLLM.decode_build_code(trimmed)
+	if spec.is_empty():
+		Sfx.play_2d("forge_fail")
+		forge_result.emit(false, "That build code didn't decode — check it and try again.")
+		return
+	_busy = true
+	Sfx.play_2d("ui_click")
+	_execute_spec(spec)
+
+
+## Direct spec build (Forge batch, ghost placement): same gates +
+## strict validation + history + MP-sync as the prompt path, but the
+## caller supplies the full spec (e.g. a ghost-confirmed position).
+## Callers do NOT set _busy — this entry owns the busy/cooldown gates.
+func build_spec_direct(spec: Dictionary) -> void:
+	if _busy:
+		Sfx.play_2d("forge_fail")
+		forge_result.emit(false, "Forge is already fabricating — one requisition at a time.")
+		return
+	var remaining := cooldown_remaining()
+	if remaining > 0.0:
+		Sfx.play_2d("forge_fail")
+		forge_result.emit(false, "Forge cooling down: %.1fs." % remaining)
+		return
+	_busy = true
+	Sfx.play_2d("ui_click")
+	_execute_spec(spec)
 
 
 func _on_forge_budget_changed(amount: int) -> void:
@@ -175,6 +272,14 @@ func _run_pipeline(prompt: String) -> void:
 		Sfx.play_2d("forge_fail")
 		forge_result.emit(false, ForgeLLM.refusal_message(spec))
 		return
+	_execute_spec(spec)
+
+
+## Shared tail of the pipeline (prompt path + build-code path): strict
+## gate -> [budget gate, OFF while BUDGET_ENABLED = false] -> build ->
+## undo record + last-build code. Callers set _busy = true first;
+## every exit here clears it.
+func _execute_spec(spec: Dictionary) -> void:
 	# v0.6 STRICT gate: LLM/fallback specs are REJECTED, never repaired.
 	# _validate_spec (lenient clamp/correct) stays for preview_cost and
 	# back-compat only; the pipeline enforces the fixed catalog exactly.
@@ -193,7 +298,10 @@ func _run_pipeline(prompt: String) -> void:
 		forge_result.emit(false, "Forge rejected the spec: %s." % str(_legacy[1]))
 		return
 	var cost := int(spec.get("cost", 0))
-	if not Game.spend_budget(cost):
+	# Directive A: with BUDGET_ENABLED = false this gate is skipped
+	# entirely — a build is never blocked for cost. With it true, the
+	# original spend-or-deny behavior returns.
+	if BUDGET_ENABLED and not Game.spend_budget(cost):
 		_busy = false
 		Sfx.play_2d("forge_fail")
 		forge_result.emit(false, "Insufficient Forge budget — need %d, have %d." % [cost, get_budget()])
@@ -202,12 +310,28 @@ func _run_pipeline(prompt: String) -> void:
 	var message: String = ForgeBuilder.build(spec, _build_ctx())
 	_busy = false
 	if message.begins_with(ForgeBuilder.FAIL_PREFIX):
-		Game.grant_budget(cost)
+		# A failed build refunds what was spent — which is nothing while
+		# budget is OFF, so the refund is gated the same way.
+		if BUDGET_ENABLED:
+			Game.grant_budget(cost)
 		Sfx.play_2d("forge_fail")
 		forge_result.emit(false, message.trim_prefix(ForgeBuilder.FAIL_PREFIX))
 		return
+	# Forge batch (Worker C, MP Forge sync): ONE hook — notify NetManager
+	# of the placed structure. After the FAIL check, so failed builds
+	# never sync. Guarded + duck-typed: no-op in single-player (NetManager
+	# offline) and when there is no NetManager. Sets no budget / placement
+	# state; SP behavior is unchanged.
+	var _nm := get_node_or_null("/root/NetManager")
+	if _nm != null and _nm.has_method("forge_notify_placed"):
+		_nm.call("forge_notify_placed", ForgeBuilder.last_built_node, spec)
+	# Success: remember the spec + its shareable build code (the code
+	# encodes the post-validation spec, cost recomputed).
+	_last_spec = spec.duplicate(true)
+	_last_build_code = ForgeLLM.encode_build_code(spec)
 	# Record the one undo slot: structural builds (cover/structure/turret/
-	# pickup) carry their node for removal; everything else refunds only.
+	# pickup) carry their node for removal; everything else refunds only
+	# (when budget is ON — with it OFF there is nothing to refund).
 	var target := str(spec.get("target", ""))
 	var structural := target in ["cover", "structure", "turret", "pickup"]
 	_undo = {
