@@ -39,6 +39,8 @@ var _viewport: SubViewport
 var _room_root: Node3D
 var _dummies: Array = []
 var _projectile: Node3D
+var _weapon_visual: Node3D
+var _candidate_label: Label
 var _result_label: Label
 var _fire_button: Button
 var _animating := false
@@ -145,6 +147,13 @@ func _build() -> void:
 	head.text = "SANDBOX TEST"
 	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(head)
+	_candidate_label = Label.new()
+	_candidate_label.name = "SandboxCandidate"
+	_candidate_label.text = ""
+	_candidate_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	StencilStyle.apply_body(_candidate_label, 18, StencilStyle.TEXT, 2)
+	_candidate_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(_candidate_label)
 	var hint := Label.new()
 	hint.name = "SandboxHint"
 	hint.text = "Flat test room — nothing here touches your real mods or progression."
@@ -198,14 +207,21 @@ func _build() -> void:
 	row.add_child(close)
 
 
-## Opens the sandbox for a candidate + its generated asset.
-## `behavior` is the creator menu's {"projectile", "explodes_on_impact"}.
-func open(candidate: Dictionary, asset: Dictionary, behavior: Dictionary) -> void:
+## Opens the sandbox for a candidate + its assets.
+## `asset` is the PROJECTILE asset (what flies at the dummy);
+## `weapon_asset` (optional) is the candidate's weapon visual, shown
+## static at the shooter so the test shows BOTH the weapon and what it
+## fires. `behavior` is the creator menu's {"projectile",
+## "explodes_on_impact"}. Existing 3-arg callers keep working.
+func open(candidate: Dictionary, asset: Dictionary, behavior: Dictionary, weapon_asset: Dictionary = {}) -> void:
 	_candidate = candidate
 	_asset = asset
 	_behavior = behavior
 	_result = {}
 	_animating = false
+	_weapon_visual = null
+	if _candidate_label != null:
+		_candidate_label.text = str(candidate.get("name", ""))
 	if _viewport == null:
 		return
 	for child in _viewport.get_children():
@@ -219,12 +235,27 @@ func open(candidate: Dictionary, asset: Dictionary, behavior: Dictionary) -> voi
 	_projectile = VoxelAssetGenerator.build_node_for_asset(asset)
 	_projectile.position = SHOOTER_POS
 	_room_root.add_child(_projectile)
+	if not weapon_asset.is_empty():
+		_weapon_visual = VoxelAssetGenerator.build_node_for_asset(weapon_asset)
+		_weapon_visual.position = SHOOTER_POS + Vector3(0.9, 0.3, 0.4)
+		_weapon_visual.scale = Vector3.ONE * 0.5
+		_room_root.add_child(_weapon_visual)
 	_projectile_pos = SHOOTER_POS
 	_target_pos = DUMMY0_POS
 	if _result_label != null:
 		_result_label.text = "Ready — tap FIRE TEST SHOT."
 	if _fire_button != null:
 		_fire_button.disabled = false
+
+
+## The flying projectile node (null before open / when headless).
+func get_projectile() -> Node3D:
+	return _projectile
+
+
+## The static weapon-visual node (null when no weapon asset passed).
+func get_weapon_visual() -> Node3D:
+	return _weapon_visual
 
 
 func get_last_result() -> Dictionary:
