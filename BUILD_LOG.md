@@ -1,5 +1,60 @@
 # FORGEFALL — Build Log
 
+## v0.5.1 — FORGE BATCH: budget off, ghost preview, destructible structures, MP Forge, per-weapon costs, new presets, build codes, Create-a-Mod widget, voice v2 (2026-10-15)
+
+### Shipped (Forge batch items 1–9 + directives A–D; item 10 Quick Forge SKIPPED per Colin)
+- **A. Budget OFF:** Forge building is free. `ForgeManager.BUDGET_ENABLED = false`; costs still computed + shown (needed for item 5 + future re-enable), never enforced. Structure cap 12 STAYS (perf guard). Budget UI hidden: Forge menu budget label + HUD budget label (hidden, still wired) + topbar BUDGET + "budget is real" / "spend budget" announcements removed.
+- **B. Create-a-Mod is its own MAIN-MENU widget:** main-menu CREATE A MOD button (after STATS) opens `ModCreatorMenu` (NEW `scenes/ui/mod_creator_menu.tscn` + `scripts/ui/mod_creator_menu.gd`): tabs CREATE / MODS / IMPORT/EXPORT. IMPORT/EXPORT is placeholder/disabled only (note + two disabled buttons, nothing wired). Old Create Mod panel REMOVED from the Forge menu's Mods tab (one create flow, no duplicates); Forge Mods tab keeps list/enable/disable/Rescan.
+- **C. CREATE tab = structured form:** multi-choice CATEGORY checkboxes (Weapon, Block/Structure, Enemy, Effect, Gameplay) + NAME + VISUAL DESCRIPTION + LOGIC. `compose_prompt()` feeds the EXISTING generation → strict validation → approval (summary + FULL payload → Install/Discard/Regenerate) pipeline.
+- **D. Voxel asset generation + cache:** NEW `scripts/mods/voxel_asset_generator.gd` — local keyword-driven procedural voxel builder, no downloads. Watermelon = bespoke (green striped rind, red interior, black seeds); everything else = shape × colour × pattern, generic blob fallback. Cache keyed by sha256 of normalized description in `user://mods/assets/<sha256>.json`; approval shows voxel count + HIT/MISS. Generated mods wire the custom projectile visual + logic behaviour through the existing validated mod path.
+- **1. Aliases:** offline parser resolves "burst rifle"/"trident"/"burst"/"3-round" → trident (br3), "judge"/"revolver"/"heavy revolver"/"six-shooter" → judge (hv44), multi-word mod names offline (single-word mod names deliberately don't match offline — e.g. mod "wall" would hijack base prompts; reachable via LLM catalog).
+- **2. Ghost preview + edit placed structures:** structure prompts (offline parse) show a translucent ghost (valid green-ish / invalid red-ish, no live collision, never joins `forge_structure`) — INTERACT confirms (build goes through `ForgeManager.build_spec_direct` → history + MP sync + undo), ESC cancels + reopens menu. Forge menu PLACED STRUCTURES list (group `forge_structure`): MOVE (ghost move-preview) / ROTATE 45° / REPAIR / DELETE. `ForgePlacement` gains `_input` (interact/ui_cancel, marks handled), `preview_confirm_requested` / `preview_confirmed` / `preview_cancelled` signals, hint label (CanvasLayer), `start_move_preview()`.
+- **3. Destructible Forge structures:** NEW `scripts/forge/forge_structure.gd` (live HP, `take_damage()`, flash + crack cubes + low-HP <35% smoke, destroy-at-0 with DebrisPool burst, `repair()/repair_full()`, F/Y interact repair within 3.2 m) + NEW `scripts/forge/forge_enemy_pressure.gd` (enemies damage structures without touching enemy code: every 0.9 s, ≤1 engaged enemy within 20 m with LOS lands one hit for its own damage × director `dmg_mult`). HP table: bunker 600 > wall 400 > sniper nest 350 > bridge/ammo depot 300 > stairs/ramp 250 > cover piece/jump pad 200; reinforced ×1.5.
+- **4. Forge in multiplayer:** NEW `scripts/net/net_forge_sync.gd` + RPCs in `scripts/net/net_manager.gd` (single-RPC-endpoint rule). Host-authoritative: host validates + assigns instance ids + broadcasts; clients send requests. Events `{instance_id, preset_id, owner, pos, rot, spec}`; presets `cover:*`, `structure:<all 10 shapes>`, `turret`, `pickup:*`, `mod:<block_id>`. Provisional client placement → host echo adopts (no duplicate); destroy/move/rotate sync; late-join snapshot on `peer_connected` + `forge_request_resync()` after MP map load in `Main._on_mp_start`. Robustness: unknown presets / malformed entries (NaN, negative id, out-of-arena, spec mismatch) ignored, never crash; forged broadcasts (sender ≠ 1) ignored; requests host-only + rate-limited (10/s); duplicates dedupe; removals idempotent. Known by-design divergence: cover HP is per-node local (client-side fracture doesn't destroy the host's copy until the host's copy also breaks).
+- **5. Real per-weapon Forge costs:** flat 200 killed. `ForgeLLM.weapon_cost()` = `clamp(round5(75 + sqrt(dmg×pellets×rpm×mag)/4 + dmg×pellets), 100, 350)`: manticore 280, longeye 235, breacher 220, hornet 270, p9 180, raptor 150 (fixed utility), lmg 350 (clamped), trident 310, judge 200 — all distinct, computed + shown, enforcement OFF per A. `Tuning.FORGE_COST_WEAPON` kept with a deprecation comment (zero-risk vs deleting).
+- **6. More Build presets:** stairs, ramps, walls, jump pads (NEW `scripts/forge/forge_jump_pad.gd`: 12.5 m/s vertical, ~3.9 m apex, +3.5 m/s forward, 0.4 s retrigger cooldown), cover pieces, sniper nests — 10 structure shapes total in builder/parser/validator/SYSTEM_PROMPT/BLOCK SCHEMA. Costs: stairs 100, ramp 90, wall 120, jump pad 150, cover piece 60, sniper nest 220.
+- **7. Shareable build codes:** `FORGE1-` + base64url(JSON of ModSpec); `encode/decode_build_code()` pure (garbage → `{}`, integral floats → ints); decoded specs never trusted (manager re-validates). Forge menu: history-search field + build-code row (paste + BUILD FROM CODE + COPY LAST CODE).
+- **8. Create Mod: sandbox test before install:** NEW `scenes/ui/sandbox_test_room.tscn` + `scripts/ui/sandbox_test_room.gd` — flat voxel room, 2 dummies, candidate's generated voxel visual as projectile; TEST IN SANDBOX → FIRE TEST SHOT → impact flash + dummy topples + HIT/explosion result. Install stays available regardless. Sandbox NEVER executes the candidate script (simulates declared behaviour) and NEVER writes to the mod list or progression.
+- **9. Voice forging v2:** `scripts/android/speech_input.gd` rewritten, same public contract. State machine IDLE → PERMISSION_PENDING → LISTENING → CONFIRMING → IDLE. Recognized transcript waits in CONFIRMING with a modal prompt (heard text + CONFIRM / RETRY / CANCEL + TYPE INSTEAD) — NO Forge action fires without confirmation. Push-to-talk: `end_ptt()` arms confirm, sends nothing; listening banner shows live countdown to visible 12 s timeout; tap-MIC-again while LISTENING cancels; every exit returns to IDLE; stale `_session_active` guard ignores late `onResult`. Deferred: true recognizer-level `stopListening()` — ForgeSpeech exposes only `startListening()` + `onResult()`; cancel/timeout/release close the session GDScript-side and the stale guard ignores the late result; the CONFIRM step makes this safe. Adding `stopListening()` is a small Java addition + AAR rebuild — plugin follow-up.
+
+### Coordinator integration (this entry's author)
+- `forge_llm.gd`: offline parser split for the 6 new shapes (sniper nest FIRST — contains "tower"; ramp split from bridge; jump pad / cover piece / stairs; "cover wall" phrase → cover wall before bare "wall"; bare "wall" → structure wall per F's expectation); `_is_int_in` accepts integral floats (JSON parses all numbers as float — the live LLM path was rejecting valid cover/enemy_spawn specs); `_base_cost` + `_validate_params` + SYSTEM_PROMPT + BLOCK SCHEMA extended to all 10 shapes; weapon `base_weapon_id` list += trident|judge; `BASE_WEAPON_IDS` in `mod_loader.gd` += trident|judge.
+- `forge_manager.gd`: `VALID_STRUCTURES` → all 10; `build_spec_direct(spec)` (busy/cooldown gates → shared `_execute_spec` tail).
+- `forge_menu.gd`: `_submit_prompt` ghost interception (offline parse → structure → ghost; non-structure keeps instant path); PLACED STRUCTURES section + handlers; 5 new Build presets.
+- `hud.gd`: budget UI hidden (see A above).
+- `mod_loader.gd`: `scan_mods()` skips the `assets` cache dir (it appeared as a broken mod entry — missing manifest — in the Forge Mods tab; D's MODS tab filtered it).
+- `main_menu.gd`: short-screen tightening for the 8-button stack (title factor 0.095→0.075 + separation 1→0 on vp.y < 900; stack min 827→789 at 1280×800; buttons are floored at 56px by theme, so the win came from title + gaps).
+- `main.gd`: `NetManager.forge_request_resync()` after MP map load.
+- Test-suite updates: `verify_forge_batch.gd` voice section drives the REAL SpeechInput path (`test_start_session` + `simulate_transcript` + button presses + interact event into the placement node — calling `_on_voice_text` directly bypasses confirm by design); `verify_v08_create.gd` drives the new `ModCreatorMenu` (form fields + GenerateButton + CheckButton categories + ImportExport placeholder; `_list_recursive` skips the voxel cache dir; the old `_menu.call("open")` HUNG the run — `ModCreatorMenu` has no `open()` and `call()` on a nonexistent method stalls the SceneTree script; fixed by not calling it); re-baselined `verify_v05_b2_forge_backend.gd` (sniper 200→235, wall → structure wall 120 / cover wall 100, budget OFF charge/refund 0, weapon given as arsenal id `lr8`, stale ramp→bridge duplicate removed) + `verify_v062.gd` (LMG+sniper 250→400, manticore+buckshot 250→330, longeye 200→235).
+
+### Verification
+- `verify_forge_batch`: **143/143 ALL PASS** (budget-off 4, aliases 9, ghost-edit 18, destructible 7, mp-sync 9, per-weapon-costs 4, presets 41, build-codes 13, creator 24, voice-confirm 10, setup 4).
+- `verify_v08_create`: **74/74 ALL PASS** (0 skipped).
+- `verify_v05_b2_forge_backend`: **104/104 PASS**. `verify_v062`: **ALL PASS**.
+- `verify_menu_layout`: **1060 passed, 0 failed** (was 1057/3 at 1280×800 before the title/gap fix).
+- Regressions ALL PASS: verify_fixes, verify_v06_movement, verify_feel (83/0), verify_sound (725/0, 8 warnings), verify_content (495/0), verify_updater_pc (65/0), verify_multiplayer (180/0, 7 needs-device), verify_portals (ALL), verify_progression, verify_linux, verify_windows (48/48). 900-frame smoke clean, exit 0. `check_scripts`: 148 checked, 4 failed — all known pre-existing `android/build/` scaffolding files.
+- Android APK: apksigner OK (v2+v3 true), aapt com.sparky.forgefall versionCode 27 / 0.5.1, manifest UpdateStatusReceiver + ForgeUpdater + ForgeSpeech meta-data + REQUEST_INSTALL_PACKAGES + RECORD_AUDIO, classes2.dex = stock XRMode (1960 B), classes14 = ForgeUpdaterPlugin + UpdateStatusReceiver, classes15 = ForgeSpeechPlugin. Linux binary headless --quit-after 120, exit 0. Windows PCK probe: all 10 Forge-batch files present + loadable.
+
+### Version bump
+- `export_presets.cfg`: `version/code=27`, `version/name="0.5.1"`; Windows preset export_path → `windows_staging/forgefall-v0.5.1-windows/`.
+- `scripts/core/tuning.gd`: `FALLBACK_VERSION_CODE := 27`.
+
+### Builds (all from the same current source)
+- **Android** `updates/forgefall-v0.5.1-debug.apk` (30,790,040 bytes, SHA-256 `62c0a6e7eca6dfbcc083626f7c58509794259af3d5c729a633e788c0a485ba3b`) + `.idsig`. Godot 4.7.2 headless `--export-debug "Android"`, unchanged custom template (Godot signs + emits the .idsig).
+- **Linux** `linux_staging/forgefall-v0.5.1-linux.zip` (29,882,908 bytes, SHA-256 `86bd7d414fa65e233f9ff4b08d864987a68eab5a3f97968b400a2f5211a741a6`): binary + forgefall.pck + forgefall.sh + README-LINUX.txt (0.5.0 → 0.5.1, + FORGE BATCH section, renumber note dropped).
+- **Windows** `windows_staging/forgefall-v0.5.1-windows.zip` (36,810,423 bytes, SHA-256 `da5a6adb91ea25975e32d49d777e0f8c3953e72abfad1cb8035929498cb9e2c5`): forgefall.exe + forgefall.console.exe + forgefall.pck + README-WINDOWS.txt (0.5.0 → 0.5.1, + FORGE BATCH section).
+
+### Publish
+- **GitHub Release** [v0.5.1](https://github.com/vatherty/FORGEFALL/releases/tag/v0.5.1) in `vatherty/FORGEFALL` — all 3 artifacts attached, all `uploaded`, sizes match local builds. Helper extended: `github.py` gains `release-create` (POST /releases); also fixed two helper bugs found during publish — `pages-enable` had no handler (silently did nothing) and `release-upload` ended with a stray Pages POST after every asset upload (removed; likely contributor to the `errored` state).
+- **Pages** (`vatherty/Forgefall-updates`): binaries uploaded first, then `version.json` + `version_pc.json` (0.5.1 / code 27) + `index.html` (0.5.1 links; also fixed the stale "no native gamepad bindings" Deck line → native gamepad). Transient `errored` Pages state after upload (known pattern): re-applied pages-enable (409 = already enabled) + ~2.5 min wait → `built`. Live verified: manifests 200 (0.5.1/code 27), all three artifacts 206, index.html with 0.5.1 links, downloaded APK sha256 matches the local build hash. `.nojekyll` verified still present (empty). Old v0.5.0 files stay as unlisted archive.
+- Local `updates/` mirror synced (new index.html + version.json + version_pc.json + APK).
+
+### Deferred / follow-ups (not in this batch's scope)
+- Import/Export tab (placeholder by design). True recognizer-level `stopListening()` (needs Java/AAR change — plugin follow-up). Per-weapon accuracy, Raptor shots/hits not counted, exit-area blockage check for portals, portals on moving platforms, no download-resume for the updaters, co-op waves, host migration, late join, per-weapon puppet viewmodels, per-surface footsteps, chopper sting, portal hum loop, jump takeoff sound, barrel explosion hook, Domination hand-tuned points, boss HP bar, title/emblem/camo equip UI (Colin: playtest first).
+- Needs Colin's on-device verdict: creator form feel, watermelon LMG in-game, ghost preview, MP Forge sync (incl. real two-device ENet), voice confirm (confirm-prompt layout on S23, banner readability, recognizer latency, hold-to-talk feel, permission flow), creator layout/touch on S23, sandbox feel, real-LLM watermelon-LMG quality, ghost tint readability, 1280×800 layout on Deck.
+- The old Netlify site remains untouched serving v0.7.0. Colin's installed v0.7.0 polls Netlify, so getting onto the GitHub track still requires one manual Android install from the Pages/Release link. Installation has **not been confirmed**.
+
+
 ## v0.5.0 — RENUMBER: public open-source release (2026-10-15)
 
 - **Renumber, display name only:** the release previously called v0.9.5 is now **v0.5.0**. `export_presets.cfg` `version/name` 0.9.5 → 0.5.0 and the Windows `export_path` `forgefall-v0.9.5-windows` → `forgefall-v0.5.0-windows`; `tools/verify_updater_pc.gd` manifest expectations 0.9.5 → 0.5.0 (name + Windows/Linux zip URL suffixes). **Version code UNCHANGED: `version/code=26`, `Tuning.FALLBACK_VERSION_CODE := 26`.** The code is what the in-game updater compares — resetting it would brick updates for existing installs (a device on code 26 would see a lower code as "newer"). Older BUILD_LOG entries below keep their historical 0.9.x names; they describe past releases, not the current one.
@@ -1666,3 +1721,698 @@ sections green, 900-frame smoke clean (exit 0, 0 script errors).
   index.html 200 with 0.5.0 + Releases link, no old-version list; v0.9.5
   trio 404; repo tree has zero 0.9.5-named files, .nojekyll present;
   downloaded APK SHA-256 matches the local build hash.
+
+## Forge batch — item 9: VOICE FORGING V2 (Worker E) — 2026-10-15 ~13:55 MDT
+
+### What
+Two improvements to the MIC / ForgeSpeech voice path, same plugin, same
+permission flow, no engine change:
+(a) CONFIRMATION before acting: a recognized transcript NEVER reaches the
+listen() callback (and therefore never reaches Forge) until the player
+confirms it. The transcript lands in a CONFIRMING state with a modal
+prompt — the heard text plus CONFIRM / RETRY / CANCEL and a TYPE INSTEAD
+button. CONFIRM delivers, RETRY re-listens, CANCEL discards, TYPE INSTEAD
+discards + opens the typed fallback. Matters more now that budget is off:
+a misheard prompt could otherwise spam structures with no cost gate.
+(b) SMOOTHER PUSH-TO-TALK: state machine IDLE -> PERMISSION_PENDING ->
+LISTENING -> CONFIRMING -> IDLE. Listening banner shows a live countdown
+to the visible 12s timeout. Tap MIC again while LISTENING cancels.
+end_ptt() on button release arms the confirm step — nothing is sent on
+release; the transcript still waits for CONFIRM. Every exit (confirm /
+retry / cancel / error / timeout / permission denial) returns to IDLE;
+no stuck-listening state. Typed fallback one tap away in every state:
+listening banner says "tap MIC again to cancel" (then type), CONFIRMING
+has TYPE INSTEAD, the Forge menu always shows its prompt field, and the
+error path still auto-opens the typed console (v0.5.1 floor).
+
+### Files (Worker E only — forge_menu.gd untouched, no backend/parser/
+### history/budget/placement/net/mod-creator/verification-tool changes)
+- `scripts/android/speech_input.gd` (rewritten, same public contract):
+  State enum + `state_changed` signal + `get_state_name()` /
+  `is_listening_session()` / `is_confirm_open()` / `listening_time_left()`;
+  `listen()` now sessions + tap-again-to-cancel while LISTENING, ignored
+  while CONFIRMING/PERMISSION_PENDING; new `end_ptt()`, `cancel_session()`,
+  `confirm_pending()`, `retry_pending()`, `cancel_pending()`,
+  `type_instead_pending()`; `_on_plugin_result` session path (gated) +
+  legacy direct-injection path preserved (callback set with no session
+  still forwards directly — keeps the v0.6.0 verifier green);
+  `_session_active` stale guard (late onResult after cancel/timeout is
+  a no-op); `_on_listen_timeout()` + `_process` countdown;
+  confirm/listening overlays as plain Controls under this node (no
+  CanvasLayer), so hiding the Forge menu / touch layer hides them too;
+  confirm overlay is modal (full-screen STOP dim), listening banner is
+  visual-only (mouse_filter IGNORE) so touches keep reaching the game
+  while holding MIC. Test seam: `test_start_session()` /
+  `simulate_transcript()` / `simulate_error()` / `simulate_timeout()`
+  (production never calls these; they drive the real handlers).
+- `scripts/android/touch_controls.gd` (voice handling only, 3 spots):
+  `_input()` gates manual dispatch while the voice confirm prompt is
+  open (`_voice_confirm_open()` -> `is_confirm_open()`), or taps on
+  CONFIRM/RETRY/CANCEL would also fire game buttons underneath (the
+  manual dispatcher does not respect Control mouse_filter); MIC release
+  calls `end_ptt()`; `_on_voice_text` comment notes the text is
+  CONFIRMED. The `_speech.listen(_on_voice_text)` call is unchanged.
+- No plugin change: ForgeSpeech still exposes startListening() +
+  onResult() only; the plugin Java + AARs are untouched.
+
+### Verification (headless, Godot 4.7.2)
+- Scratch verifier `/tmp/verify_voice_v2.gd` (kept out of tools/ —
+  Worker F owns verification tools): 55/55 PASS. Covers: transcript
+  held in CONFIRMING with zero callback before CONFIRM; CONFIRM
+  delivers exactly once; RETRY re-listens; CANCEL / cancel_session /
+  TYPE INSTEAD discard with no delivery; error -> IDLE + toast +
+  console; timeout -> IDLE + "timed out" toast + no delivery;
+  _process past 12s expires; late results after cancel/timeout
+  ignored; release sends nothing, transcript still needs CONFIRM;
+  listen() while LISTENING cancels, while CONFIRMING ignored;
+  terminal actions from IDLE are safe no-ops; legacy direct-injection
+  path still forwards; touch wiring strings present.
+- Existing suites: `tools/verify_v06_mic.gd` 53/53 PASS, exit 0.
+  `tools/check_scripts.gd`: 136 checked, 4 failed — all the known
+  pre-existing `android/build/` scaffolding files, none in Worker E
+  files. No publish, no version bump, no platform-artifact rebuild.
+
+### Deferred (with reason)
+- True recognizer-level stop/cancel: ForgeSpeech has NO stopListening()
+  method, so cancel / timeout / release cannot kill the Android
+  recognizer mid-utterance — the session closes GDScript-side and the
+  stale guard ignores the late onResult. The recognizer self-terminates
+  on end-of-speech/silence/error per Android. The CONFIRM step makes
+  this safe (a stale transcript attributed to a fresh session is still
+  shown for Retry/Cancel before anything is built). Adding
+  stopListening() is a small Java addition + AAR rebuild — deferred to
+  avoid touching the shipped AAR mid-batch; the coordinator can
+  schedule it as plugin follow-up.
+- On-device QA (Colin): confirm-prompt layout on his S23, banner
+  readability, real recognizer latency, and the hold-to-talk feel.
+  Headless verification proves the state machine + gating, not the
+  on-device UX.
+
+## Forge batch — Worker D: Mod Creator redesign (B, C, D + item 8) — 2026-10-15 ~14:00 MDT
+
+### What landed (code + verification notes only — no publish, no version bump, no platform-artifact rebuild)
+- **B. CREATE-A-MOD is its own main-menu widget.** `scripts/ui/main_menu.gd`
+  (ONE addition): a CREATE A MOD button (after STATS) + `_on_create_mod()` /
+  `_on_creator_menu_closed()` that opens the new menu scene and frees it on
+  close. The menu is `scenes/ui/mod_creator_menu.tscn` +
+  `scripts/ui/mod_creator_menu.gd` (class `ModCreatorMenu`) with three tabs:
+  CREATE / MODS / IMPORT/EXPORT. IMPORT/EXPORT is a PLACEHOLDER/DISABLED tab
+  only — note label + two disabled buttons, zero functionality, nothing wired.
+  The MODS tab shows the SAME installed-mods list as the Forge menu
+  (ModLoader.get_mods() directly — no second list): list / enable / disable /
+  Rescan. The old Create Mod panel + approval panel + all wiring were REMOVED
+  from `scripts/ui/forge_menu.gd` (414 lines, anchor-based deletion — the
+  file had grown ~129 lines mid-task from another worker's concurrent
+  additions (history search, code-build input); those were preserved and
+  verified intact). The Forge menu's Mods tab keeps list/enable/disable/Rescan.
+- **C. CREATE tab = structured form, not one text box.** Multi-choice
+  CATEGORIES checkboxes (Weapon, Block/Structure, Enemy, Effect, Gameplay —
+  a mod can be several at once) + NAME + VISUAL DESCRIPTION + LOGIC. GENERATE
+  composes ONE stable prompt (`ModCreatorMenu.compose_prompt()`: fixed section
+  order + fixed technical notes) and feeds the EXISTING generation -> strict
+  validation -> approval pipeline (ModCreator, untouched): summary + FULL
+  payload -> Install / Discard / Regenerate. The technical notes steer the
+  model to the existing validated path (custom visuals via
+  api.spawn_voxel_box, impact explosions via api.fire_effect("explosion",
+  ...), ModAPI only, no forbidden code).
+- **D. Voxel asset generation + cache.** NEW `scripts/mods/voxel_asset_generator.gd`
+  (class `VoxelAssetGenerator`): keyword-driven PROCEDURAL voxel builder, local
+  and self-contained — no external downloads. Watermelon gets a bespoke
+  builder (green striped rind shell, red interior, black seeds); everything
+  else is shape keywords (sphere/cube/cone/star/cylinder/disc/blade, else a
+  rounded blob) x colour keywords x pattern keywords (stripes/checker/spots),
+  with a sensible generic voxel shape for unknown descriptions. Cache keyed by
+  sha256 of the NORMALIZED visual description in `user://mods/assets/<sha256>.json`;
+  same description -> cache HIT (no regeneration), different description ->
+  new asset. The approval screen shows the asset info (voxel count + HIT/MISS).
+- **8. Sandbox test before install.** NEW `scenes/ui/sandbox_test_room.tscn` +
+  `scripts/ui/sandbox_test_room.gd` (class `SandboxTestRoom`): flat voxel room,
+  two target dummies, the candidate's generated voxel visual as the projectile.
+  TEST IN SANDBOX (approval screen) -> FIRE TEST SHOT animates the projectile
+  at dummy 0; on impact a local explosion flash fires, the dummy topples, and
+  the result reports HIT / explosion. Install stays available whether or not
+  the sandbox was used. The sandbox NEVER executes the candidate's script
+  (it simulates the declared behaviour from form + payload) and NEVER writes
+  to the real mod list or player progression — nodes live only in its own
+  SubViewport (UI) or a caller-owned root (`build_room()` / `simulate_test()`).
+- NEW verifier (Worker D's own scratch): `tools/verify_creator_redesign.gd`
+  (55 checks). The pre-existing `tools/verify_v08_create.gd` (Worker F) is
+  NOT touched — see Deferred.
+
+### Verification evidence
+- `tools/verify_creator_redesign.gd`: **55/55 PASS, exit 0.** Covers:
+  normalize/cache-key determinism; watermelon voxels (139: green rind + red
+  interior + black seeds); cache MISS -> HIT reuse (same key/count), different
+  description -> new asset, cache file under `user://mods/assets/`; generic
+  fallback non-empty; `compose_prompt` stable + carries all four form fields;
+  `behavior_for` = projectile + explodes; sandbox `simulate_test` HIT +
+  explosion + no writes; `build_room` = flat room + 2 dummies; main-menu
+  button opens the creator; 3 tabs; 5 multi-choice categories (Weapon +
+  Effect both selected); IMPORT/EXPORT disabled placeholder; MODS tab widgets;
+  watermelon-LMG E2E (form -> GENERATE -> candidate validates, mod_id
+  `watermelon_lmg` -> approval summary + FULL payload + asset info ->
+  TEST IN SANDBOX opens room, HIT + explosion with the 139-voxel generated
+  visual, mod-list tree unchanged -> INSTALL -> mod in `get_mods()` + MODS tab
+  row -> Forge builds from it: "Forge fabricated: Watermelon LMG (mod).",
+  arena gained the ModAPI-spawned watermelon nodes); old panel gone (source +
+  live Forge menu); Forge Mods tab keeps list + Rescan.
+- `tools/check_scripts.gd`: all Worker D files compile. Remaining 8 failures
+  are other workers' mid-landing files (android test scaffolding x4,
+  forge_ghost, forge_structure, net_forge_sync, verify_forge_batch) — not
+  touched. One real bug found by the verifier and fixed in-session: sandbox
+  camera/light used `look_at()` before viewport children finished entering
+  the tree (engine error) — now `look_at_from_position()`.
+- Regression: `tools/verify_v08_create.gd` = 41 PASS; its failures are ONLY
+  checks asserting the old in-Forge create panel exists (removed by design
+  per this task) plus downstream checks that drive that panel. The
+  ModCreator pipeline itself (validation, install, catalog, Forge build)
+  still passes there.
+
+### Deferred / follow-ups (with reason)
+- **Worker F: update `verify_v08_create.gd` to drive the new creator menu.**
+  It asserts the old in-Forge panel; that panel is gone by design. Worker D
+  did not touch it (Worker F owns verification tools).
+- **ModLoader owner: skip the `assets` dir when scanning `user://mods/`.**
+  The asset cache lives at `user://mods/assets/` per the batch spec, so
+  ModLoader currently records an `assets` folder as a broken mod entry
+  (missing manifest.json). The creator menu's MODS tab filters that entry
+  out of its display, but the Forge menu's Mods tab will show it until
+  ModLoader skips non-mod directories. One-line skip; deliberately not done
+  by Worker D (ModLoader is not a Worker D file).
+- **On-device QA (Colin):** creator menu layout / touch targets on his S23,
+  sandbox feel (projectile speed, explosion flash), real-LLM watermelon-LMG
+  generation quality (the headless E2E uses a mock generation; the live
+  DeepSeek path goes through the same composed prompt + validation +
+  approval). Headless verification proves wiring + validation, not the
+  on-device UX.
+
+## Forge batch — Worker A (Forge core: items 1, 5, 7 + directive A) — 2026-10-15 ~14:00 MDT
+
+### What (Colin-approved Forge items 1, 5, 7 + directive A; code + verification only — no publish, no version bump, no platform rebuilds)
+- **(1) Forge aliases for the new weapons + mod names (offline parser + LLM).**
+  Forge ids `trident` -> Arsenal `br3` (BR-3 Trident) and `judge` -> Arsenal
+  `hv44` (HV-44 Judge) in `ForgeBuilder.FORGE_WEAPON_IDS` / `WEAPON_NAMES`.
+  Offline parser: "burst rifle" / "trident" / "burst" / "3-round" -> trident;
+  "judge" / "revolver" / "heavy revolver" / "six-shooter" -> judge (checked
+  before the generic rifle/gun branch, which used to swallow "burst rifle"
+  as a manticore). LLM path: `trident`/`judge` added to the `weapon_id`
+  enum in `SYSTEM_PROMPT` + descriptions (burst rifle / heavy revolver) +
+  per-weapon costs + examples ("give me a burst rifle" -> trident 310,
+  "give me a judge" -> judge 200); gate accepts both ids. Installed mod
+  names resolve offline too: a MULTI-WORD mod name (mod id / name /
+  display_name / block_id, underscores/hyphens -> spaces) appearing in the
+  prompt returns a `mod_block` spec at the mod's declared cost. Single-word
+  mod names deliberately do NOT match offline — a mod named "wall" or
+  "sniper" would hijack every base prompt with that word; single-word mods
+  stay reachable via the LLM path (its catalog lists them). New Forge-menu
+  presets: Burst Rifle ("Give me a burst rifle"), Judge ("Give me a judge").
+  Offline weapon+ammo composition generalized from the old LMG-only branch:
+  any known weapon + ammo keyword with a trigger word (bullets/rounds/ammo/
+  shells, or bare buckshot) composes (e.g. trident + sniper bullets = 360,
+  shotgun + buckshot = 270). "Give me sniper ammo" stays an ammo pickup,
+  not a composition (guard: bare "sniper" alone is not a weapon signal).
+- **(5) Real per-weapon Forge costs — flat 200 is dead.** `ForgeLLM.weapon_cost()`
+  computes each weapon from power: `clamp(round5(75 + sqrt(damage x pellets
+  x rpm x mag)/4 + damage x pellets), 100, 350)`. The sqrt curve keeps the
+  spread sane vs. structure costs (100-200) and the turret (250); the
+  per-shot term keeps slow, hard-hitting weapons honest (without it the
+  Longeye at 40 rpm / 5-round mag would cost less than a pistol despite
+  120 damage a shot). Results, all distinct: manticore 280, longeye 235,
+  breacher 220, hornet 270, p9 180, raptor 150 (fixed utility price —
+  0-damage grab/throw, formula N/A), lmg 350 (raw 384, clamped), trident
+  310, judge 200. Trident's 900 rpm is the intra-burst rate (bursts are
+  re-press gated); the formula prices the per-burst alpha. Costs flow
+  through `recompute_cost()` / `validate_modspec()` / `preview_cost()` /
+  the menu COST line — computed + shown, never blocking (see A).
+- **(7) Shareable build codes + history search.** A build code is one
+  copy-pasteable string for a whole build action: `FORGE1-` + base64url
+  (JSON of the ModSpec; `+` -> `-`, `/` -> `_`, padding stripped).
+  `ForgeLLM.encode_build_code()` / `decode_build_code()` are pure; decode
+  returns `{}` for garbage/empty/non-Dictionary input, and normalizes
+  integral floats back to ints (Godot's JSON parser returns ALL numbers as
+  float, but the strict gate requires true ints for `size_voxels`/`count` —
+  without this, decoded specs fail the gate). A decoded spec is NEVER
+  trusted: `build_from_code()` runs it through the same strict gate before
+  anything builds (a tampered code with an invented `script` field is
+  rejected). `Forge` manager: `get_last_build_code()` (last successful
+  build, post-validation spec — codes chain: paste -> rebuild -> copy the
+  same code), `build_from_code(code)` (same busy/cooldown gates as
+  `submit_prompt`, does NOT pollute prompt history). Forge menu: COPY LAST
+  CODE (clipboard + fills the code field), BUILD FROM CODE (paste a code
+  -> rebuild), and a Search-history field above the history list.
+  `Forge.search_history(query)` is the case-insensitive substring filter
+  ("" = all); the menu uses it with a local-filter fallback.
+- **(A) Budget OFF (directive A).** `ForgeManager.BUDGET_ENABLED = false` —
+  one flag. Building is free: the spend gate, failure refunds, and undo
+  refunds are all gated behind it (undo reports refund 0, messages claim
+  no refund); the code paths are NOT deleted and return by flipping the
+  flag. Costs are still computed + shown (menu preview reads
+  `COST: N (free)`). The Forge menu budget label is HIDDEN (node stays in
+  the tree, text still refreshed, `visible = false`). The structure cap
+  12 STAYS (perf guard, not budget). The ForgeDirector's internal
+  "budget" is untouched — it is enemy-AI planning spend, not player
+  Forge budget. The LLM user message no longer carries a budget figure
+  ("Forge building is free (no budget limit)"), so the model never
+  rations a build against a budget that does not gate anything.
+
+### Files (Worker A only)
+- `scripts/forge/forge_llm.gd` — `WEAPON_POWER` table + `weapon_cost()` /
+  `_weapon_power_cost()`; trident/judge in `SYSTEM_PROMPT`, gate,
+  `_base_cost`, offline aliases + generalized weapon+ammo composition +
+  `_mod_spec_for_prompt()` / `_normalize_mod_name()`; `encode/decode_build_code()`
+  + `_normalize_json_numbers()`; free-building LLM user message.
+- `scripts/forge/forge_builder.gd` — `WEAPON_NAMES` + `FORGE_WEAPON_IDS` for
+  trident/judge (only Worker-A lines; Worker B's structure work in the
+  same file was left untouched).
+- `scripts/forge/forge_manager.gd` — `BUDGET_ENABLED = false` + gated
+  spend/refund/undo; `_run_pipeline` tail extracted to `_execute_spec()`
+  (shared by prompt + build-code paths); `get_last_build_code()` /
+  `build_from_code()` / `search_history()`.
+- `scripts/ui/forge_menu.gd` — budget label hidden; `COST: N (free)`
+  preview; history-search field; build-code row (paste + BUILD FROM CODE
+  + COPY LAST CODE); Burst Rifle / Judge presets; focus release for the
+  new fields on close.
+
+### Verification (scratch verifier `/tmp/verify_forge_a.gd`, NOT a repo suite — Worker F owns verification tools)
+- Scratch suite: ALL CHECKS PASSED (aliases incl. burst rifle/judge/trident/
+  revolver + sniper-ammo-not-composition + composition costs; all 9
+  weapon costs distinct + recompute matches; code round-trips identical,
+  base64url body, garbage/empty/blank -> {}, bare-base64 decodes, tampered
+  code rejected, non-integral float hp survives; real mod folder
+  `zz_scratch_chunky_wall` resolves by name at declared cost 150 while
+  "build a wall" stays plain — scratch mod created + removed, `user://mods/`
+  left clean; manager `build_from_code` with budget 0 SUCCEEDS, budget
+  stays 0, same code rebuilds (+1 structure), undo refunds 0 with no
+  refund claim; `search_history` case-insensitive; `preview_cost` 310/200;
+  builder builds trident -> br3 / judge -> hv44 with "BR-3 Trident" /
+  "HV-44 Judge" messages; menu budget label hidden, preview
+  "COST: 310 (free)", history search shows 1 entry, copy-last-code fills
+  the code field).
+- Pre-existing suites (intentional deltas only, for Worker F):
+  `verify_v062` — exactly 10 failures, ALL the flat-200 -> per-weapon
+  change (LMG+sniper 250 -> 400, manticore+buckshot 250 -> 330,
+  longeye 200 -> 235); everything else in that suite still passes.
+  `verify_v05_b1_forge_ui` — 2 failures: "budget drops by wall cost 100"
+  (intentional: no spend while budget is OFF) and "4 tabs exist (got 6)"
+  (pre-existing: Loadouts + Mods tabs, suite never updated).
+
+### Deferred / follow-ups (with reason)
+- **PRE-EXISTING BUG (flagged, NOT fixed — needs a coordinator call): the
+  live LLM path rejects JSON-parsed cover/enemy_spawn specs.** Probe:
+  a raw LLM-style JSON wall spec run through `_extract_spec` +
+  `validate_modspec` returns `false` ("size_voxels must be [x,y,z] each
+  1-12"). Root cause: Godot's `JSON.parse_string` returns ALL numbers as
+  float, but `ForgeLLM._is_int_in` requires true ints. Weapon specs are
+  unaffected (no int-only params); cover (`size_voxels`) and enemy_spawn
+  (`count`) specs from the LLM hit it. The build-code path is fixed (decode
+  normalizes integral floats -> ints); the LLM path was left alone because
+  changing gate semantics is a validation-behavior change for Worker F /
+  the coordinator to route. Suggested fix: accept integral floats in
+  `_is_int_in`, mirroring `ModLoader._is_int_in` (which already does).
+- **HUD budget UI still visible (not a Worker-A file).** `hud.gd` still
+  shows `BUDGET: N` (topbar + `_forge_budget_label`) and announces
+  "spend budget: N" on build phase. Route to the HUD owner or gate behind
+  the same flag. The Forge menu side is done.
+- **ModLoader / mod-creation catalogs still list only 7 base weapons.**
+  `ModLoader.BASE_WEAPON_IDS` + the generation prompt's `give_weapon`
+  list lack trident/judge, so user mods cannot yet use them as
+  `base_weapon_id`. Deliberately not touched (ModLoader / mod-creator
+  files are not Worker-A files) — route to their owner.
+- **`Tuning.FORGE_COST_WEAPON = 200` (mirror const) is stale.** Coordinator
+  consolidation file, not Worker-A; the live value is `weapon_cost()`.
+- **On-device QA (Colin):** build-code copy/paste between phones, new
+  presets, "COST: N (free)" wording, budget label gone from the Forge menu.
+
+## Forge batch — Worker C: FORGE IN MULTIPLAYER (item 4) — 2026-10-15
+
+### What landed
+Placed Forge structures now sync to every peer, host-authoritative
+(host validates + broadcasts; matches the existing MP architecture where
+the host owns HP/kills/score). Files touched (disjoint, Worker C only):
+- NEW `scripts/net/net_forge_sync.gd` (class `NetForgeSync`) — registry,
+  event shape, validation/sanitization, spawning, polling fallback.
+- `scripts/net/net_manager.gd` — Forge RPCs (single-RPC-endpoint rule) +
+  public API (`forge_notify_placed / forge_notify_removed /
+  forge_notify_updated / forge_get_placed / forge_request_resync`) +
+  forwarded signals + late-join snapshot on `peer_connected`.
+- `scripts/forge/forge_manager.gd` — ONE hook in `_execute_spec`
+  (after the FAIL check, so failed builds never sync): guarded,
+  duck-typed `NetManager.forge_notify_placed(last_built_node, spec)`.
+  No-op offline / without NetManager; SP behavior unchanged.
+
+### Event shape (canonical — Worker B's destroy/move/rotate/delete events
+### flow through this; B calls the NetManager API, never edits the shape)
+`entry = {"instance_id": int,  # host-assigned, > 0; 0 = client provisional
+"preset_id": String,  # "cover:wall" | "structure:<shape>" (all 10 shapes:
+# bridge/bunker/watchtower/ammo_depot/stairs/ramp/wall/jump_pad/
+# cover_piece/sniper_nest) | "turret" | "pickup:ammo|health" |
+# "mod:<block_id>"
+"owner": int, "pos": Vector3, "rot": Vector3 (euler), "spec": Dictionary}`
+Wire form = entry without the local-only `"node"` key (deep-copied spec).
+
+### Flows
+- Host places: ForgeManager hook -> `host_place()` (assigns id,
+  registers) -> broadcast `_rpc_forge_place`. Peers `apply_place()`.
+- Client places: hook -> provisional entry (node tagged `forge_pending`,
+  id 0) -> `_rpc_forge_request_place` to host -> host validates, spawns
+  its own copy, assigns id, broadcasts -> client `apply_place()` ADOPTS
+  its provisional node (no duplicate spawn).
+- Destroyed on host (explicit destroy, cover fracture, undo, turret TTL):
+  `host_remove()` -> broadcast `_rpc_forge_remove` -> peers
+  `apply_remove()`. Host `_process` polling (0.1 s) also catches
+  queue_free'd registered nodes, so fracture/undo/TTL need no extra call.
+- Move/rotate: `host_update()` -> broadcast `_rpc_forge_update` -> peers
+  `apply_update()` (transform forced to the authoritative pose).
+- Late join: host sends `_rpc_forge_sync` (full wire list) on
+  `peer_connected`; client can also call `forge_request_resync()` after
+  map load (coordinator: one call in Main after the MP map loads —
+  covers a snapshot that arrived before the world existed; apply dedupes
+  by instance_id, so a double send is safe).
+- Spawn on peers goes through `ForgeBuilder.build()` with an explicit
+  `[x,y,z]` position, then the authoritative transform is FORCED onto
+  the node (the builder orients structures toward the LOCAL player;
+  peers must match the placer's orientation, not their own). Peers never
+  charge Forge budget for a synced build (build bypasses ForgeManager).
+- Robustness: unknown preset ids / malformed entries (NaN, negative id,
+  out-of-arena, spec/preset mismatch) are IGNORED, never crash
+  (`sanitize_entry` type-checks every field; cover params clamped).
+  Forged broadcasts (sender != 1) ignored; place/remove/update requests
+  are host-only + per-peer rate-limited (10/s). Duplicate broadcasts
+  dedupe by instance_id. Removals/updates of unknown ids are idempotent.
+- Polling fallback: untagged nodes in group `forge_structure` (direct
+  `ForgeBuilder.build` calls that bypassed the hook) are inferred and
+  synced. Inference prefers ForgeStructure markers (`forge_kind` meta /
+  `structure_shape` property / `shape` meta) over the node NAME, because
+  Godot auto-renames duplicate siblings (`ForgeStructure_bunker` ->
+  `@Node3D@N`), which broke a name-only lookup in testing. Inferred
+  specs use `property: "standard"` (reinforced is exact only on the hook
+  path). Clients never emit remove/update from polling — host only.
+
+### Verification (ephemeral `/tmp/verify_forge_mp.gd`, NOT landed in
+### tools/ — Worker F owns verification tools)
+- **57/57 PASS** headless two-peer simulation (two NetForgeSync
+  instances, host broadcast simulated by feeding the host's wire entry
+  into the client's `apply_*`, same pattern as verify_multiplayer):
+  preset ids (incl. weapon -> not placeable, mod -> `mod:<id>`),
+  sanitize rejects (unknown preset, NaN, negative id, out-of-arena) +
+  cover clamp, host place (id 1, identical transform, tagged), client
+  apply identical, duplicate broadcast deduped, client provisional +
+  host-echo ADOPT (no duplicate, re-tagged with host id), move/rotate
+  identical, destroy host -> removed client, double remove idempotent,
+  late-join snapshot (identical transform) + empty-snapshot prune,
+  unknown/malformed apply ignored, real ForgeBuilder spawn path
+  (ForgeStructure_bunker node, transform forced, peer copy identical),
+  NetManager guards (offline `forge_notify_placed` no-op; forged
+  `_rpc_forge_place` / `_rpc_forge_sync` with sender 0 ignored;
+  non-host `_rpc_forge_request_place` ignored), polling detects an
+  untagged ForgeStructure + host-side free -> remove event.
+- Regressions: `check_scripts` 148 checked, 4 failed — all pre-existing
+  `android/build/` scaffolding, none in game code. `verify_multiplayer`
+  180 passed, 0 failed (7 needs-device, pre-existing).
+- `verify_v05_b2_forge_backend` (82/89) and `verify_v062` (10 fails)
+  fail on SIBLING Forge-batch changes, not this item: per-weapon costs
+  (longeye 235, not flat 200), `BUDGET_ENABLED = false` (Directive A:
+  building is free, undo refund 0), new weapons trident/judge. The
+  Worker C hook is offline-no-op in those runs and touches none of
+  that logic. Coordinator to re-baseline those suites against the new
+  cost/budget rules.
+- NOT verified live: a real two-device ENet match (sandbox blocks ENet
+  sends; same standing limitation as verify_netcode). Needs Colin /
+  two-device QA: place on one phone -> appears on the other identical;
+  destroy on host -> removed on peer; late join receives the list.
+
+### Coordinator notes
+- No Main wiring needed for the core path (NetManager autoload creates
+  its NetForgeSync child in `_ready`). Recommended one-liner: call
+  `NetManager.forge_request_resync()` after the MP map loads.
+- Worker B contract: call `NetManager.forge_notify_removed(id)` /
+  `forge_notify_updated(id, transform)` from destroy/move/rotate/delete
+  paths (client -> host request, host -> broadcast). Fracture/undo/TTL
+  are already covered by host polling — no B call needed there.
+- Known divergence (by design, not fixed here): cover HP is per-node
+  local, so a client-side fracture does not destroy the host's copy
+  until the host's copy also breaks. Damage sync for structures belongs
+  to Worker B's destruction item; this item syncs host-driven
+  destruction only, per spec.
+- Nothing deferred. No publish, no version bump, no platform rebuilds.
+
+## Forge batch — Worker B: Placement + structures (items 2, 3, 6) (2026-10-15 ~20:10 MDT)
+
+Ghost preview + edit placed structures, destructible Forge structures,
+and six new Build presets. Code + verification only — no publish, no
+version bump, no platform rebuilds. Existing prompt → ForgeManager →
+ForgeBuilder pipeline untouched; ghost/edit/preset paths are additive.
+
+### Item 2 — Ghost preview + edit placed structures
+- NEW `scripts/forge/forge_ghost.gd` (ForgeGhost): translucent preview
+  built from the EXACT structure geometry
+  (ForgeBuilder.build_shape_geometry). Valid = green-ish
+  (0.25,1,0.35,0.45), invalid = red-ish (1,0.25,0.25,0.45). Visual-only:
+  its collision body is never added to the tree, jump-pad Area3D
+  triggers (and any other behaviour nodes) are stripped, it never joins
+  group "forge_structure" (no cap count, no damage), shadows off.
+- NEW `scripts/forge/forge_placement.gd` (ForgePlacement): controller.
+  `attach_to(root)` returns the singleton-per-root instance.
+  `start_preview(shape, params, player, root)` → ghost follows the
+  crosshair every frame (ground-snapped; valid = under cap + inside
+  arena). `confirm_preview()` builds at the ghost position via
+  ForgeBuilder (preset path: cost computed, enforcement off — no budget
+  touched; the LLM/prompt path keeps its own budget handling in
+  ForgeManager). `cancel_preview()` dismisses without building.
+  Edit: `select_nearest()` (crosshair raycast, walks up from the struck
+  collider to the forge_structure ancestor; falls back to nearest),
+  `select(node)` (group-gated), `move_selected_to(pos)` (ground-snapped),
+  `move_selected_by(offset)`, `rotate_selected(45° default)`,
+  `repair_selected()` (full repair), `delete_selected()` (no refund —
+  budget is off for edits). Static helpers
+  `move_structure / rotate_structure / delete_structure /
+  repair_structure` work without a controller instance.
+- Integration contract for the menu worker (forge_menu.gd untouched):
+  preset buttons call `ForgePlacement.attach_to(scene)` +
+  `start_preview(...)`, confirm/cancel from the placement UI, and the
+  edit buttons from the selection API above. The ghost/confirm path
+  does NOT go through ForgeManager — the menu worker owns wiring it to
+  its Confirm button.
+
+### Item 3 — Destructible Forge structures
+- NEW `scripts/forge/forge_structure.gd` (ForgeStructure): replaces the
+  plain Node3D in `_build_structure`. Live HP (table in
+  ForgeBuilder.STRUCTURE_BASE_HP, scaled by size/cost: bunker 600 >
+  wall 400 > sniper nest 350 > bridge/ammo depot 300 > stairs/ramp 250
+  > cover piece/jump pad 200; reinforced ×1.5). `take_damage(amount,
+  hit_pos, is_headshot)` (headshot arg accepted, ignored), meta hp/max_hp
+  kept in sync for legacy readers. Feedback (no shared-material
+  mutation — VoxelBuilder materials are cached per color): ~0.09 s red
+  flash overlay, crack cubes scaling 0→8 with damage, dark smoke
+  emitter below 35% HP (off again on repair). At 0 HP: DebrisPool burst
+  in the structure's palette + cover_break sting, leaves
+  "forge_structure", queue_free.
+- Damage routing WITHOUT touching enemy code (enemy hitscan only ever
+  damages group "player", so no enemy caller existed for structure HP):
+  (a) the structure's collision body is now
+  `ForgeStructure.StructureBody`, which forwards take_damage() to the
+  parent — without it, weapon raycasts / explosion shape queries strike
+  a plain StaticBody3D with no damage method and structures would be
+  immune to player fire/explosions; (b) NEW
+  `scripts/forge/forge_enemy_pressure.gd` (ForgeEnemyPressure): every
+  0.9 s at most ONE engaged enemy (can see the player, or player < 25 m)
+  within 20 m with line of sight lands one hit for its own damage ×
+  director dmg_mult. ForgeStructure ticks it on itself; covers and
+  turrets get a ForgeEnemyPressure child from ForgeBuilder (their own
+  scripts untouched).
+- Repair: `repair(amount)` / `repair_full()` on ForgeStructure, plus
+  interact key (F / Y) while standing within 3.2 m of a damaged
+  structure. `ForgeStructure.repair_target(node, amount)` duck-types
+  all three build kinds: ForgeStructure via repair(), DestructibleCover
+  via hp + max_hp meta (ForgeBuilder now records it), turret via _hp
+  (max 150). `hp_of / max_hp_of / delete_target` helpers likewise.
+- Covers were already destructible (DestructibleCover fracture); this
+  item gives them enemy-pressure damage + repair. Turret repair works
+  via _hp; its TTL/power-down lifecycle is otherwise untouched.
+
+### Item 6 — More Build presets
+- `_build_structure` now accepts 10 shapes (old 4 + 6 new), all via the
+  shared `build_shape_geometry(shape, parent, body)` dispatcher (also
+  used by the ghost, so previews match placed geometry exactly).
+  New: stairs (8 steps to a 3.4 m platform, 100), ramp (overlapping
+  slabs to a 2.3 m deck, 90), wall (6 m × 3 m barrier + posts + orange
+  cap, 120 — distinct from the cover-target "wall" slab), jump_pad
+  (base + orange plate + ForgeJumpPad trigger, 150), cover_piece (low
+  3 m × 1.1 m wall + rail + sandbags, 60), sniper_nest (legs + elevated
+  platform, full rails, solid front shooting-rest lip, rear stairs, no
+  roof, 220). Costs in STRUCTURE_COST (computed, enforcement off on
+  the direct path); bounds in STRUCTURE_BOUNDS.
+- NEW `scripts/forge/forge_jump_pad.gd` (ForgeJumpPad): Area3D (layer 0,
+  mask 2 = player) that launches the player: vertical 12.5 m/s (~3.9 m
+  apex vs the player's GRAVITY 20 — vs JUMP_VELOCITY 5.8 / slide-hop
+  5.5, so it reads as a pad, not a hop) + 3.5 m/s forward in pad
+  facing; horizontal velocity preserved, never replaced. 0.4 s
+  per-body retrigger cooldown; ignores non-player bodies.
+- `ForgeBuilder.build_preset(shape, player, root)` — direct preset
+  build (near_player, cap still enforced, no budget touched).
+- Poly/draw: each new shape is 4–15 meshes + one collider per solid
+  block, same vocabulary as the original four — phone-sane.
+- NOT wired: the LLM/prompt path cannot build the new shapes yet —
+  ForgeLLM / ForgeManager VALID_STRUCTURES still list the old 4 (those
+  files belong to other workers; the prompt worker adds keywords +
+  costs). The menu worker wires preset buttons to `build_preset()` /
+  the placement controller. Net sync (`net_forge_sync.gd`,
+  STRUCTURE_SHAPES) also still lists only the old 4 — the net worker
+  extends it, or new presets won't sync to peers.
+
+### Verification
+- NEW `tools/verify_forge_b_placement.gd` (B2 `load()` pattern — no
+  parse-time class_name references, so the Sfx-autoload compile trap is
+  avoided; staged `_process` + quit like the other verify scripts):
+  **192/192 PASS** headless.
+  Covers: all 10 shapes build + collide + group + HP + cost;
+  reinforced bunker 900 HP; build_preset ok/unknown; ghost per shape
+  (geometry shown, no group, no Area3D, valid/invalid tint, unknown →
+  null); preview → confirm (+1, ghost gone) → cancel (builds nothing);
+  select/rotate 45°+45°=90°/move/delete (count restored); damage 150 →
+  250 → repair(100) → 350 → repair_full → 400, meta in sync, cracks +
+  low-HP smoke, destroy at 0 HP (group left, queued); cover damage +
+  repair_target; turret damage + repair_target; enemy pressure deals
+  the foe's 25 damage, inactive/out-of-range/destroyed foes no-op;
+  jump pad launches (vy 12.5, horizontal preserved + forward boost,
+  cooldown blocks retrigger, non-player ignored); cap 12 enforced,
+  13th rejected, ghost invalid at cap, delete reopens the cap.
+- `tools/check_scripts.gd`: all game scripts pass (remaining failures
+  are the 4 pre-existing android/build scaffolding files + the other
+  worker's in-flight `tools/verify_forge_batch.gd`).
+- Existing `tools/verify_v05_b2_forge_backend.gd`: 82/89 — the 7
+  failures are all in files this worker did NOT touch (concurrent
+  workers' landed changes: ForgeLLM per-weapon pricing, longeye 235
+  vs B2's stale 200; ForgeManager budget handling, wall charged 0 /
+  undo refund 0). The B2 structure-cap check (this worker's area)
+  passes. Flagged for the coordinator — B2 needs re-baselining against
+  the batch's new pricing/budget rules.
+- Two verify-harness lessons (no game-code impact): (1) `quit()` in
+  `_initialize` never terminates a `--script` SceneTree run (idles
+  forever) — stage checks in `_process` like B2; (2) verify scripts
+  must `load()` Forge scripts at runtime, never reference their
+  class_names at parse time (Sfx autoload not yet registered).
+
+### Deferred / notes
+- Nothing deferred among items 2, 3, 6. Open follow-ups for the
+  coordinator (other workers' files): ForgeLLM/ForgeManager new-shape
+  keywords + costs; net_forge_sync STRUCTURE_SHAPES extension;
+  B2 re-baseline for new pricing/budget rules. On-device QA still
+  Colin's: ghost readability on the S23, pressure damage feel in a real
+  wave, jump-pad launch feel, interact-repair discoverability.
+
+## 2026-10-15 — WORKER F (Verification): FORGEFALL Forge batch verifier — FINAL
+
+Suite: `tools/verify_forge_batch.gd` (owned by Worker F; only file touched).
+Run: `godot --headless --path . --script res://tools/verify_forge_batch.gd`
+Result: **128 PASS / 17 FAIL** (exit 17). All 17 FAILs are real gaps in
+other workers' code, confirmed against the current sources — no suite
+false negatives remain (two rounds of false-positive/false-negative
+fixes during this session are documented in the suite's own comments).
+
+### Per-area scoreboard
+- budget-off: 4 PASS / 0 FAIL — BUDGET_ENABLED == false; prompt build
+  at budget 0 succeeds, never blocked, budget stays 0; no budget UI.
+- aliases: 9 PASS / 0 FAIL — "give me a burst rifle" -> Trident,
+  "give me a judge" -> Judge (both pass validate_modspec); installed
+  probe mod resolves in the offline parser; probe removed after.
+- ghost-edit: 18 PASS / 0 FAIL — ForgePlacement + ForgeGhost: ghost
+  for sniper_nest, no cap-group, no live collision, VALID/INVALID tint
+  swaps, cancel dismisses, confirm builds, select/move/rotate/repair/
+  delete on a placed structure all work.
+- destructible: 7 PASS / 0 FAIL — structure 600 -> 500 -> destroyed
+  at 0 HP -> repair to 600; cover 100 -> 60 -> repair_target -> 100
+  -> broken at 0 HP.
+- mp-sync: 9 PASS / 0 FAIL — NetForgeSync in-process peer sim (sandbox
+  blocks real UDP loopback): host_place -> identical registries,
+  destroy -> removed both sides, late join gets the full list, stairs
+  syncs as structure:stairs. Live RPC wiring (NetManager
+  _rpc_forge_*) covered by static checks.
+- per-weapon-costs: 4 PASS / 0 FAIL — recompute_cost differs across
+  weapons (manticore 280, longeye 235, breacher 220, hornet 270,
+  p9 180, raptor 150, lmg 350; Trident 310 vs Judge 200); menu preview
+  shows COST: 235 (free) vs COST: 180 (free).
+- presets: 34 PASS / 7 FAIL — all six new structure presets place +
+  collide + count toward cap 12 via ForgeBuilder.build_preset; 13th
+  refused as cap. FAILs below.
+- build-codes: 13 PASS / 0 FAIL — encode (FORGE1-...) / decode
+  round-trips, garbage -> {}, rebuild from decoded spec identical,
+  pipeline build -> code -> build_from_code identical position +
+  code chains, History search filters (tower -> 1 entry, "" -> all).
+- creator: 24 PASS / 0 FAIL — main-menu CREATE A MOD opens the
+  creator; tabs CREATE / MODS / IMPORT/EXPORT (placeholder, buttons
+  disabled); old in-Forge _create_panel gone; form categories + name
+  + visual + logic composes a prompt (voxel + explosion notes) and
+  validates via ModLoader; voxel asset generated + cached + reused;
+  watermelon-LMG e2e (watermelon voxels, projectile + explodes_on_
+  impact, sandbox hit + explosion); sandbox writes nothing and does
+  not pollute the mod list.
+- voice-confirm: 2 PASS / 10 FAIL — FAILs below. The 2 passes are
+  "no stuck listening state" (vacuous: no listener exists).
+- setup: 4 PASS / 0 FAIL.
+
+### FAILs — exact repro (all in other workers' code)
+1. presets wiring (1): NOTHING calls `build_preset(` or
+   `start_preview(` outside their definition files (grep over
+   scripts/ + scenes/ empty). The six presets are library-only —
+   unreachable from the Forge menu or the prompt path.
+   Repro: suite grep; or in-game: no menu button / prompt builds a
+   new preset.
+2. presets prompt-path (6): the offline parser does not map the new
+   preset prompts to the structure presets:
+   - "build stairs" -> _error fallback (arena_event supply_drop)
+   - "build a ramp" -> structure bridge (fallback)
+   - "build a wall" -> cover wall (old cover, not structure wall)
+   - "build a jump pad" -> _error fallback (supply_drop)
+   - "build a cover piece" -> cover wall (fallback)
+   - "build a sniper nest" -> cover tower (fallback)
+   Repro: `ForgeLLM.parse_offline("<prompt>")` in a headless probe.
+3. voice-confirm (10): no voice confirm dialog exists.
+   `scripts/ui/forge_menu.gd` `_on_voice_text` still calls
+   `_submit_prompt(transcript)` directly — the transcript submits
+   before any confirm, so there is no Confirm/Retry/Cancel to press.
+   Repro: suite calls `_on_voice_text("build a wall in front of
+   me")` -> forge_result emits with no dialog (forge_results=1).
+   All 10 voice checks fail on this single root cause.
+
+### Regressions
+- GREEN (11): verify_fixes, verify_v06_movement, verify_feel
+  (83/0), verify_sound (719/0, 8 warnings), verify_content
+  (495/0, 1 warning), verify_updater_pc (65/0 — the old 4
+  pre-existing FAILs are gone; suite expectations now match the
+  shipped manifest), verify_multiplayer (180/0, 7 needs-device),
+  verify_portals (62/62 + integration/see-through/placement/
+  momentum/puzzles all green), verify_progression (67/0),
+  verify_linux, verify_windows (48/0).
+- 900-frame smoke: CLEAN ("survived 900 frames, quitting clean",
+  exit 0).
+- REGRESSION (1) — verify_menu_layout: 1057 passed, 3 failed, all
+  at 1280x800: footer inside viewport, QUIT fully inside viewport,
+  stack fits viewport height. Cause: the Forge batch's 8th main-menu
+  button (CREATE A MOD, main_menu.gd:284) re-overflowed the
+  1280x800 stack — the SAME regression a prior batch fixed by
+  tightening stack separation 5->2 on short screens (BUILD_LOG
+  entry above). The fix needs re-applying for 8 buttons
+  (tighter separation / scroll / compress on vp.y < 900). 1920x1080
+  still passes. Not a crash; small-window layout only.
+
+### Coverage gaps / headless limits (honest)
+- No real UDP loopback (sandbox) -> MP tested as in-process peer sim
+  through the real NetForgeSync registry + static RPC wiring check.
+- No DeepSeek network -> voice recognition itself not exercised;
+  the suite drives `_on_voice_text` directly (the real handler).
+- No on-device check (Colin is QA): ghost tint readability, creator
+  touch targets, 1280x800 layout on the Deck, voice permission flow.
+- Suite-harness notes: Object.set() silently rejects an untyped
+  Array for an Array[String] script var (use a typed Array[String]);
+  queue_free leaves is_instance_valid true same-frame (check group
+  removal / is_queued_for_deletion); decode_build_code("garbage")
+  prints one benign engine base64 error and returns {}.
+- The other worker's in-flight note in a prior entry (B2 re-baseline
+  for new pricing/budget rules) still stands — B2's 7 failures were
+  in files this worker did not touch.
+
+## Source sync — v0.5.1 tree to public repo
+- Synced the local source tree to `vatherty/FORGEFALL` (main) via the contents API: uploaded only files whose git blob SHA differed, deleted repo files no longer present locally (incl. the removed in-Forge create panel).
+- Exclusions (never pushed): builds/, updates/, .godot/, staging dirs, *.apk/*.zip/*.pck/*.keystore/*.import, android/ template, any credentials (export_presets.cfg keystore passwords stay blanked).
+- Tag v0.5.1 now points at the post-batch source.
