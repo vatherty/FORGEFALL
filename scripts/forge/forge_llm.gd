@@ -1,0 +1,1008 @@
+# FORGEFALL — ForgeLLM (v0.6: real LLM path, Colin's hard rules)
+# v0.6.2 (Colin loosened the gate): COMPOSITION is allowed — the LLM may
+# combine any known blocks (weapon + ammo_type, cover/structure +
+# property) even when that exact combo has no preset. The gate validates
+# each PIECE against its catalog and RECOMPUTES the cost as the sum of the
+# composed blocks; a cost mismatch never rejects. Still never: invented
+# blocks/fields, scripts/code, eval, out-of-range numbers.
+# Turns a player requisition prompt into a ModSpec v1 Dictionary.
+#
+# HARD RULES (Colin, non-negotiable):
+# - The LLM builds from BLOCKS ONLY. It NEVER invents scripts/code. There
+#   is NO code generation, NO eval, NO code-execution path anywhere. The
+#   LLM outputs JSON ModSpec from a FIXED catalog only; the game applies
+#   it via the trusted ForgeBuilder. Requests the catalog cannot express
+#   get a clean refusal + suggestions, never an improvised build.
+# - TEMPLATED: one stable SYSTEM_PROMPT constant (exact JSON schema +
+#   exact allowed-action catalog + few-shot examples), JSON-only output.
+# - FAST + CACHE-AWARE: the stable template goes FIRST (system message,
+#   byte-identical every call) and the variable user prompt goes LAST, so
+#   DeepSeek's automatic disk prefix cache can hit on the system prefix.
+#   Nothing variable (no budget, no timestamp, no randomness) is ever
+#   placed before or inside the system prompt. DeepSeek caching is
+#   automatic, best-effort, and needs no request field; a hit requires a
+#   full match on a persisted cache prefix unit (see api-docs.deepseek.com
+#   guides/kv_cache). The per-call budget rides in the user message, AFTER
+#   the stable prefix, so it cannot break the system-prefix cache unit.
+#
+# Two paths, same output shape:
+# 1. REAL DeepSeek client: HTTPRequest POST to
+#    https://api.deepseek.com/chat/completions (model "deepseek-flash",
+#    response_format {"type":"json_object"}, thinking DISABLED so the call
+#    stays fast/cheap — thinking mode is on by default on this model and
+#    bills reasoning tokens as output — temperature 0.2), key from
+#    ForgeConfig.load_key() (user://forge_config.json), 20 s timeout.
+#    The model name was verified against DeepSeek's own pricing docs on
+#    2026-10-13: "deepseek-flash" is the current cheap/fast model
+#    (DeepSeek-V4.1-Flash); the old "deepseek-chat" name was retired
+#    2026-07-24 and no longer resolves.
+# 2. Keyword-matcher fallback: used when there is no key, the request
+#    fails, or the model returns garbage — the game ALWAYS works offline.
+#
+# Async contract: request_spec() returns {} immediately; the real spec
+# arrives via signal spec_ready(spec). One request in flight at a time
+# (the Forge manager serializes calls anyway).
+extends Node
+class_name ForgeLLM
+
+signal spec_ready(spec: Dictionary)
+
+#region TUNABLES
+const API_URL := "https://api.deepseek.com/chat/completions"
+const MODEL := "deepseek-flash"
+const HTTP_TIMEOUT_SEC := 20.0
+const MAX_TOKENS := 400
+const TEMPERATURE := 0.2
+# Fallback costs (must match the costs quoted to the model in SYSTEM_PROMPT
+# and the base costs recomputed by validate_modspec()).
+const COST_WALL := 100
+const COST_TOWER := 150
+const COST_BARRICADE := 100
+const COST_TURRET := 250
+const COST_PICKUP := 75
+const COST_WEAPON := 200
+const COST_UAV := 150
+const COST_AIRSTRIKE := 300
+const COST_CHOPPER := 450
+const COST_SMOKE := 100
+const COST_SUPPLY := 50
+const COST_ENEMYMOD := 150
+const COST_BRIDGE := 120
+const COST_BUNKER := 180
+const COST_WATCHTOWER := 200
+const COST_AMMO_DEPOT := 150
+const COST_SPAWN_ENEMIES := 150
+## v0.6.2 COMPOSITION surcharges: the cost of a composed block, added to
+## the base block's cost by recompute_cost(). Quoted to the model in
+## SYSTEM_PROMPT; the game-computed sum is truth, never the model number.
+const COST_AMMO_SNIPER := 50
+const COST_AMMO_ARMOR_PIERCING := 75
+const COST_AMMO_BUCKSHOT := 50
+const COST_REINFORCED := 50
+## v0.6.2 COMPOSITION catalogs: every piece of a composed spec must be
+## one of these known blocks. "standard" is the zero-surcharge default.
+const AMMO_TYPES := ["standard", "sniper", "armor_piercing", "buckshot"]
+const BLOCK_PROPERTIES := ["standard", "reinforced"]
+## Helpful error for prompts the parser cannot map to any buildable.
+const UNKNOWN_HINT := "I don't know how to build that — try: wall, tower, turret, bridge, bunker, watchtower, ammo depot, sniper, UAV"
+## Suggestion list used by unknown_error() and refusal_message() — keep in
+## sync with the preset prompts the offline parser actually understands.
+const UNKNOWN_SUGGESTIONS := "wall, tower, turret, bridge, bunker, watchtower, ammo depot, sniper, UAV"
+## Max chars of a model-supplied refusal reason that reach the player.
+const MAX_REFUSAL_REASON_CHARS := 120
+#endregion
+
+## THE system prompt. One stable constant, byte-identical on every call.
+## The variable user prompt is appended LAST (in the user message), never
+## inside or before this template, so DeepSeek's prefix cache can reuse it.
+## Exact JSON schema + exact allowed-action catalog + few-shot examples.
+## The model MUST NOT invent targets, params, costs, scripts, or code.
+const SYSTEM_PROMPT := """You are the FORGE, an AI quartermaster in a voxel FPS. The player requisitions gear with a short prompt. Reply with EXACTLY ONE raw JSON object — no markdown fences, no commentary — in one of these two shapes:
+BUILD: {"spec_version":1,"action":"spawn|modify|event","target":"weapon|cover|turret|pickup|enemy_mod|killstreak|arena_event|structure|enemy_spawn","params":{},"cost":0,"ttl":0}
+REFUSAL (use when the request cannot be built from the catalog below): {"spec_version":1,"action":"refuse","target":"none","params":{"reason":"<short reason, max 120 chars>"},"cost":0,"ttl":0}
+CATALOG — build ONLY from these blocks. Never invent targets, params, blocks, scripts, or code. There is no code/script output; you compose pre-made blocks only.
+- cover: params {"shape":"wall"|"tower"|"barricade","size_voxels":[x,y,z] each 1-12,"position":"near_player"|"marked"|[x,y,z],"hp":50-500,"property":"standard"|"reinforced" optional}. Costs: wall 100, tower 150, barricade 100, reinforced +50. action "spawn".
+- structure: params {"shape":"bridge"|"bunker"|"watchtower"|"ammo_depot","position":"near_player"|"marked","property":"standard"|"reinforced" optional}. Costs: bridge 120, bunker 180, watchtower 200, ammo depot 150, reinforced +50. action "spawn". (bridge = stepped ramp up to a platform; bunker = roofed concrete pillbox; watchtower = tall platform on legs with stairs; ammo depot = crates plus an ammo cache)
+- turret: params {"position":"near_player"|"marked"|[x,y,z],"duration_sec":5-120,"ammo_type":"standard"|"sniper"|"armor_piercing"|"buckshot" optional}. Cost 250 + ammo surcharge (standard 0, sniper 50, armor_piercing 75, buckshot 50). action "spawn".
+- pickup: params {"kind":"ammo"|"health","position":"near_player"|"marked"}. Cost 75. action "spawn".
+- weapon: params {"weapon_id":"manticore"|"longeye"|"breacher"|"hornet"|"p9"|"raptor"|"lmg","ammo_type":"standard"|"sniper"|"armor_piercing"|"buckshot" optional}. Cost 200 + ammo surcharge (standard 0, sniper 50, armor_piercing 75, buckshot 50). action "spawn". (manticore=assault rifle, longeye=sniper rifle, breacher=shotgun, hornet=smg, p9=pistol, raptor=prototype claw, lmg=light machine gun — high capacity, slower handling)
+- enemy_mod: params {"mod":"weaken"}. Player requisitions may ONLY weaken enemies — never enrage. Cost 150. action "modify".
+- enemy_spawn: params {"type":"grunt"|"rusher"|"marksman","count":1-6}. Spawns hostile enemies for target practice / a challenge. Cost 150. action "spawn".
+- killstreak: params {"streak":"uav"|"airstrike"|"chopper","target":"marked"|"auto"}. Costs: uav 150, airstrike 300, chopper 450. action "spawn".
+- arena_event: params {"event":"smoke"|"supply_drop","duration_sec":5-120}. Costs: smoke 100, supply_drop 50. action "event". (duration_sec optional for supply_drop)
+Rules: default "position" to "near_player"; use "marked" only when the prompt says "there", "where I'm looking", or "where I'm aiming". COMPOSITION: combine any known blocks — any known weapon + any known ammo_type, any known cover/structure + a known property — even when that exact combo has no preset. The game computes the final cost as the SUM of the composed blocks' costs (base block + each added block's surcharge); emit your best estimate of that sum. If the prompt is unclear or asks for anything outside this catalog (vehicles, flying things, lasers, new weapons, new enemies, scripts, code, behaviour changes), emit the REFUSAL shape — never improvise a build as a substitute.
+Examples:
+Player: "build a tower near me" -> {"spec_version":1,"action":"spawn","target":"cover","params":{"shape":"tower","size_voxels":[4,10,4],"position":"near_player","hp":350},"cost":150,"ttl":0}
+Player: "give me a sniper rifle" -> {"spec_version":1,"action":"spawn","target":"weapon","params":{"weapon_id":"longeye"},"cost":200,"ttl":0}
+Player: "give me an LMG with sniper bullets" -> {"spec_version":1,"action":"spawn","target":"weapon","params":{"weapon_id":"lmg","ammo_type":"sniper"},"cost":250,"ttl":0}
+Player: "build a reinforced bunker" -> {"spec_version":1,"action":"spawn","target":"structure","params":{"shape":"bunker","position":"near_player","property":"reinforced"},"cost":230,"ttl":0}
+Player: "make a flying car that shoots lasers" -> {"spec_version":1,"action":"refuse","target":"none","params":{"reason":"flying cars and lasers are not in the build catalog"},"cost":0,"ttl":0}"""
+
+## USER MODS catalog section (v0.7): sent as the SECOND system message,
+## AFTER the stable base SYSTEM_PROMPT and BEFORE the user prompt. Lists
+## ENABLED user mods ONLY — disabled / broken mods never appear, so the
+## model can never reference them. When no mods are installed the section
+## is a fixed one-liner, so the system messages stay byte-identical
+## across calls.
+## Each line gives the model the exact mod_block id, target, cost, and
+## param shape to emit: params {"mod_block":"<id>"} plus "position" for
+## placed builds (near_player|marked|[x,y,z]). Composition with
+## ammo_type/property still applies; the game recomputes cost from the
+## mod's declared cost plus any composition surcharge.
+static func user_mods_section() -> String:
+	var enabled := ModLoader.get_enabled_mods()
+	if enabled.is_empty():
+		return "\nUSER MODS: none installed. (Players can add validated blocks in user://mods/.)\n"
+	var lines: Array[String] = []
+	lines.append("USER MODS — player-installed blocks (validated by the game). You may use ONLY the mod_block ids listed here; never invent one. A user-mod build uses params {\"mod_block\":\"<id>\"} plus \"position\" for placed builds (near_player|marked|[x,y,z]). The game computes the cost from the mod's declared cost; emit your best estimate.")
+	for m in enabled:
+		var rec := ModLoader.find_mod(str(m.get("id", "")))
+		var info: Dictionary = rec.get("block_info", {})
+		var desc := str(info.get("description", "")).strip_edges()
+		var line := "- mod_block \"%s\" [%s] %s. Cost %d." % [
+			str(m.get("id", "")),
+			str(info.get("target", "")),
+			str(info.get("display_name", "")),
+			int(info.get("cost", 0)),
+		]
+		if not desc.is_empty():
+			line += " %s" % desc
+		lines.append(line)
+	return "\n" + "\n".join(lines) + "\n"
+
+
+var _in_flight := false
+var _pending_spec: Dictionary = {}
+
+
+func request_spec(prompt: String) -> Dictionary:
+	if _in_flight:
+		return {}
+	_in_flight = true
+	var key := ForgeConfig.load_key()
+	if key.is_empty():
+		_finish(_fallback_spec(prompt))
+		return {}
+	_request_remote(prompt, key)
+	return {}
+
+
+func is_busy() -> bool:
+	return _in_flight
+
+
+func _request_remote(prompt: String, key: String) -> void:
+	var budget := 0
+	var b: Variant = Game.get("forge_budget")
+	if b is int or b is float:
+		budget = int(b)
+	# CACHE LAYOUT: messages[0] is the stable SYSTEM_PROMPT (byte-identical
+	# every call, a whole-message cache unit); messages[1] is the user-mods
+	# section (the only variable system content, clearly delimited);
+	# messages[2] carries ALL other variable content, with the user prompt
+	# LAST. Never reorder these, and never put variable text in
+	# messages[0] — either breaks DeepSeek's prefix-cache match.
+	var body := {
+		"model": MODEL,
+		"messages": [
+			{"role": "system", "content": SYSTEM_PROMPT},
+			{"role": "system", "content": user_mods_section()},
+			{"role": "user", "content": "Forge budget: %d. Player requisition: %s" % [budget, prompt]},
+		],
+		"response_format": {"type": "json_object"},
+		"temperature": TEMPERATURE,
+		"max_tokens": MAX_TOKENS,
+		# Thinking mode is ON by default on deepseek-flash and bills
+		# reasoning tokens as output. This is a fixed-catalog JSON
+		# extraction task: non-thinking is faster and cheaper.
+		"thinking": {"type": "disabled"},
+	}
+	var http := HTTPRequest.new()
+	http.timeout = HTTP_TIMEOUT_SEC
+	add_child(http)
+	http.request_completed.connect(_on_http_completed.bind(http, prompt))
+	var headers := PackedStringArray([
+		"Content-Type: application/json",
+		"Authorization: Bearer " + key,
+	])
+	var err := http.request(API_URL, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
+	if err != OK:
+		push_warning("ForgeLLM: HTTPRequest failed to start (%s); using fallback." % error_string(err))
+		http.queue_free()
+		_finish(_fallback_spec(prompt))
+
+
+func _on_http_completed(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, prompt: String) -> void:
+	var text := ""
+	if result == HTTPRequest.RESULT_SUCCESS and code == 200:
+		text = body.get_string_from_utf8()
+	http.queue_free()
+	var spec := _extract_spec(text)
+	if spec.is_empty():
+		if result != HTTPRequest.RESULT_SUCCESS:
+			push_warning("ForgeLLM: request failed (result=%d, http=%d); using fallback." % [result, code])
+		else:
+			push_warning("ForgeLLM: model returned bad JSON; using fallback.")
+		spec = _fallback_spec(prompt)
+	_finish(spec)
+
+
+## Pulls the ModSpec JSON out of a chat-completions response envelope.
+## Returns {} unless the payload has action+target. A REFUSAL spec passes
+## through untouched — the manager handles it before any validation, and
+## it must NEVER fall through to the offline fallback (which might
+## improvise a build for a prompt the model correctly refused).
+func _extract_spec(text: String) -> Dictionary:
+	if text.strip_edges().is_empty():
+		return {}
+	var data: Variant = JSON.parse_string(text)
+	if not (data is Dictionary):
+		return {}
+	var choices: Array = (data as Dictionary).get("choices", [])
+	if choices.is_empty() or not (choices[0] is Dictionary):
+		return {}
+	var msg: Dictionary = (choices[0] as Dictionary).get("message", {})
+	var content := _strip_fences(str(msg.get("content", "")).strip_edges())
+	var spec: Variant = JSON.parse_string(content)
+	if not (spec is Dictionary):
+		return {}
+	var d := spec as Dictionary
+	if not (d.has("action") and d.has("target")):
+		return {}
+	d["spec_version"] = 1
+	return d
+
+
+func _strip_fences(s: String) -> String:
+	if s.begins_with("```"):
+		var lines := s.split("\n")
+		if lines.size() >= 2:
+			lines = lines.slice(1)
+			if lines[lines.size() - 1].strip_edges() == "```":
+				lines = lines.slice(0, lines.size() - 1)
+			return "\n".join(lines).strip_edges()
+	return s
+
+
+func _finish(spec: Dictionary) -> void:
+	_in_flight = false
+	_pending_spec = spec
+	# Deferred: request_spec() may complete synchronously (offline fallback),
+	# and the caller only starts awaiting AFTER it returns.
+	call_deferred("_emit_ready")
+
+
+func _emit_ready() -> void:
+	spec_ready.emit(_pending_spec)
+
+
+# --- Refusal ---------------------------------------------------------------
+# The model (or a future caller) can return a refusal spec when the prompt
+# cannot be expressed with the fixed catalog. Refusals carry no build, no
+# charge, and must be surfaced verbatim-ish to the player with suggestions.
+
+## True when spec is the REFUSAL shape from SYSTEM_PROMPT.
+static func is_refusal(spec: Dictionary) -> bool:
+	return str(spec.get("action", "")) == "refuse" and str(spec.get("target", "")) == "none"
+
+
+## Player-facing refusal text: the reason (when sane) + what IS buildable.
+## Never echoes raw model text beyond the capped reason string.
+static func refusal_message(spec: Dictionary) -> String:
+	var reason := ""
+	if spec.get("params") is Dictionary:
+		reason = str((spec["params"] as Dictionary).get("reason", "")).strip_edges().left(MAX_REFUSAL_REASON_CHARS)
+	if reason.is_empty():
+		return "Can't do that with the available blocks — try: %s" % UNKNOWN_SUGGESTIONS
+	return "Can't do that with the available blocks (%s) — try: %s" % [reason, UNKNOWN_SUGGESTIONS]
+
+
+# --- ModSpec validation (v0.6.2: composition-allowed gate) ------------------
+# COMPOSITION-ALLOWED, unlike the v0.6.0 strict gate. The LLM may combine
+# any KNOWN blocks (any known weapon + any known ammo_type, any known
+# cover/structure + a known property, any known turret + any known
+# ammo_type) even when that exact combo has no preset. Each PIECE is
+# validated against its catalog — an unknown action/target/block, an
+# invented field, code/script content, or an out-of-range number still
+# returns [false, reason]. The COST is never a rejection reason anymore:
+# recompute_cost() sums the composed blocks' costs and the recomputed
+# value is substituted into spec["cost"] as truth, so a stale or estimated
+# model cost cannot reject a valid build. Refusals are handled by the
+# manager before this gate; they are not build specs. The trusted
+# ForgeBuilder only ever receives specs that passed this gate (or the
+# offline fallback, whose outputs are in-catalog by construction and pass
+# it too).
+#
+# Returns [ok: bool, reason: String]. On success, spec["cost"] holds the
+# recomputed game cost.
+
+const _TOP_KEYS := ["spec_version", "action", "target", "params", "cost", "ttl"]
+const _FORBIDDEN_KEYS := ["script", "code", "gdscript", "eval", "expression", "source", "behavior", "behaviour"]
+const _FORBIDDEN_SUBSTRINGS := ["eval(", "OS.execute", "OS.create_process", "func ", "extends ", "GDScript", "load(", "preload(", "Expression", "call_deferred"]
+
+static func validate_modspec(spec: Dictionary) -> Array:
+	if spec.is_empty():
+		return [false, "empty spec"]
+	if is_refusal(spec):
+		return [false, "refusal — not a build spec"]
+	for k in spec.keys():
+		if not (str(k) in _TOP_KEYS):
+			return [false, "invented field '%s'" % str(k)]
+		if str(k) in _FORBIDDEN_KEYS:
+			return [false, "forbidden field '%s'" % str(k)]
+	if int(spec.get("spec_version", 0)) != 1:
+		return [false, "unsupported spec_version"]
+	var action := str(spec.get("action", ""))
+	var target := str(spec.get("target", ""))
+	if not _is_catalog_pair(action, target):
+		return [false, "unknown action/target '%s/%s'" % [action, target]]
+	if not _is_clean_value(spec):
+		return [false, "spec contains code/script content"]
+	var cost: Variant = spec.get("cost", null)
+	if not (cost is int or cost is float):
+		return [false, "cost is not a number"]
+	var ttl: Variant = spec.get("ttl", 0)
+	if not (ttl is int or ttl is float) or float(ttl) < 0.0 or float(ttl) > 120.0:
+		return [false, "ttl out of range 0-120"]
+	if not (spec.get("params") is Dictionary):
+		return [false, "params is not an object"]
+	var params: Dictionary = spec["params"]
+	var param_verdict := _validate_params(target, params)
+	if not bool(param_verdict[0]):
+		return param_verdict
+	# COST: recompute from the composed blocks; the recomputed sum is
+	# truth and is SUBSTITUTED — a mismatch is never a rejection.
+	var recomputed := recompute_cost(target, params)
+	if recomputed < 0:
+		return [false, "unknown build in catalog"]
+	spec["cost"] = recomputed
+	return [true, "ok"]
+
+
+## (action, target) pairs the catalog allows.
+static func _is_catalog_pair(action: String, target: String) -> bool:
+	match target:
+		"cover", "structure", "turret", "pickup", "weapon", "killstreak", "enemy_spawn":
+			return action == "spawn"
+		"enemy_mod":
+			return action == "modify"
+		"arena_event":
+			return action == "event"
+	return false
+
+
+## Recomputes the game cost of a spec from its composed blocks: the base
+## block's fixed cost PLUS each composed block's surcharge (ammo_type,
+## property). Returns -1 when the base build or a composed piece is
+## unknown (the caller / _validate_params rejects those first).
+static func recompute_cost(target: String, params: Dictionary) -> int:
+	# v0.7 USER MODS: the mod's declared cost is the base. Composition
+	# surcharges still apply for an ammo_type/property the mod does NOT
+	# already declare (a mod that already declares the same value adds
+	# nothing — no double charge).
+	if params.has("mod_block"):
+		var rec := ModLoader.find_mod(str(params.get("mod_block", "")))
+		if rec.is_empty():
+			return -1
+		var info: Dictionary = rec.get("block_info", {})
+		var mod_cost: Variant = info.get("cost", null)
+		if not (mod_cost is int or mod_cost is float):
+			return -1
+		var extra := 0
+		if params.has("ammo_type"):
+			var at := str(params.get("ammo_type", ""))
+			if str(info.get("ammo_type", "")) != at:
+				match at:
+					"standard":
+						pass
+					"sniper":
+						extra += COST_AMMO_SNIPER
+					"armor_piercing":
+						extra += COST_AMMO_ARMOR_PIERCING
+					"buckshot":
+						extra += COST_AMMO_BUCKSHOT
+					_:
+						return -1
+		if params.has("property"):
+			var pr := str(params.get("property", ""))
+			if str(info.get("property", "")) != pr:
+				match pr:
+					"standard":
+						pass
+					"reinforced":
+						extra += COST_REINFORCED
+					_:
+						return -1
+		return int(mod_cost) + extra
+	var base := _base_cost(target, params)
+	if base < 0:
+		return -1
+	var extra := 0
+	if params.has("ammo_type"):
+		match str(params.get("ammo_type", "")):
+			"standard":
+				pass
+			"sniper":
+				extra += COST_AMMO_SNIPER
+			"armor_piercing":
+				extra += COST_AMMO_ARMOR_PIERCING
+			"buckshot":
+				extra += COST_AMMO_BUCKSHOT
+			_:
+				return -1
+	if params.has("property"):
+		match str(params.get("property", "")):
+			"standard":
+				pass
+			"reinforced":
+				extra += COST_REINFORCED
+			_:
+				return -1
+	return base + extra
+
+
+## Back-compat alias: the old fixed-cost lookup is now the recompute.
+static func _catalog_cost(target: String, params: Dictionary) -> int:
+	return recompute_cost(target, params)
+
+
+## Fixed base cost of the primary block. -1 when the distinguishing param
+## is itself unknown (caught by _validate_params, but cost must fail first
+## so a bad shape cannot smuggle a plausible cost past the gate).
+static func _base_cost(target: String, params: Dictionary) -> int:
+	match target:
+		"cover":
+			match str(params.get("shape", "")):
+				"wall":
+					return COST_WALL
+				"tower":
+					return COST_TOWER
+				"barricade":
+					return COST_BARRICADE
+		"structure":
+			match str(params.get("shape", "")):
+				"bridge":
+					return COST_BRIDGE
+				"bunker":
+					return COST_BUNKER
+				"watchtower":
+					return COST_WATCHTOWER
+				"ammo_depot":
+					return COST_AMMO_DEPOT
+		"turret":
+			return COST_TURRET
+		"pickup":
+			return COST_PICKUP
+		"weapon":
+			return COST_WEAPON
+		"enemy_mod":
+			return COST_ENEMYMOD
+		"enemy_spawn":
+			return COST_SPAWN_ENEMIES
+		"killstreak":
+			match str(params.get("streak", "")):
+				"uav":
+					return COST_UAV
+				"airstrike":
+					return COST_AIRSTRIKE
+				"chopper":
+					return COST_CHOPPER
+		"arena_event":
+			match str(params.get("event", "")):
+				"smoke":
+					return COST_SMOKE
+				"supply_drop":
+					return COST_SUPPLY
+	return -1
+
+
+## Per-target param validation: required keys + optional composition keys
+## (ammo_type / property), enums, ranges. No clamping, no defaults, no
+## repair — anything outside the catalog is a rejection. Composition
+## pieces (ammo_type, property) are validated individually against their
+## own catalogs, never against a preset list of whole combos.
+static func _validate_params(target: String, params: Dictionary) -> Array:
+	for k in params.keys():
+		if str(k) in _FORBIDDEN_KEYS:
+			return [false, "forbidden param '%s'" % str(k)]
+	# v0.7 USER MODS: a spec referencing an enabled user-mod block takes
+	# this branch instead of the per-target shape checks — the block
+	# itself carries the shape/stats (already validated at scan time).
+	# Only the reference, the target match, and any composition keys are
+	# checked here. Extra base keys (shape, hp, ...) are ignored: the
+	# mod block wins.
+	if params.has("mod_block"):
+		return _validate_mod_block_params(target, params)
+	match target:
+		"cover":
+			if not _keys_with_optional(params, ["shape", "size_voxels", "position", "hp"], ["shape", "size_voxels", "position", "hp", "property"]):
+				return [false, "cover params must be shape/size_voxels/position/hp (+optional property)"]
+			if not (str(params.get("shape", "")) in ["wall", "tower", "barricade"]):
+				return [false, "bad cover shape '%s'" % str(params.get("shape", ""))]
+			if not _is_size_voxels(params.get("size_voxels", null)):
+				return [false, "size_voxels must be [x,y,z] each 1-12"]
+			if not _is_position(params.get("position", null)):
+				return [false, "bad position"]
+			if not _is_num_in(params.get("hp", null), 50.0, 500.0):
+				return [false, "hp out of range 50-500"]
+			if params.has("property") and not (str(params.get("property", "")) in BLOCK_PROPERTIES):
+				return [false, "bad cover property '%s'" % str(params.get("property", ""))]
+		"structure":
+			if not _keys_with_optional(params, ["shape", "position"], ["shape", "position", "property"]):
+				return [false, "structure params must be shape/position (+optional property)"]
+			if not (str(params.get("shape", "")) in ["bridge", "bunker", "watchtower", "ammo_depot"]):
+				return [false, "bad structure '%s'" % str(params.get("shape", ""))]
+			if not _is_position(params.get("position", null)):
+				return [false, "bad position"]
+			if params.has("property") and not (str(params.get("property", "")) in BLOCK_PROPERTIES):
+				return [false, "bad structure property '%s'" % str(params.get("property", ""))]
+		"turret":
+			if not _keys_with_optional(params, ["position", "duration_sec"], ["position", "duration_sec", "ammo_type"]):
+				return [false, "turret params must be position/duration_sec (+optional ammo_type)"]
+			if not _is_position(params.get("position", null)):
+				return [false, "bad position"]
+			if not _is_num_in(params.get("duration_sec", null), 5.0, 120.0):
+				return [false, "duration_sec out of range 5-120"]
+			if params.has("ammo_type") and not (str(params.get("ammo_type", "")) in AMMO_TYPES):
+				return [false, "bad ammo_type '%s'" % str(params.get("ammo_type", ""))]
+		"pickup":
+			if not _keys_exact(params, ["kind", "position"]):
+				return [false, "pickup params must be kind/position"]
+			if not (str(params.get("kind", "")) in ["ammo", "health"]):
+				return [false, "bad pickup kind '%s'" % str(params.get("kind", ""))]
+			if not _is_position(params.get("position", null)):
+				return [false, "bad position"]
+		"weapon":
+			if not _keys_with_optional(params, ["weapon_id"], ["weapon_id", "ammo_type"]):
+				return [false, "weapon params must be weapon_id (+optional ammo_type)"]
+			if not (str(params.get("weapon_id", "")) in ["manticore", "longeye", "breacher", "hornet", "p9", "raptor", "lmg"]):
+				return [false, "bad weapon_id '%s'" % str(params.get("weapon_id", ""))]
+			if params.has("ammo_type") and not (str(params.get("ammo_type", "")) in AMMO_TYPES):
+				return [false, "bad ammo_type '%s'" % str(params.get("ammo_type", ""))]
+		"enemy_mod":
+			if not _keys_exact(params, ["mod"]):
+				return [false, "enemy_mod params must be mod"]
+			if str(params.get("mod", "")) != "weaken":
+				return [false, "requisitions are limited to 'weaken'"]
+		"enemy_spawn":
+			if not _keys_exact(params, ["type", "count"]):
+				return [false, "enemy_spawn params must be type/count"]
+			if not (str(params.get("type", "")) in ["grunt", "rusher", "marksman"]):
+				return [false, "bad enemy type '%s'" % str(params.get("type", ""))]
+			if not _is_int_in(params.get("count", null), 1, 6):
+				return [false, "count out of range 1-6"]
+		"killstreak":
+			if not _keys_exact(params, ["streak", "target"]):
+				return [false, "killstreak params must be streak/target"]
+			if not (str(params.get("streak", "")) in ["uav", "airstrike", "chopper"]):
+				return [false, "bad streak '%s'" % str(params.get("streak", ""))]
+			if not (str(params.get("target", "")) in ["marked", "auto"]):
+				return [false, "bad killstreak target '%s'" % str(params.get("target", ""))]
+		"arena_event":
+			if not _keys_subset(params, ["event", "duration_sec"]):
+				return [false, "arena_event params must be event (+duration_sec)"]
+			if not (str(params.get("event", "")) in ["smoke", "supply_drop"]):
+				return [false, "bad event '%s'" % str(params.get("event", ""))]
+			if params.has("duration_sec") and not _is_num_in(params.get("duration_sec", null), 5.0, 120.0):
+				return [false, "duration_sec out of range 5-120"]
+	return [true, "ok"]
+
+
+## v0.7: validates a spec whose params carry "mod_block". The reference
+## must resolve to an ENABLED, error-free mod whose declared target
+## matches the spec's target; composition keys (position / ammo_type /
+## property / duration_sec / kind) are validated when present.
+static func _validate_mod_block_params(target: String, params: Dictionary) -> Array:
+	var ref: Variant = params.get("mod_block", null)
+	if not (ref is String) or str(ref).strip_edges().is_empty():
+		return [false, "mod_block must be a non-empty string"]
+	var rec := ModLoader.find_mod(str(ref))
+	if rec.is_empty():
+		return [false, "unknown mod_block '%s'" % str(ref)]
+	if not bool(rec.get("enabled", false)) or str(rec.get("error", "")) != "":
+		return [false, "mod_block '%s' is disabled or broken" % str(ref)]
+	var info: Dictionary = rec.get("block_info", {})
+	if str(info.get("target", "")) != target:
+		return [false, "mod_block '%s' is a %s, not a %s" % [str(ref), str(info.get("target", "")), target]]
+	match target:
+		"weapon":
+			for k in params.keys():
+				if str(k) not in ["mod_block", "ammo_type", "weapon_id"]:
+					return [false, "weapon mod_block params must be mod_block (+optional ammo_type)"]
+		"cover":
+			for k in params.keys():
+				if str(k) not in ["mod_block", "position", "property", "shape", "size_voxels", "hp"]:
+					return [false, "cover mod_block params must be mod_block/position (+optional property)"]
+		"structure":
+			for k in params.keys():
+				if str(k) not in ["mod_block", "position", "property", "shape"]:
+					return [false, "structure mod_block params must be mod_block/position (+optional property)"]
+		"turret":
+			for k in params.keys():
+				if str(k) not in ["mod_block", "position", "duration_sec", "ammo_type"]:
+					return [false, "turret mod_block params must be mod_block/position (+optional duration_sec/ammo_type)"]
+		"pickup":
+			for k in params.keys():
+				if str(k) not in ["mod_block", "position", "kind"]:
+					return [false, "pickup mod_block params must be mod_block/position"]
+		_:
+			return [false, "mod_block not supported for target '%s'" % target]
+	if params.has("position") and not _is_position(params.get("position", null)):
+		return [false, "bad position"]
+	if params.has("ammo_type") and not (str(params.get("ammo_type", "")) in AMMO_TYPES):
+		return [false, "bad ammo_type '%s'" % str(params.get("ammo_type", ""))]
+	if params.has("property") and not (str(params.get("property", "")) in BLOCK_PROPERTIES):
+		return [false, "bad property '%s'" % str(params.get("property", ""))]
+	if params.has("duration_sec") and not _is_num_in(params.get("duration_sec", null), 5.0, 120.0):
+		return [false, "duration_sec out of range 5-120"]
+	if params.has("kind") and info.has("kind") and str(params.get("kind", "")) != str(info.get("kind", "")):
+		return [false, "kind '%s' does not match mod_block '%s'" % [str(params.get("kind", "")), str(ref)]]
+	return [true, "ok"]
+
+
+## Recursively scans every string in the spec for code/script content.
+## The catalog has no legitimate string containing any of these.
+static func _is_clean_value(v: Variant) -> bool:
+	if v is String:
+		var s: String = v
+		for bad in _FORBIDDEN_SUBSTRINGS:
+			if s.contains(bad):
+				return false
+		return true
+	if v is Dictionary:
+		for k in (v as Dictionary).keys():
+			if not _is_clean_value(k):
+				return false
+			if not _is_clean_value((v as Dictionary)[k]):
+				return false
+		return true
+	if v is Array:
+		for item in (v as Array):
+			if not _is_clean_value(item):
+				return false
+		return true
+	return true
+
+
+static func _keys_exact(params: Dictionary, required: Array) -> bool:
+	if params.size() != required.size():
+		return false
+	for k in required:
+		if not params.has(k):
+			return false
+	return true
+
+
+## Required keys must all be present; every key (required or extra) must
+## be in `allowed`. Composition params live in `allowed` but not
+## `required` (e.g. weapon: required [weapon_id], allowed + ammo_type).
+static func _keys_with_optional(params: Dictionary, required: Array, allowed: Array) -> bool:
+	for k in required:
+		if not params.has(k):
+			return false
+	for k in params.keys():
+		if not (str(k) in allowed):
+			return false
+	return true
+
+
+static func _keys_subset(params: Dictionary, allowed: Array) -> bool:
+	if params.is_empty():
+		return false
+	for k in params.keys():
+		if not (str(k) in allowed):
+			return false
+	for k in ["event"]:
+		if not params.has(k):
+			return false
+	return true
+
+
+static func _is_num_in(v: Variant, lo: float, hi: float) -> bool:
+	return (v is int or v is float) and float(v) >= lo and float(v) <= hi
+
+
+static func _is_int_in(v: Variant, lo: int, hi: int) -> bool:
+	return v is int and int(v) >= lo and int(v) <= hi
+
+
+static func _is_size_voxels(v: Variant) -> bool:
+	if not (v is Array) or (v as Array).size() != 3:
+		return false
+	for item in (v as Array):
+		if not _is_int_in(item, 1, 12):
+			return false
+	return true
+
+
+## "near_player" | "marked" | [x,y,z] with x/z in -60..60, y in 0..30
+## (the ForgeBuilder arena clamp).
+static func _is_position(v: Variant) -> bool:
+	if v is String:
+		return str(v) in ["near_player", "marked"]
+	if v is Array and (v as Array).size() == 3:
+		var a: Array = v
+		return _is_num_in(a[0], -60.0, 60.0) and _is_num_in(a[1], 0.0, 30.0) and _is_num_in(a[2], -60.0, 60.0)
+	return false
+
+
+# --- Offline keyword-matcher fallback ---------------------------------------
+# Genuinely useful on its own: covers every Forge target with sensible
+# defaults so the prompt->build loop works with zero network and zero key.
+# All-static so preview_cost() can parse without executing or touching the
+# network. Unknown prompts return {"_error": unknown_error(prompt)} instead
+# of improvising a build, so the UI can show a helpful error that names
+# the prompt and lists what IS buildable. v0.5.1 FIX 7b: the error echoes
+# the prompt ("Don't know 'knife' — try: ...") so the player sees WHY
+# nothing happened instead of silence. No knife weapon is added — "knife"
+# stays unknown by design; the error is the fix.
+
+## Synchronous offline parse: returns a ModSpec, or {"_error": hint} when the
+## prompt matches nothing. Never touches the network.
+static func parse_offline(prompt: String) -> Dictionary:
+	return _fallback_spec(prompt)
+
+
+static func _ph(hay: String, words: Array) -> bool:
+	for w in words:
+		if hay.contains(str(w)):
+			return true
+	return false
+
+
+static func _spec(action: String, target: String, params: Dictionary, cost: int) -> Dictionary:
+	return {"spec_version": 1, "action": action, "target": target, "params": params, "cost": cost, "ttl": 0}
+
+
+static func _unknown_spec(prompt: String = "") -> Dictionary:
+	var d := _spec("event", "arena_event", {"event": "supply_drop"}, 0)
+	d["_error"] = unknown_error(prompt)
+	return d
+
+
+## Visible-error text for an unparseable prompt. Echoes the prompt (so
+## "knife" doesn't vanish into silence) plus the buildable suggestions.
+## Empty prompt falls back to the generic UNKNOWN_HINT.
+static func unknown_error(prompt: String) -> String:
+	var clean := prompt.strip_edges().left(40)
+	if clean.is_empty():
+		return UNKNOWN_HINT
+	return "Don't know '%s' — try: %s" % [clean, UNKNOWN_SUGGESTIONS]
+
+
+static func _fallback_spec(prompt: String) -> Dictionary:
+	var p := prompt.to_lower()
+	if _ph(p, ["turret", "sentry", "auto gun", "auto-gun"]):
+		return _spec("spawn", "turret", {"position": "near_player", "duration_sec": 45}, COST_TURRET)
+	# "watchtower" first: it contains "tower", and is its own buildable.
+	if _ph(p, ["watchtower", "watch tower", "observation", "guard tower"]):
+		return _spec("spawn", "structure", {"shape": "watchtower", "position": "near_player"}, COST_WATCHTOWER)
+	if _ph(p, ["bunker", "pillbox", "foxhole", "dugout"]):
+		return _spec("spawn", "structure", {"shape": "bunker", "position": "near_player"}, COST_BUNKER)
+	# "ammo depot" before the generic ammo pickup ("ammo") and supply ("drop").
+	if _ph(p, ["ammo depot", "ammo dump", "supply depot", "armory", "armoury", "ammo cache"]):
+		return _spec("spawn", "structure", {"shape": "ammo_depot", "position": "near_player"}, COST_AMMO_DEPOT)
+	if _ph(p, ["bridge", "ramp", "crossing", "walkway", "overpass"]):
+		return _spec("spawn", "structure", {"shape": "bridge", "position": "near_player"}, COST_BRIDGE)
+	# "tower" first: "build a sniper tower" is cover; bare "sniper" is a rifle.
+	if _ph(p, ["tower", "sniper nest", "overwatch", "lookout"]):
+		return _spec("spawn", "cover", {"shape": "tower", "size_voxels": [4, 10, 4], "position": "near_player", "hp": 350}, COST_TOWER)
+	if _ph(p, ["barricade"]):
+		return _spec("spawn", "cover", {"shape": "barricade", "size_voxels": [6, 4, 2], "position": "near_player", "hp": 200}, COST_BARRICADE)
+	if _ph(p, ["wall", "cover", "barrier", "blockade", "hide", "fortif", "defense", "defence"]):
+		return _spec("spawn", "cover", {"shape": "wall", "size_voxels": [8, 5, 2], "position": "near_player", "hp": 250}, COST_WALL)
+	if _ph(p, ["chopper", "helicopter", "heli", "air support"]):
+		return _spec("spawn", "killstreak", {"streak": "chopper", "target": "auto"}, COST_CHOPPER)
+	if _ph(p, ["airstrike", "air strike", "bomb", "carpet"]):
+		return _spec("spawn", "killstreak", {"streak": "airstrike", "target": "marked"}, COST_AIRSTRIKE)
+	if _ph(p, ["uav", "drone", "reveal", "recon", "scan", "show enemies", "spot", "surveillance"]):
+		return _spec("spawn", "killstreak", {"streak": "uav", "target": "auto"}, COST_UAV)
+	if "smoke" in p:
+		return _spec("event", "arena_event", {"event": "smoke", "duration_sec": 20}, COST_SMOKE)
+	if _ph(p, ["spawn enemies", "summon enemies", "send enemies", "more enemies", "call in enemies", "bring enemies", "spawn foes", "spawn hostiles"]):
+		return _spec("spawn", "enemy_spawn", {"type": "grunt", "count": 3}, COST_SPAWN_ENEMIES)
+	# v0.6.2 COMPOSITION: "LMG with sniper bullets" is a weapon + ammo
+	# composition, NOT an ammo pickup — check it before the generic ammo
+	# branch below (which fires on "bullets").
+	if _ph(p, ["lmg", "machine gun", "minigun"]) and "sniper" in p:
+		return _spec("spawn", "weapon", {"weapon_id": "lmg", "ammo_type": "sniper"}, COST_WEAPON + COST_AMMO_SNIPER)
+	if _ph(p, ["ammo", "reload", "bullets", "mags", "rounds"]):
+		return _spec("spawn", "pickup", {"kind": "ammo", "position": "near_player"}, COST_PICKUP)
+	if _ph(p, ["health", "heal", "medic", "medkit", "patch me", "hurt"]):
+		return _spec("spawn", "pickup", {"kind": "health", "position": "near_player"}, COST_PICKUP)
+	for wid in ["manticore", "longeye", "breacher", "hornet", "p9", "raptor", "lmg"]:
+		if wid in p:
+			return _spec("spawn", "weapon", {"weapon_id": wid}, COST_WEAPON)
+	if "shotgun" in p:
+		return _spec("spawn", "weapon", {"weapon_id": "breacher"}, COST_WEAPON)
+	if "sniper" in p or "dmr" in p or "marksman rifle" in p or "sniper rifle" in p:
+		return _spec("spawn", "weapon", {"weapon_id": "longeye"}, COST_WEAPON)
+	if _ph(p, ["smg", "submachine"]):
+		return _spec("spawn", "weapon", {"weapon_id": "hornet"}, COST_WEAPON)
+	if _ph(p, ["pistol", "sidearm", "handgun"]):
+		return _spec("spawn", "weapon", {"weapon_id": "p9"}, COST_WEAPON)
+	if _ph(p, ["lmg", "machine gun", "minigun"]):
+		return _spec("spawn", "weapon", {"weapon_id": "lmg"}, COST_WEAPON)
+	if _ph(p, ["rifle", "gun", "weapon", "armed"]):
+		return _spec("spawn", "weapon", {"weapon_id": "manticore"}, COST_WEAPON)
+	# NOTE: "enrage" maps to weaken — player requisitions may only weaken
+	# (enrage is director-only and rejected in validation).
+	if _ph(p, ["weaken", "enrage", "soften", "kill them", "take them out", "wreck them"]):
+		return _spec("modify", "enemy_mod", {"mod": "weaken"}, COST_ENEMYMOD)
+	if _ph(p, ["supply", "drop", "crate", "care package"]):
+		return _spec("event", "arena_event", {"event": "supply_drop"}, COST_SUPPLY)
+	# Unknown: no improvising — the caller surfaces unknown_error(prompt)
+	# via Forge.forge_result (HUD feed + Forge menu toast) / preview_cost.
+	return _unknown_spec(prompt)
+
+
+# --- LLM MOD CREATION (v0.8 chunk 2, Worker A) --------------------------------
+# SEPARATE from the Forge build path above. The build path turns a prompt
+# into a ModSpec from the fixed catalog (SYSTEM_PROMPT + spec_ready, max
+# 400 tokens). THIS path turns a player's mod idea into a NEW user mod
+# (manifest + payload + summary) for human approval + install via
+# ModCreator. It has its own template (GENERATION_SYSTEM_PROMPT), its own
+# token budget (GENERATION_MAX_TOKENS), its own in-flight / queue state,
+# and its own signal (generation_ready). It NEVER touches _in_flight,
+# _pending_spec, spec_ready, SYSTEM_PROMPT, or validate_modspec.
+# Cache layout mirrors the build path: messages[0] is the stable
+# GENERATION_SYSTEM_PROMPT (byte-identical every call); messages[1]
+# carries ALL variable content, with the user idea LAST.
+# The generation result is a RAW generation object — {manifest, payload,
+# summary} or {error} — NOT a candidate. ModCreator turns it into a
+# candidate (mod_id, validation, install). Full validation lives in
+# ModLoader.validate_generated_mod(); this path only checks the envelope
+# shape (manifest is an object, payload/summary are strings).
+
+signal generation_ready(result: Dictionary)
+
+const GENERATION_MAX_TOKENS := 2000
+
+## THE generation template. One stable constant, byte-identical on every
+## call; the variable user idea goes LAST (in the user message), never
+## inside or before this template, so DeepSeek's prefix cache can reuse
+## it. ModAPI docs + ModBlock contract + manifest schema + few-shot
+## examples (one JSON-block mod, one GDScript mod). The LLM decides kind:
+## data-only idea -> block, behaviour idea -> script. Generation must
+## NEVER emit filesystem / network / OS / eval code — stated here AND
+## enforced by ModLoader.validate_generated_mod().
+const GENERATION_SYSTEM_PROMPT := """You are the FORGE MOD SMITH in a voxel FPS. The player describes a NEW mod in one sentence. Reply with EXACTLY ONE raw JSON object — no markdown fences, no commentary:
+{"manifest": {"name": "<short name>", "kind": "block"|"script", "version": "1.0", "description": "<one line>"}, "payload": "<JSON block text for kind=block OR GDScript source for kind=script>", "summary": "<plain-language summary, max 300 chars>"}
+KIND: data-only idea (stats, shape, size, cost of a known thing) -> "block". Behaviour idea (does something new when built or used) -> "script".
+MODAPI — the ONLY functions a script mod may call (via the `api` argument). Never call anything else:
+- get_player() -> Node3D — the player node (may be null).
+- get_root() -> Node — the scene root builds attach to.
+- get_player_position() -> Vector3 — player position, or Vector3.ZERO.
+- get_aim_point() -> Vector3 — crosshair raycast point ("marked" position).
+- spawn_voxel_box(size: Vector3, color: Color, position: Vector3, solid: bool) -> Node3D — one voxel block: visible cube + optional solid collider.
+- spawn_cover(shape: String, size_voxels: Vector3i, hp: float, position: Vector3) -> Node — destructible voxel cover slab; shape wall|tower|barricade, size each 1-12, hp 50-500.
+- spawn_pickup(kind: String, position: Vector3) -> Node — ammo|health pickup.
+- spawn_turret(position: Vector3, duration_sec: float, damage_mult: float, range_mult: float) -> Node — sentry turret; duration 5-120.
+- give_weapon(weapon_id: String, damage_mult: float, range_mult: float, mag_mult: float) -> bool — give a base weapon (manticore|longeye|breacher|hornet|p9|raptor|lmg), tuned by multipliers (1.0 = stock).
+- fire_effect(kind: String, position: Vector3, radius: float, damage: float, duration_sec: float = 20.0) -> void — "explosion" (radius + damage) or "smoke" (duration_sec).
+- announce(title: String, subtitle: String) -> void — HUD banner.
+MODBLOCK CONTRACT — every script mod MUST follow this exactly:
+- First line: `extends ModBlock` (exactly, nothing else on that line).
+- Implement `get_block_info() -> Dictionary` returning {"block_id": "<lowercase [a-z0-9_]>", "target": "weapon"|"cover"|"structure"|"turret"|"pickup", "cost": 0-2000, "display_name": "<name>", "description": "<one line>", ...per-target fields...}.
+- Implement `apply(api: ModAPI, params: Dictionary) -> String`: build via ONLY the ModAPI methods above; return a non-empty success message, or "" on failure. params carries "_position" (Vector3 build point) and "_target" (the spec target). _init() must stay side-effect free — all building in apply().
+- NEVER emit filesystem, network, OS, eval, or code-loading code: NO FileAccess, DirAccess, OS, Engine, load(), preload(), ResourceLoader, Expression, GDScript.new, ClassDB, HTTPRequest, HTTPClient, sockets, Thread, .new(), call(), call_deferred(), @tool. The game rejects any mod containing them. A script mod runs with game trust — only ModAPI, full stop.
+MANIFEST SCHEMA: {"name": str (non-empty), "kind": "block"|"script", "version": str (e.g. "1.0"), "description": str (max 300 chars)}.
+BLOCK SCHEMA (payload for kind=block): {"block_id": "<lowercase [a-z0-9_]>", "target": "weapon"|"cover"|"structure"|"turret"|"pickup", "cost": 0-2000 int, "display_name": str, "description": str?, ...per-target fields...}. Per-target fields: weapon: base_weapon_id (manticore|longeye|breacher|hornet|p9|raptor|lmg), damage_mult 0.1-5, mag_mult 0.25-4, range_mult 0.1-5, ammo_type? (standard|sniper|armor_piercing|buckshot). cover: shape wall|tower|barricade, size_voxels [x,y,z] each 1-12, hp 50-500, property? standard|reinforced, color? (palette name or "#rrggbb"). structure: shape bridge|bunker|watchtower|ammo_depot, property? standard|reinforced. turret: duration_sec 5-120, damage_mult 0.1-5, range_mult 0.1-3, ammo_type?. pickup: kind ammo|health, amount 1-500. No other fields — unknown fields are rejected.
+Examples:
+Player idea: "a chunky concrete wall" -> {"manifest": {"name": "Chunky Wall", "kind": "block", "version": "1.0", "description": "A thick concrete wall."}, "payload": "{\\"block_id\\": \\"chunky_wall\\", \\"target\\": \\"cover\\", \\"cost\\": 150, \\"display_name\\": \\"Chunky Wall\\", \\"description\\": \\"A thick concrete wall.\\", \\"shape\\": \\"wall\\", \\"size_voxels\\": [8, 6, 3], \\"hp\\": 500}", "summary": "A thick concrete wall with 500 HP for 150."}
+Player idea: "a beacon that drops a glowing marker where I'm looking" -> {"manifest": {"name": "Aim Beacon", "kind": "script", "version": "1.0", "description": "Drops a glowing marker at the aim point."}, "payload": "extends ModBlock\\n\\nfunc get_block_info() -> Dictionary:\\n\\treturn {\\"block_id\\": \\"aim_beacon\\", \\"target\\": \\"cover\\", \\"cost\\": 100, \\"display_name\\": \\"Aim Beacon\\", \\"description\\": \\"Drops a glowing marker at the aim point.\\", \\"shape\\": \\"wall\\", \\"size_voxels\\": [1, 1, 1], \\"hp\\": 100.0}\\n\\nfunc apply(api: ModAPI, params: Dictionary) -> String:\\n\\tvar at: Vector3 = params.get(\\"_position\\", Vector3.ZERO)\\n\\tvar node: Node3D = api.spawn_voxel_box(Vector3(1, 1, 1), Color(1, 0.8, 0), at, false)\\n\\tif node == null:\\n\\t\\treturn \\"\\"\\n\\tapi.announce(\\"Beacon\\", \\"Marker placed.\\")\\n\\treturn \\"Forge fabricated: Aim Beacon (mod).\\"\\n", "summary": "Drops a glowing marker at your aim point."}
+Rules: numbers must stay in the ranges above; never invent a ModAPI method, block field, or target; summary max 300 chars. If the idea cannot be expressed with ModAPI / the block schema, emit the closest buildable mod and say so in the summary — never emit code the game rejects, never leave the output malformed."""
+
+
+var _generation_in_flight := false
+var _generation_http_outstanding := false
+var _generation_queue: Array = []
+
+
+## Starts a generation request. The result arrives via generation_ready
+## as {manifest, payload, summary} or {error}. One request at a time per
+## instance — a concurrent call gets an {"error": ...} result instead of
+## disturbing the in-flight request (and never touches spec_ready).
+func request_generation(idea: String) -> void:
+	if _generation_in_flight:
+		_queue_generation({"error": "generation already in progress"})
+		return
+	_generation_in_flight = true
+	var key := ForgeConfig.load_key()
+	if key.is_empty():
+		_queue_generation({"error": "DeepSeek key required — add it in the Forge menu"})
+		return
+	_generation_http_outstanding = true
+	_request_generation_remote(idea, key)
+
+
+func _request_generation_remote(idea: String, key: String) -> void:
+	# CACHE LAYOUT: messages[0] is the stable GENERATION_SYSTEM_PROMPT
+	# (byte-identical every call); messages[1] carries ALL variable
+	# content, with the user idea LAST.
+	var body := {
+		"model": MODEL,
+		"messages": [
+			{"role": "system", "content": GENERATION_SYSTEM_PROMPT},
+			{"role": "user", "content": "Create a mod: %s" % idea},
+		],
+		"response_format": {"type": "json_object"},
+		"temperature": TEMPERATURE,
+		"max_tokens": GENERATION_MAX_TOKENS,
+		# Thinking mode is ON by default on deepseek-flash and bills
+		# reasoning tokens as output. Same call shape as the build path.
+		"thinking": {"type": "disabled"},
+	}
+	var http := HTTPRequest.new()
+	http.timeout = HTTP_TIMEOUT_SEC
+	add_child(http)
+	http.request_completed.connect(_on_generation_http_completed.bind(http))
+	var headers := PackedStringArray([
+		"Content-Type: application/json",
+		"Authorization: Bearer " + key,
+	])
+	var err := http.request(API_URL, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
+	if err != OK:
+		push_warning("ForgeLLM: generation HTTPRequest failed to start (%s)." % error_string(err))
+		http.queue_free()
+		_generation_http_outstanding = false
+		_queue_generation({"error": "generation request failed to start"})
+
+
+func _on_generation_http_completed(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+	var text := ""
+	if result == HTTPRequest.RESULT_SUCCESS and code == 200:
+		text = body.get_string_from_utf8()
+	http.queue_free()
+	_generation_http_outstanding = false
+	var gen := _extract_generation(text)
+	if gen.is_empty():
+		if result != HTTPRequest.RESULT_SUCCESS:
+			push_warning("ForgeLLM: generation request failed (result=%d, http=%d)." % [result, code])
+		else:
+			push_warning("ForgeLLM: generation returned bad JSON.")
+		gen = {"error": "generation returned invalid JSON"}
+	_queue_generation(gen)
+
+
+## Pulls the generation object out of a chat-completions response envelope.
+## Returns {} unless the payload has a manifest object + string payload +
+## string summary. Full validation happens in ModCreator / ModLoader.
+func _extract_generation(text: String) -> Dictionary:
+	if text.strip_edges().is_empty():
+		return {}
+	var data: Variant = JSON.parse_string(text)
+	if not (data is Dictionary):
+		return {}
+	var choices: Array = (data as Dictionary).get("choices", [])
+	if choices.is_empty() or not (choices[0] is Dictionary):
+		return {}
+	var msg: Dictionary = (choices[0] as Dictionary).get("message", {})
+	var content := _strip_fences(str(msg.get("content", "")).strip_edges())
+	var gen: Variant = JSON.parse_string(content)
+	if not (gen is Dictionary):
+		return {}
+	var d := gen as Dictionary
+	if not (d.has("manifest") and d["manifest"] is Dictionary):
+		return {}
+	if not (d.has("payload") and d["payload"] is String):
+		return {}
+	if not (d.has("summary") and d["summary"] is String):
+		return {}
+	return {"manifest": d["manifest"], "payload": str(d["payload"]), "summary": str(d["summary"])}
+
+
+func _queue_generation(result: Dictionary) -> void:
+	_generation_queue.append(result)
+	call_deferred("_emit_generation")
+
+
+func _emit_generation() -> void:
+	if _generation_queue.is_empty():
+		return
+	var result: Dictionary = _generation_queue.pop_front()
+	generation_ready.emit(result)
+	if _generation_queue.is_empty() and not _generation_http_outstanding:
+		_generation_in_flight = false
+	elif not _generation_queue.is_empty():
+		call_deferred("_emit_generation")
