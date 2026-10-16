@@ -74,6 +74,18 @@ static var all: Array[EnemyBase] = []
 # --- stats (set by subclass _configure, scaled by wave at activate()) ---
 var type_id := "grunt"
 var display_name := "Militia Grunt"
+# v0.5.8 D&D: creature type + ability scores. creature_type is the 5e
+# type tag (default "humanoid" — every existing enemy is militia).
+# base_creature_type is the _configure() value; Forge spawn-by-type
+# overrides creature_type per-spawn (activate() applies the override,
+# _recycle() restores the base). ability_scores is the stat block
+# (DnDTypes); the class system (Worker B) reads/writes it.
+var creature_type := "humanoid"
+var base_creature_type := "humanoid"
+var ability_scores := DnDTypes.default_ability_scores()
+# Last typed-damage call, for verifiers / info display.
+var last_damage_type := ""
+var last_damage_multiplier := 1.0
 var base_hp := 100.0
 var base_speed := 4.0
 var base_damage := 10.0
@@ -168,6 +180,12 @@ func _telegraph_color() -> Color:
 
 func _ready() -> void:
 	_configure()
+	# v0.5.8 D&D: capture the _configure() creature type as the base
+	# (spawn-by-type overrides are per-spawn, never sticky) and make
+	# sure the stat block is complete even if a subclass set it partial.
+	base_creature_type = creature_type if DnDTypes.is_creature_type(creature_type) else "humanoid"
+	creature_type = base_creature_type
+	ability_scores = DnDTypes.normalize_ability_scores(ability_scores)
 	_build_body()
 	add_to_group("enemy")
 	EnemyBase.all.append(self)
@@ -253,6 +271,13 @@ func _build_body() -> void:
 func activate(spawn_pos: Vector3, wave: int, mods: Dictionary) -> void:
 	wave_number = wave
 	director_mods = mods
+	# v0.5.8 D&D: Forge spawn-by-type override (mods["creature_type"])
+	# applies for this spawn only; wave spawns reset to the base type.
+	var override_type := str(mods.get("creature_type", ""))
+	if not override_type.is_empty() and DnDTypes.is_creature_type(override_type):
+		creature_type = override_type
+	else:
+		creature_type = base_creature_type
 	max_hp = base_hp * (1.0 + 0.08 * float(wave - 1)) * float(mods.get("hp_mult", 1.0))
 	hp = max_hp
 	speed = base_speed * minf(1.0 + 0.02 * float(wave), 1.3) * float(mods.get("speed_mult", 1.0))
@@ -309,6 +334,11 @@ func _recycle() -> void:
 	if _death_tween != null and _death_tween.is_valid():
 		_death_tween.kill()
 	_death_tween = null
+	# v0.5.8 D&D: a recycled body is a fresh body — the spawn-by-type
+	# override never sticks to the pooled instance.
+	creature_type = base_creature_type
+	last_damage_type = ""
+	last_damage_multiplier = 1.0
 	_telegraph_t = 0.0
 	if _telegraph_glow != null and is_instance_valid(_telegraph_glow):
 		_telegraph_glow.visible = false
@@ -374,6 +404,89 @@ func take_damage(amount: float, hit_position: Vector3, is_headshot: bool) -> voi
 		if kb.length_squared() > 0.001:
 			velocity += kb.normalized() * kb_mag
 	_on_damaged()
+
+
+# --- D&D 5e: creature type + ability scores (v0.5.8) ----------------------
+## Sets the creature type (validated). False when `t` is not one of the
+## 14 types — the current type is left untouched. This changes the LIVE
+## type, not the base: _recycle() restores base_creature_type.
+func set_creature_type(t: String) -> bool:
+	if not DnDTypes.is_creature_type(t):
+		return false
+	creature_type = t
+	return true
+
+
+## Damage of a D&D damage type, with the creature-type table ENFORCED:
+## immune = 0 damage (no flinch/flash/damage at all), resist = half,
+## vulnerable = double. Unknown damage types and physical types
+## (bludgeoning/piercing/slashing) pass through at 1.0x. Plain
+## take_damage() stays UNTYPED — existing hitscan/explosion callers
+## are unchanged. Callers with a known type (typed_damage hooks,
+## future elemental weapons) MUST use this entry point.
+func take_typed_damage(amount: float, damage_type: String, hit_position: Vector3, is_headshot: bool) -> void:
+	if dead or not active:
+		return
+	last_damage_type = str(damage_type).to_lower()
+	last_damage_multiplier = DnDTypes.damage_multiplier(creature_type, last_damage_type)
+	if last_damage_multiplier == 0.0:
+		# Immune: the hit does nothing — no HP loss, no flinch, no
+		# flash, no last_hit_damage. The immunity is observable:
+		# last_damage_multiplier == 0.0 and hp unchanged.
+		last_hit_damage = 0.0
+		return
+	take_damage(amount * last_damage_multiplier, hit_position, is_headshot)
+
+
+## Game-code status-effect entry point, gated by creature-type
+## condition immunity: returns false and applies NOTHING when the
+## creature is immune to the condition the kind expresses (e.g.
+## poison on a construct/undead, sleep on an undead, exhaustion on a
+## construct). Mod hooks call ModStatusEffects directly (mod file,
+## off-limits here) — those are caught by _sweep_immune_effects().
+func apply_status_effect(kind: String, params: Dictionary, origin: Vector3) -> bool:
+	if DnDTypes.is_status_immune(creature_type, kind):
+		return false
+	return ModStatusEffects.apply_status(self, kind, params, origin)
+
+
+## Sweeps status effects this creature is immune to (arrived via a path
+## that bypassed apply_status_effect, e.g. a mod hook). Runs every
+## physics tick: DOT effects tick in 1.0s chunks and clear_status_effect
+## does NOT flush partial accum, so a swept poison effect deals 0
+## damage — the immunity is real, not cosmetic. Sleep/restrained/prone
+## never get a frame to pin the creature in a way the player can see:
+## the sweep runs before AI/locomotion each tick.
+func _sweep_immune_effects() -> void:
+	for eff in ModStatusEffects.active_effects(self):
+		if eff is Dictionary and DnDTypes.is_status_immune(creature_type, str((eff as Dictionary).get("kind", ""))):
+			ModStatusEffects.clear_status_effect(self, str((eff as Dictionary).get("kind", "")))
+
+
+## Ability-score getter (Worker B's class system reads this).
+func get_ability_score(ability: String) -> int:
+	return DnDTypes.get_ability(ability_scores, ability)
+
+
+## Ability-modifier getter (floor((score-10)/2)).
+func get_ability_modifier(ability: String) -> int:
+	return DnDTypes.get_ability_modifier(ability_scores, ability)
+
+
+## Display name of this enemy's creature type ("Undead").
+func creature_type_display() -> String:
+	return DnDTypes.creature_display_name(creature_type)
+
+
+## Enemy-info line: name + creature type + stat block + enforced
+## immunities. HUD / Forge info panels read this (no HUD change here —
+## the API is the deliverable; the HUD worker wires the display).
+func info_string() -> String:
+	var imm := DnDTypes.type_summary(creature_type)
+	var lore := DnDTypes.unenforced_condition_immunities(creature_type)
+	var lore_note := "" if lore.is_empty() else " (lore-only: immune to %s — no game mechanic)" % ", ".join(PackedStringArray(lore))
+	return "%s — %s | %s | %s%s" % [display_name, creature_type_display(),
+		DnDTypes.format_stat_block(ability_scores), imm, lore_note]
 
 
 func is_flinching() -> bool:
@@ -627,6 +740,8 @@ func _physics_process(delta: float) -> void:
 	if dead:
 		_death_tick(delta)
 		return
+	# v0.5.8 D&D: sweep immunity-violating status effects before AI.
+	_sweep_immune_effects()
 	# Spawn telegraph: pulse the glow, stay frozen (no AI, no fire).
 	# Gravity still settles the body via locomotion with zero wish.
 	if _telegraph_t > 0.0:
