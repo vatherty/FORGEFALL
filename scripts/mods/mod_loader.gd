@@ -17,6 +17,16 @@
 #     ModAPI, and pass a forbidden-API text scan BEFORE load (see
 #     FORBIDDEN_SNIPPETS). The scan is a guardrail, not a sandbox — a mod
 #     script runs with game trust, so only install mods you trust.
+#     HOOK CODE inside a script mod (a hook dict's "code" string, or a
+#     hook_files entry) is held to the STRICTER allowlist instead:
+#     ModHook.validate_hook_code() — only ModAPI + safe builtins, with
+#     the violation named, and call cycles rejected (the engine
+#     synthesizes a default return on abort, so cycles are the
+#     run-time-abort vector validation must close). A hook that errors
+#     at LOAD, or exceeds its step/time budget at run, DISABLES THE MOD
+#     VISIBLY (note_hook_runtime_failure), never crashes. (Recoverable
+#     run-time errors print to the engine log and the hook completes —
+#     see ModHookRegistry header for the honest limits.)
 #
 # Records: internal records carry the 8 public keys (id, name, kind,
 # version, author, enabled, error, path) PLUS block_info (the validated
@@ -64,6 +74,21 @@ const FORBIDDEN_SNIPPETS := [
 static var _mods: Array = []
 static var _enabled: Dictionary = {}
 static var _scanned := false
+
+## Max hooks one mod may carry (bounds dispatch work per shot).
+const MAX_HOOKS_PER_MOD := 32
+
+
+## Stamps each validated hook dict with its owning mod's id
+## ("_mod_id", an internal key ModHook.validate_hook_data() accepts).
+## The registry uses it to gate a hook on its mod's live record: a
+## mod disabled at run time (load/run error, budget) stops running.
+## Session MAKE hooks are never stamped (no ModLoader record) and are
+## therefore never gated — they run for their session only.
+static func _stamp_hook_mod_ids(hooks: Array, mod_id: String) -> void:
+	for h in hooks:
+		if h is Dictionary:
+			(h as Dictionary)["_mod_id"] = mod_id
 
 ## Recent find_mod calls ({"ref": String, "at_msec": int}, oldest first,
 ## capped at 8). ModHookRegistry's pending-attach rule reads this: a
@@ -156,6 +181,24 @@ static func get_find_history() -> Array:
 ## consumed, so a stale pair can never attach a second weapon).
 static func clear_find_history() -> void:
 	_find_history = []
+
+
+## Records that a hook of an installed mod failed at RUN time (or
+## exceeded its step/time budget). The mod is DISABLED VISIBLY: its
+## record carries the error (the Forge Mods tab shows it) and its hooks
+## stop running (ModHookRegistry gates on the record's error). Never a
+## crash, never silent. NOT persisted: a rescan re-validates from disk
+## and gives the mod a fresh chance. A record that already has an error
+## keeps its FIRST error (no overwrite by a later failure).
+static func note_hook_runtime_failure(mod_id: String, hook_id: String, reason: String) -> void:
+	_ensure_scanned()
+	for rec in _mods:
+		if str(rec.get("id", "")) == mod_id:
+			if str(rec.get("error", "")) != "":
+				return
+			rec["error"] = "hook '%s' failed at run time: %s — mod disabled" % [hook_id, reason]
+			rec["enabled"] = false
+			return
 
 
 ## Updates enabled state AND persists it to user://mods_enabled.json.
@@ -415,6 +458,7 @@ static func _finish_json_block(rec: Dictionary, data: Variant, manifest_hooks: A
 		_mods.append(rec)
 		return
 	rec["hooks"] = validated.get("hooks", [])
+	_stamp_hook_mod_ids(rec["hooks"], str(rec.get("id", "")))
 	rec["block_info"] = block
 	_mods.append(rec)
 
@@ -446,7 +490,10 @@ static func _split_block_and_hooks(data: Variant) -> Dictionary:
 ## {"hooks": Array (validated, in order), "error": String}. "" error = OK.
 ## Duplicate hook_ids are rejected; a hook that fails validation
 ## rejects the whole list (the mod is disabled with the error).
+## At most MAX_HOOKS_PER_MOD hooks (bounds dispatch work).
 static func _validate_hook_list(raw: Array) -> Dictionary:
+	if raw.size() > MAX_HOOKS_PER_MOD:
+		return {"hooks": [], "error": "mod carries %d hooks (max %d)" % [raw.size(), MAX_HOOKS_PER_MOD]}
 	var out: Array = []
 	var seen := {}
 	for item in raw:
@@ -466,9 +513,9 @@ static func _validate_hook_list(raw: Array) -> Dictionary:
 
 ## Loads ONE hook-code file (a folder manifest "hook_files" entry) into
 ## a hook record {"hook_id", "hook_point", "display_name"?, "description"?,
-## "code"}. The file must extend ModHook, pass the forbidden-API scan,
-## compile, and declare its id/point via get_hook_info(). Returns
-## {"record": Dictionary, "error": String}.
+## "code"}. The file must extend ModHook, pass the allowlist validator
+## (ModHook.validate_hook_code), compile, and declare its id/point via
+## get_hook_info(). Returns {"record": Dictionary, "error": String}.
 static func _load_hook_file(folder: String, name: Variant) -> Dictionary:
 	if not (name is String) or str(name).strip_edges().is_empty():
 		return {"record": {}, "error": "hook file name must be a non-empty string"}
@@ -705,6 +752,7 @@ static func _finish_script_mod(rec: Dictionary, script_path: String, manifest_ho
 		_mods.append(rec)
 		return
 	rec["hooks"] = validated.get("hooks", [])
+	_stamp_hook_mod_ids(rec["hooks"], str(rec.get("id", "")))
 	rec["block_info"] = info
 	_mods.append(rec)
 
