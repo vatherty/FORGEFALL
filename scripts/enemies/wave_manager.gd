@@ -45,7 +45,10 @@ var running := false
 var in_build_phase := false
 var alive_count := 0
 
-var _spawn_queue: Array[String] = []
+# v0.5.8 D&D: queue entries are {type, creature_type} — creature_type
+# is "" for a normal wave spawn (base type) or a Forge spawn-by-type
+# override (e.g. "undead") that activate() applies to that spawn only.
+var _spawn_queue: Array[Dictionary] = []
 var _spawn_t := 0.0
 var _build_t := 0.0
 var _pools := {"grunt": [], "rusher": [], "marksman": [], "brute": [],
@@ -109,28 +112,39 @@ func stop_run() -> void:
 
 
 # --- boss / director reinforcement hook --------------------------------------
-func queue_extra(type_id: String, count: int) -> void:
+func queue_extra(type_id: String, count: int, creature_type: String = "") -> void:
 	"""Queue extra spawns mid-wave (used by the Warlord's phase summons).
-	Unknown types fall back to grunt; the alive cap still paces delivery."""
+	Unknown types fall back to grunt; the alive cap still paces delivery.
+	creature_type (v0.5.8 D&D) is a spawn-by-type override applied to
+	that spawn only; "" = the enemy's base type. Unknown creature types
+	are dropped to "" (base type), never stored."""
 	if not _pools.has(type_id):
 		type_id = "grunt"
+	if not DnDTypes.is_creature_type(creature_type):
+		creature_type = ""
 	for i in maxi(1, count):
-		_spawn_queue.append(type_id)
+		_spawn_queue.append({"type": type_id, "creature_type": creature_type})
 
 
 # --- Forge director hook ----------------------------------------------------
 func apply_director_mod(mod: Dictionary) -> void:
 	"""Mods from the Forge director. Keys:
-	{kind:"spawn_extra", type, count}, {kind:"enrage", speed_mult, dmg_mult,
-	duration}, {kind:"weaken", taken_mult}, {kind:"grenadiers"}."""
+	{kind:"spawn_extra", type, count, creature_type?}, {kind:"enrage", speed_mult, dmg_mult,
+	duration}, {kind:"weaken", taken_mult}, {kind:"grenadiers"}.
+	creature_type (v0.5.8 D&D) is a Forge spawn-by-type override — it
+	travels WITH its queued spawn entries, never in _director_mods, so
+	it cannot leak into later wave spawns."""
 	var kind := String(mod.get("kind", ""))
 	match kind:
 		"spawn_extra":
 			var t := String(mod.get("type", "grunt"))
 			if not _pools.has(t):
 				t = "grunt"
+			var ct := String(mod.get("creature_type", ""))
+			if not DnDTypes.is_creature_type(ct):
+				ct = ""
 			for i in maxi(1, int(mod.get("count", 1))):
-				_spawn_queue.append(t)
+				_spawn_queue.append({"type": t, "creature_type": ct})
 			_announce("Director reinforcements inbound!")
 		"enrage":
 			_director_mods["speed_mult"] = float(mod.get("speed_mult", 1.25))
@@ -196,38 +210,39 @@ func _start_wave(n: int) -> void:
 		_announce("!! WARLORD INBOUND — BOSS FIGHT !!")
 
 
-func _build_queue(n: int) -> Array[String]:
+func _build_queue(n: int) -> Array[Dictionary]:
 	# Gentle ramp (C1): wave 1 is a handful of grunts; each type unlocks
 	# one at a time (rushers w2, marksmen w3, brute w5), counts grow slowly,
 	# and the alive cap (MAX_CONCURRENT) paces the rest of the queue.
 	# Goal 3: shredders w4 (melee pressure), suppressors w6 (area denial),
 	# bulwarks w7 (shield wall), Warlord boss on every 8th wave (w8/16/24)
 	# — exactly one per boss wave, never alongside a second boss.
-	var q: Array[String] = []
+	# v0.5.8 D&D: wave spawns carry creature_type "" (base type).
+	var q: Array[Dictionary] = []
 	var grunts := mini(3 + 2 * n, 18)  # w1=5, w3=9, w8+=18 (was 4+2n cap 24)
 	for i in grunts:
-		q.append("grunt")
+		q.append({"type": "grunt", "creature_type": ""})
 	if n >= 2:
 		for i in mini(n / 2, 6):  # w2=1, w4=2, w8=4, w12+=6 (was 1+n/2 cap 8)
-			q.append("rusher")
+			q.append({"type": "rusher", "creature_type": ""})
 	if n >= 3:
 		for i in mini(n / 3, 4):  # w3=1, w6=2, w9=3, w12+=4 (was cap 5)
-			q.append("marksman")
+			q.append({"type": "marksman", "creature_type": ""})
 	if n >= 4:
 		for i in mini((n - 2) / 2, 4):  # w4=1, w6=2, w8=3, w10+=4
-			q.append("shredder")
+			q.append({"type": "shredder", "creature_type": ""})
 	if n >= 6:
 		for i in mini((n - 3) / 3, 3):  # w6=1, w9=2, w12+=3
-			q.append("suppressor")
+			q.append({"type": "suppressor", "creature_type": ""})
 	if n >= 7:
 		for i in mini((n - 4) / 3, 3):  # w7=1, w10=2, w13+=3
-			q.append("bulwark")
+			q.append({"type": "bulwark", "creature_type": ""})
 	if n % 5 == 0:
-		q.append("brute")
+		q.append({"type": "brute", "creature_type": ""})
 		if n >= 10:
-			q.append("brute")  # second juggernaut only from wave 10
+			q.append({"type": "brute", "creature_type": ""})  # second juggernaut only from wave 10
 	if n % 8 == 0:
-		q.append("warlord")  # boss: exactly one, every 8th wave
+		q.append({"type": "warlord", "creature_type": ""})  # boss: exactly one, every 8th wave
 	q.shuffle()
 	return q
 
@@ -300,7 +315,8 @@ func _pick_door() -> Marker3D:
 
 
 func _spawn_next() -> void:
-	var type_id: String = _spawn_queue.pop_front()
+	var entry: Dictionary = _spawn_queue.pop_front()
+	var type_id: String = str(entry.get("type", "grunt"))
 	var e := _get_enemy(type_id)
 	var pos := Vector3(0, 0.5, 0)
 	var door := _pick_door()
@@ -314,7 +330,14 @@ func _spawn_next() -> void:
 			pp = (ps[0] as Node3D).global_position
 		var ang := _rng.randf() * TAU
 		pos = pp + Vector3(cos(ang) * 30.0, 0.5, sin(ang) * 30.0)
-	e.activate(pos, wave_number, _director_mods)
+	# v0.5.8 D&D: the spawn's own creature_type override rides in the
+	# activate() mods (a per-spawn copy — _director_mods is never
+	# mutated, so the override cannot leak into later spawns).
+	var spawn_mods := _director_mods.duplicate()
+	var ct := str(entry.get("creature_type", ""))
+	if not ct.is_empty():
+		spawn_mods["creature_type"] = ct
+	e.activate(pos, wave_number, spawn_mods)
 	alive_count += 1
 	if ClassDB.class_exists("DebrisPool"):
 		DebrisPool.burst(pos, [Color(0.6, 0.55, 0.5)], 6, 2.5)
