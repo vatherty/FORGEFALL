@@ -41,6 +41,8 @@ var _strafe_t := 0.0
 func _configure() -> void:
 	type_id = "suppressor"
 	display_name = "Suppressor"
+	creature_type = "humanoid"
+	ability_scores = DnDTypes.ability_scores(12, 13, 13, 11, 12, 10)
 	base_hp = 110.0
 	base_speed = 3.0      # slow: once you close the distance it cannot escape
 	base_damage = BURST_DAMAGE
