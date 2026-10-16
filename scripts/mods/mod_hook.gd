@@ -81,12 +81,33 @@
 # EFFECT KINDS: heal {amount 1-500}, explosion {radius 0.5-20,
 # damage 0-500}, smoke {duration_sec 1-120}, announce {title, subtitle
 # strings}, damage_mult {value 0-5}, and the STATUS kinds (v0.5.5 —
-# the Bubble Blaster gap: slow was expressible nowhere before this):
+# the Bubble Blaster gap: slow was expressible nowhere before this;
+# v0.5.7 expands the table — see ModStatusEffects for the full
+# mechanics + deliberate omissions):
 # slow {factor 0.05-1.0, duration_sec 0.5-30}, freeze
 # {duration_sec 0.5-10}, burn {damage_per_sec 1-500,
-# duration_sec 0.5-30}, knockback {force 1-30}. Status kinds need a
-# target: on_hit / on_kill (the hit target) or on_damage_taken (the
-# player). They are REJECTED on fire points (no target exists yet).
+# duration_sec 0.5-30}, knockback {force 1-30}, pull {force 1-30},
+# poison {damage_per_sec 1-500, duration_sec 0.5-30},
+# bleed {damage_per_sec 1-500, duration_sec 0.5-30},
+# regen {heal_per_sec 1-500, duration_sec 0.5-30},
+# haste {factor 1.05-2.5, duration_sec 0.5-30},
+# restrained {duration_sec 0.5-10}, prone {force 1-30,
+# duration_sec 0.5-10}, sleep {duration_sec 0.5-30},
+# confusion {force 1-10, duration_sec 0.5-30},
+# blind {factor 0.05-1.0, duration_sec 0.5-30},
+# weaken {factor 0.05-1.0, duration_sec 0.5-30},
+# exhaustion {duration_sec 0.5-60},
+# typed_damage {damage_type acid|cold|fire|lightning|necrotic|poison|
+# psychic|radiant|thunder, amount 1-500, duration_sec 0.5-30}.
+# Status kinds need a target: on_hit / on_kill (the hit target) or
+# on_damage_taken (the player). They are REJECTED on fire points
+# (no target exists yet).
+# NOTE (v0.5.7 integration gap — coordinator): ModHookRegistry.
+# _apply_effect's data-hook dispatch still matches only
+# slow/freeze/burn/knockback by name. Data hooks carrying any other
+# status kind validate fine but dispatch to nothing until that arm
+# is widened to `in ModHook.STATUS_KINDS`. The code-hook path
+# (api.apply_status_effect) works for every kind today.
 # CODE HOOK SCHEMA: same keys, plus "code": "<GDScript source>".
 # A hook must carry at least one of projectile / effects / code.
 # Unknown keys are rejected (no silent typos).
@@ -106,14 +127,19 @@ const HOOK_POINT_ALIASES := {
 	"on_damage": "on_damage_taken",
 }
 
-const EFFECT_KINDS := ["heal", "explosion", "smoke", "announce", "damage_mult", "slow", "freeze", "burn", "knockback"]
+const EFFECT_KINDS := ["heal", "explosion", "smoke", "announce", "damage_mult",
+	"slow", "freeze", "burn", "knockback", "pull", "poison", "bleed", "regen",
+	"haste", "restrained", "prone", "sleep", "confusion", "blind", "weaken",
+	"exhaustion", "typed_damage"]
 
 ## Status kinds: need a target, so they are rejected on fire points.
-const STATUS_KINDS := ["slow", "freeze", "burn", "knockback"]
+const STATUS_KINDS := ["slow", "freeze", "burn", "knockback", "pull", "poison",
+	"bleed", "regen", "haste", "restrained", "prone", "sleep", "confusion",
+	"blind", "weaken", "exhaustion", "typed_damage"]
 
 const HOOK_KEYS := ["hook_id", "hook_point", "display_name", "description", "projectile", "effects", "code"]
 
-const EFFECT_KEYS := ["kind", "amount", "radius", "damage", "duration_sec", "title", "subtitle", "value", "factor", "damage_per_sec", "force"]
+const EFFECT_KEYS := ["kind", "amount", "radius", "damage", "duration_sec", "title", "subtitle", "value", "factor", "damage_per_sec", "force", "heal_per_sec", "damage_type"]
 
 const MAX_HOOK_CODE_CHARS := 20000
 
@@ -272,7 +298,7 @@ static func validate_effect(eff: Dictionary) -> String:
 			return "unknown effect field '%s'" % str(k)
 	var kind: Variant = eff.get("kind", null)
 	if not (kind is String) or str(kind) not in EFFECT_KINDS:
-		return "effect 'kind' must be heal|explosion|smoke|announce|damage_mult|slow|freeze|burn|knockback"
+		return "effect 'kind' must be heal|explosion|smoke|announce|damage_mult|slow|freeze|burn|knockback|pull|poison|bleed|regen|haste|restrained|prone|sleep|confusion|blind|weaken|exhaustion|typed_damage"
 	match str(kind):
 		"heal":
 			if not _is_num_in(eff.get("amount", null), 1.0, 500.0):
@@ -309,6 +335,65 @@ static func validate_effect(eff: Dictionary) -> String:
 		"knockback":
 			if not _is_num_in(eff.get("force", null), 1.0, 30.0):
 				return "knockback effect 'force' out of range 1-30"
+		"pull":
+			if not _is_num_in(eff.get("force", null), 1.0, 30.0):
+				return "pull effect 'force' out of range 1-30"
+		"poison":
+			if not _is_num_in(eff.get("damage_per_sec", null), 1.0, 500.0):
+				return "poison effect 'damage_per_sec' out of range 1-500"
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
+				return "poison effect 'duration_sec' out of range 0.5-30"
+		"bleed":
+			if not _is_num_in(eff.get("damage_per_sec", null), 1.0, 500.0):
+				return "bleed effect 'damage_per_sec' out of range 1-500"
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
+				return "bleed effect 'duration_sec' out of range 0.5-30"
+		"regen":
+			if not _is_num_in(eff.get("heal_per_sec", null), 1.0, 500.0):
+				return "regen effect 'heal_per_sec' out of range 1-500"
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
+				return "regen effect 'duration_sec' out of range 0.5-30"
+		"haste":
+			if not _is_num_in(eff.get("factor", null), 1.05, 2.5):
+				return "haste effect 'factor' out of range 1.05-2.5"
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
+				return "haste effect 'duration_sec' out of range 0.5-30"
+		"restrained":
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 10.0):
+				return "restrained effect 'duration_sec' out of range 0.5-10"
+		"prone":
+			if not _is_num_in(eff.get("force", null), 1.0, 30.0):
+				return "prone effect 'force' out of range 1-30"
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 10.0):
+				return "prone effect 'duration_sec' out of range 0.5-10"
+		"sleep":
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
+				return "sleep effect 'duration_sec' out of range 0.5-30"
+		"confusion":
+			if not _is_num_in(eff.get("force", null), 1.0, 10.0):
+				return "confusion effect 'force' out of range 1-10"
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
+				return "confusion effect 'duration_sec' out of range 0.5-30"
+		"blind":
+			if not _is_num_in(eff.get("factor", null), 0.05, 1.0):
+				return "blind effect 'factor' out of range 0.05-1.0"
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
+				return "blind effect 'duration_sec' out of range 0.5-30"
+		"weaken":
+			if not _is_num_in(eff.get("factor", null), 0.05, 1.0):
+				return "weaken effect 'factor' out of range 0.05-1.0"
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
+				return "weaken effect 'duration_sec' out of range 0.5-30"
+		"exhaustion":
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 60.0):
+				return "exhaustion effect 'duration_sec' out of range 0.5-60"
+		"typed_damage":
+			if not (eff.get("damage_type", null) is String) or str(eff.get("damage_type", "")) not in ModStatusEffects.TYPED_DAMAGE_TYPES:
+				return "typed_damage effect 'damage_type' must be acid|cold|fire|lightning|necrotic|poison|psychic|radiant|thunder"
+			if not _is_num_in(eff.get("amount", null), 1.0, 500.0):
+				return "typed_damage effect 'amount' out of range 1-500"
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
+				return "typed_damage effect 'duration_sec' out of range 0.5-30"
 	return ""
 
 
@@ -839,6 +924,32 @@ static func _describe_effect(eff: Dictionary) -> String:
 			return "burn %.0f dps for %.1fs" % [float(eff.get("damage_per_sec", 0.0)), float(eff.get("duration_sec", 0.0))]
 		"knockback":
 			return "knockback %.0f" % float(eff.get("force", 0.0))
+		"pull":
+			return "pull %.0f toward origin" % float(eff.get("force", 0.0))
+		"poison":
+			return "poison %.0f dps + slow x0.85 for %.1fs" % [float(eff.get("damage_per_sec", 0.0)), float(eff.get("duration_sec", 0.0))]
+		"bleed":
+			return "bleed %.0f dps for %.1fs (worse while moving)" % [float(eff.get("damage_per_sec", 0.0)), float(eff.get("duration_sec", 0.0))]
+		"regen":
+			return "regen +%.0f HP/s for %.1fs" % [float(eff.get("heal_per_sec", 0.0)), float(eff.get("duration_sec", 0.0))]
+		"haste":
+			return "haste speed x%.2f for %.1fs" % [float(eff.get("factor", 1.0)), float(eff.get("duration_sec", 0.0))]
+		"restrained":
+			return "restrained (can't move, can act) %.1fs" % float(eff.get("duration_sec", 0.0))
+		"prone":
+			return "prone (knocked down) %.1fs" % float(eff.get("duration_sec", 0.0))
+		"sleep":
+			return "sleep %.1fs (wakes on damage)" % float(eff.get("duration_sec", 0.0))
+		"confusion":
+			return "confusion (stumbles) %.1fs" % float(eff.get("duration_sec", 0.0))
+		"blind":
+			return "blind accuracy x%.2f for %.1fs" % [float(eff.get("factor", 1.0)), float(eff.get("duration_sec", 0.0))]
+		"weaken":
+			return "weaken damage dealt x%.2f for %.1fs" % [float(eff.get("factor", 1.0)), float(eff.get("duration_sec", 0.0))]
+		"exhaustion":
+			return "exhaustion +1 level for %.1fs (6 = death)" % float(eff.get("duration_sec", 0.0))
+		"typed_damage":
+			return "%s damage %.0f + rider" % [str(eff.get("damage_type", "?")), float(eff.get("amount", 0.0))]
 	return str(eff.get("kind", "?"))
 
 
