@@ -134,7 +134,7 @@ func _process(_delta: float) -> bool:
 			_pump = 3
 		11:
 			_test_menu_install()
-			(_menu.find_child("CreatorTabs", true, false) as TabContainer).current_tab = 1
+			(_menu.find_child("CreatorTabs", true, false) as TabContainer).current_tab = 2
 			_phase = 12
 			_pump = 3
 		12:
