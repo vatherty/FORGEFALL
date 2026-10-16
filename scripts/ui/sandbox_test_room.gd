@@ -201,7 +201,7 @@ static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: D
 						hit_explodes = true
 						hit_radius = float((eff as Dictionary).get("radius", EXPLOSION_RADIUS))
 						hit_damage = float((eff as Dictionary).get("damage", EXPLOSION_DAMAGE))
-					elif ek in ["slow", "freeze", "burn", "knockback", "pull", "poison", "bleed", "regen", "haste", "restrained", "prone", "sleep", "confusion", "blind", "weaken", "exhaustion", "typed_damage"]:
+					elif ek in ["slow", "freeze", "burn", "knockback", "pull", "poison", "bleed", "regen", "haste", "restrained", "prone", "sleep", "confusion", "blind", "weaken", "exhaustion", "typed_damage", "shield", "vulnerable", "thorns", "petrified"]:
 						status_effects.append({
 							"kind": ek,
 							"factor": float((eff as Dictionary).get("factor", 1.0)),
@@ -211,6 +211,7 @@ static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: D
 							"force": float((eff as Dictionary).get("force", 0.0)),
 							"damage_type": str((eff as Dictionary).get("damage_type", "")),
 							"amount": float((eff as Dictionary).get("amount", 0.0)),
+							"reflect_mult": float((eff as Dictionary).get("reflect_mult", 0.0)),
 							"level": 1,
 						})
 				if not hooks_run.has(str(d.get("hook_id", ""))):
@@ -253,6 +254,8 @@ static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: D
 		var sk := str((st as Dictionary).get("kind", ""))
 		if sk in ["slow", "freeze", "restrained", "prone", "sleep"]:
 			speed_mult *= float((st as Dictionary).get("factor", 1.0))
+		elif sk == "petrified":
+			speed_mult *= 0.0
 		elif sk == "poison":
 			speed_mult *= 0.85
 		elif sk == "haste":
@@ -693,6 +696,21 @@ func _detonate_visual() -> void:
 					_result_label.text += " %s DAMAGE: %.0f instant + rider." % [
 						str((st as Dictionary).get("damage_type", "?")).to_upper(),
 						float((st as Dictionary).get("amount", 0.0))]
+				elif sk == "shield":
+					_result_label.text += " SHIELDED: absorbs up to %.0f damage for %.1fs." % [
+						float((st as Dictionary).get("amount", 0.0)),
+						float((st as Dictionary).get("duration_sec", 0.0))]
+				elif sk == "vulnerable":
+					_result_label.text += " VULNERABLE: incoming damage x%.2f for %.1fs." % [
+						float((st as Dictionary).get("factor", 1.0)),
+						float((st as Dictionary).get("duration_sec", 0.0))]
+				elif sk == "thorns":
+					_result_label.text += " THORNS: reflects x%.2f of damage taken for %.1fs." % [
+						float((st as Dictionary).get("reflect_mult", 0.0)),
+						float((st as Dictionary).get("duration_sec", 0.0))]
+				elif sk == "petrified":
+					_result_label.text += " PETRIFIED: takes NO damage, cannot move, for %.1fs." % [
+						float((st as Dictionary).get("duration_sec", 0.0))]
 		var hooks_run: Variant = _result.get("hooks_run", [])
 		if hooks_run is Array and not (hooks_run as Array).is_empty():
 			var names: Array[String] = []
