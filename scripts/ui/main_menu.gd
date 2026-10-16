@@ -225,7 +225,7 @@ func _build() -> void:
 	mode_label.text = "MODE"
 	mode_row.add_child(mode_label)
 	_mode_select = OptionButton.new()
-	for mid in ["survival", "domination", "endless"]:
+	for mid in ["survival", "domination", "endless", "base_defense"]:
 		_mode_select.add_item(str(GameModeManager.MODES[mid]["name"]))
 	StencilStyle.style_button(_mode_select)
 	_mode_select.item_selected.connect(_on_mode_selected)
@@ -476,7 +476,7 @@ func _on_map_selected(index: int) -> void:
 
 func _on_mode_selected(index: int) -> void:
 	_click()
-	var ids := ["survival", "domination", "endless"]
+	var ids := ["survival", "domination", "endless", "base_defense"]
 	var mid: String = ids[clampi(index, 0, ids.size() - 1)]
 	GameModeManager.selected_mode = mid
 	if _mode_desc != null:
@@ -626,7 +626,7 @@ func _load_settings() -> void:
 	_map_select.selected = int(cfg.get_value("ui", "map", 0))
 	_on_map_selected(_map_select.selected)
 	var saved_mode := str(cfg.get_value("game", "mode", "survival"))
-	var ids := ["survival", "domination", "endless"]
+	var ids := ["survival", "domination", "endless", "base_defense"]
 	var midx := ids.find(saved_mode)
 	if midx >= 0:
 		_mode_select.selected = midx
