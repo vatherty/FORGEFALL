@@ -54,7 +54,7 @@ func _debris_colors() -> Array:
 	return [Color(0.5, 0.65, 0.8), Color(0.14, 0.15, 0.16), Color(0.4, 1.0, 0.3)]
 
 
-func take_damage(amount: float, hit_position: Vector3, is_headshot: bool) -> void:
+func take_damage(amount: float, hit_position: Vector3, is_headshot: bool, attacker: Node = null) -> void:
 	# Shield rule: frontal BODY shots are reduced. Headshots bypass
 	# (head is above the plate) and flank/rear shots bypass (no shield there).
 	if not is_headshot:
@@ -64,7 +64,9 @@ func take_damage(amount: float, hit_position: Vector3, is_headshot: bool) -> voi
 			var fwd := -global_transform.basis.z
 			if fwd.dot(to_hit.normalized()) > FRONTAL_DOT:
 				amount *= FRONTAL_MULT
-	super.take_damage(amount, hit_position, is_headshot)
+	# v0.5.9: forward the attacker so thorns / take_damage hooks on
+	# the base path see who dealt the hit.
+	super.take_damage(amount, hit_position, is_headshot, attacker)
 
 
 func _on_activated() -> void:
