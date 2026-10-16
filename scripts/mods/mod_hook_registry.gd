@@ -6,6 +6,31 @@
 # of truth, and a disabled/broken mod's hooks can never run (the record
 # is error-gated on every read).
 #
+# v0.5.6 route B — SANDBOX + BUDGET (Worker A): code hooks run under a
+# step/time budget (ModAPI.HOOK_MAX_*). Before a code hook runs, the
+# registry activates the ModAPI step budget; after it returns, the
+# registry checks the step cap + the hook's wall time. A hook that
+# exceeds either budget DISABLES ITS MOD VISIBLY via
+# ModLoader.note_hook_runtime_failure(); later dispatches skip that
+# mod's hooks (each hook carries "_mod_id", stamped at scan time, and
+# run_hooks gates on the live record). A non-Dictionary return is also
+# treated as a run-time failure (defense-in-depth). HONEST LIMITS:
+# (1) GDScript has no try/catch and the engine synthesizes a default
+# return when a call aborts (verified: even an untyped run() that
+# stack-overflows returns {}), so an aborting hook CANNOT be detected
+# by return value — the real guard is validation, which rejects call
+# cycles (direct + mutual recursion) and so closes the overflow vector
+# for every hook that passes validation. (2) RECOVERABLE run-time
+# errors (e.g. out-of-bounds index, method on null) print an engine
+# error and the call CONTINUES with a null value — the engine gives
+# the registry no hook to detect those, so such a hook completes and
+# its mod is NOT disabled. (3) A truly infinite tight loop inside one
+# hook call cannot be preempted — `while` loops are rejected at
+# validation, so a runaway hook has to be a `for` loop that returns,
+# which the wall budget then catches. A hook that never returns hangs
+# the frame; that is an engine limitation, not a bound this file can
+# enforce.
+#
 # HOW A MOD WEAPON GETS ITS HOOKS (the attach problem):
 # ForgeBuilder (scripts/forge/*, NOT owned by this worker) grants a mod
 # weapon by calling WeaponManager.give_weapon(arsenal_id) with ONLY the
@@ -58,6 +83,8 @@ const FORGE_TO_ARSENAL := {
 
 ## Validated hooks for an enabled, error-free mod. [] for anything else
 ## (unknown / disabled / broken mod, or a mod with no hooks).
+## Returned hooks carry "_mod_id" (stamped at scan time) so run_hooks
+## can gate each hook on its mod's live record.
 static func hooks_for_mod(mod_id: String) -> Array:
 	var rec := ModLoader.find_mod(mod_id, false)
 	if rec.is_empty() or not bool(rec.get("enabled", false)) or str(rec.get("error", "")) != "":
@@ -65,7 +92,11 @@ static func hooks_for_mod(mod_id: String) -> Array:
 	var hooks: Variant = rec.get("hooks", null)
 	if not (hooks is Array):
 		return []
-	return (hooks as Array).duplicate(true)
+	var out := (hooks as Array).duplicate(true)
+	for h in out:
+		if h is Dictionary:
+			(h as Dictionary)["_mod_id"] = mod_id
+	return out
 
 
 ## The mod's custom projectile spec (merged): the LAST fire-point hook
@@ -152,18 +183,24 @@ static func pending_mod_for_weapon(arsenal_id: String) -> Dictionary:
 
 ## Runs every hook in `hooks` at `point` through ModAPI. Data hooks are
 ## interpreted (effects applied via `api`); code hooks run their
-## run(api, ctx). Returns a MERGED result:
+## run(api, ctx) under the step/time budget. Returns a MERGED result:
 ##   {"damage_mult": float (1.0 = unchanged; multiplied across hooks),
 ##    "healed": float, "exploded": bool, "announced": bool,
-##    "status_applied": bool (a slow/freeze/burn/knockback landed)}
-## A code hook that errors at run time yields no result (its error is
-## printed by the engine); the registry never lets one hook break the
-## others or the shot. Projectile specs are NOT applied here — the
-## firing path resolves them separately (resolve_projectile_spec).
+##    "status_applied": bool (a slow/freeze/burn/knockback landed),
+##    "budget_exceeded": bool (a hook blew the step/time budget)}
+## A code hook that errors at run time yields no result AND disables
+## its mod visibly (ModLoader.note_hook_runtime_failure) — the registry
+## never lets one hook break the others or the shot. A hook whose mod
+## is disabled/broken (live record check via "_mod_id") is skipped.
+## Hooks with no "_mod_id" (session MAKE hooks, direct test calls) are
+## never gated — they run for their session/call only. Projectile specs
+## are NOT applied here — the firing path resolves them separately
+## (resolve_projectile_spec).
 static func run_hooks(hooks: Array, point: String, api: ModAPI, ctx: Dictionary) -> Dictionary:
-	var out := {"damage_mult": 1.0, "healed": 0.0, "exploded": false, "announced": false, "status_applied": false}
+	var out := {"damage_mult": 1.0, "healed": 0.0, "exploded": false, "announced": false, "status_applied": false, "budget_exceeded": false}
 	if api == null:
 		return out
+	var dispatch_start := Time.get_ticks_msec()
 	for h in hooks:
 		if not (h is Dictionary):
 			continue
@@ -172,10 +209,46 @@ static func run_hooks(hooks: Array, point: String, api: ModAPI, ctx: Dictionary)
 			continue
 		if str(d.get("hook_point", "")) != point:
 			continue
+		# Live-record gate (installed mods only — "_mod_id" stamped at
+		# scan time). A mod disabled at run time stops running NOW;
+		# unstamped hooks (MAKE session, direct calls) are ungated.
+		if str(d.get("_mod_id", "")) != "":
+			var rec := ModLoader.find_mod(str(d.get("_mod_id", "")), false)
+			if rec.is_empty() or not bool(rec.get("enabled", false)) or str(rec.get("error", "")) != "":
+				continue
 		if d.has("_instance") and d["_instance"] is ModHook:
+			# Dispatch wall budget: stop starting new hooks once the
+			# dispatch has run too long.
+			if Time.get_ticks_msec() - dispatch_start > ModAPI.HOOK_MAX_DISPATCH_MSEC:
+				out["budget_exceeded"] = true
+				break
+			var hook_id := str(d.get("hook_id", "?"))
+			var mod_id := str(d.get("_mod_id", ""))
+			ModAPI.begin_hook_budget()
+			var t0 := Time.get_ticks_msec()
 			var res: Variant = (d["_instance"] as ModHook).run(api, ctx)
-			if res is Dictionary:
-				_merge_hook_result(out, res as Dictionary)
+			var elapsed := Time.get_ticks_msec() - t0
+			var over_steps := ModAPI.end_hook_budget()
+			# GDScript has no try/catch; a non-Dictionary return is a
+			# run-time failure (defense-in-depth — the engine
+			# synthesizes a default Dictionary when a call aborts, so
+			# validated hooks rarely reach this branch; the real
+			# abort guard is validation rejecting call cycles).
+			if not (res is Dictionary):
+				if mod_id != "":
+					ModLoader.note_hook_runtime_failure(mod_id, hook_id, "run() returned no result (run-time error — see engine log)")
+				continue
+			_merge_hook_result(out, res as Dictionary)
+			if over_steps:
+				out["budget_exceeded"] = true
+				if mod_id != "":
+					ModLoader.note_hook_runtime_failure(mod_id, hook_id, "exceeded step budget (%d ModAPI calls in one run)" % ModAPI.HOOK_MAX_API_STEPS)
+				break
+			if elapsed > ModAPI.HOOK_MAX_SINGLE_MSEC:
+				out["budget_exceeded"] = true
+				if mod_id != "":
+					ModLoader.note_hook_runtime_failure(mod_id, hook_id, "exceeded time budget (%d ms for one hook call)" % elapsed)
+				break
 			continue
 		for eff in (d.get("effects", []) as Array):
 			if eff is Dictionary:
@@ -184,14 +257,23 @@ static func run_hooks(hooks: Array, point: String, api: ModAPI, ctx: Dictionary)
 
 
 ## Runs the hooks attached to `weapon` at `point`. No-op ({defaults})
-## when the weapon carries no hooks for the point.
+## when the weapon carries no hooks for the point. Hooks that lack
+## "_mod_id" but belong to a known installed mod (weapon.mod_id) are
+## stamped on a COPY, so the live-record gate in run_hooks applies;
+## session MAKE hooks (mod not in ModLoader) stay unstamped/ungated.
 static func run_point_for_weapon(weapon: Node, point: String, api: ModAPI, ctx: Dictionary) -> Dictionary:
 	if weapon == null:
-		return {"damage_mult": 1.0, "healed": 0.0, "exploded": false, "announced": false, "status_applied": false}
+		return {"damage_mult": 1.0, "healed": 0.0, "exploded": false, "announced": false, "status_applied": false, "budget_exceeded": false}
 	var hooks: Variant = weapon.get("mod_hooks")
 	if not (hooks is Array):
-		return {"damage_mult": 1.0, "healed": 0.0, "exploded": false, "announced": false, "status_applied": false}
-	return run_hooks(hooks as Array, point, api, ctx)
+		return {"damage_mult": 1.0, "healed": 0.0, "exploded": false, "announced": false, "status_applied": false, "budget_exceeded": false}
+	var stamped := (hooks as Array).duplicate(true)
+	var wmod := str(weapon.get("mod_id"))
+	if wmod != "" and not ModLoader.find_mod(wmod, false).is_empty():
+		for h in stamped:
+			if h is Dictionary and str((h as Dictionary).get("_mod_id", "")) == "":
+				(h as Dictionary)["_mod_id"] = wmod
+	return run_hooks(stamped, point, api, ctx)
 
 
 ## The projectile spec a weapon actually fires: the attached spec
