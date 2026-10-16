@@ -109,6 +109,13 @@ func clear_chat() -> void:
 	_on_clear_pressed()
 
 
+## Re-renders the message list from the session (v0.5.9: the menu
+## calls this after seeding an EDIT, so the "Editing '…'" assistant
+## bubble appears without reopening the tab).
+func refresh_messages() -> void:
+	_rebuild_messages()
+
+
 ## Shows a red error bubble WITHOUT persisting it to the session.
 ## The menu uses this for generation errors from CREATE FROM CHAT.
 func show_error(message: String) -> void:
@@ -397,6 +404,13 @@ func _on_create_from_chat_pressed() -> void:
 	# Let the menu mark this as a chat-driven generation (pending
 	# state, Regenerate path), then run the generation itself.
 	create_from_chat_requested.emit(conversation, request)
+	# v0.5.9 EDIT: the original mod's payload rides along, so the
+	# model refines THAT mod. The emitted request stays raw (the
+	# menu stores it for REGENERATE, which prepends at call time) —
+	# only this direct call carries the preamble.
+	var effective := request
+	if _session != null and _session.is_editing():
+		effective = ChatSession.edit_preamble(_session.get_edit_context()) + "\n\n" + request
 	if _status != null:
 		_status.text = "Generating from chat — review it on the CREATE tab…"
-	_creator.call("generate_with_context", conversation, request)
+	_creator.call("generate_with_context", conversation, effective)
