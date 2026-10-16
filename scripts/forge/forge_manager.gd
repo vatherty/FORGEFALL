@@ -55,6 +55,14 @@ var _director: Node = null
 var _killstreaks: Killstreaks = null
 ## Submitted prompts, most recent first (cap HISTORY_CAP).
 var _history: Array[String] = []
+## MAKE history (v0.5.9 MAKE parity): one entry per SUCCESSFUL MAKE
+## build, most recent first (cap HISTORY_CAP). Entries are
+## {prompt, label, kind, target} — the prompt the player typed in the
+## MAKE box, the build's result message, and what it built. Preset
+## Forge builds live in _history; MAKE builds live here (a MAKE prompt
+## re-sent as a Forge prompt would build the wrong thing, so the two
+## histories stay separate and the menu shows both).
+var _make_history: Array[Dictionary] = []
 ## Last SUCCESSFUL build spec (post-validation, cost recomputed) and its
 ## shareable build code (ForgeLLM.encode_build_code). Empty until the
 ## first successful build. A build-from-code success replaces both, so
@@ -168,7 +176,18 @@ func undo_last() -> Dictionary:
 	if structural:
 		if node == null or not is_instance_valid(node):
 			return {"ok": false, "message": "Nothing to undo — the last build is already gone.", "refund": 0}
+		# v0.5.9 MAKE parity: a synced build must also LEAVE the sync
+		# registry, or peers keep a ghost of it (previously only the
+		# NetForgeSync poll caught freed nodes). Capture the instance
+		# id before freeing; notify after (no-op offline / unregistered).
+		var iid := -1
+		if node.has_meta("forge_instance_id"):
+			iid = int(node.get_meta("forge_instance_id"))
 		node.queue_free()
+		if iid > 0:
+			var nm := get_node_or_null("/root/NetManager")
+			if nm != null and nm.has_method("forge_notify_removed"):
+				nm.call("forge_notify_removed", iid)
 		if refund > 0:
 			Game.grant_budget(refund)
 		Sfx.play_2d("forge_fail")
@@ -181,6 +200,79 @@ func undo_last() -> Dictionary:
 	var msg2 := "Undid: %s (the effect itself stands)." % label if not BUDGET_ENABLED else "Undid: %s (refunded %d budget — the effect itself stands)." % [label, refund]
 	forge_result.emit(true, msg2)
 	return {"ok": true, "message": msg2, "refund": refund}
+
+
+## MAKE parity (v0.5.9): applies an already-generated MAKE candidate
+## through ForgeSessionMake, then gives the build the SAME treatment
+## as a preset Forge build — MAKE-history record, the one undo slot,
+## and the MP-sync hook (NetManager.forge_notify_placed; the session
+## file already notified once, and the sync registry dedupes the second
+## call). Returns {"ok": bool, "message": String, "node": Node or null,
+## "target": String}. Synchronous — no busy/cooldown gates (MAKE is its
+## own path; the menu gates MAKE on is_busy itself). Never writes to
+## user://mods/ (ForgeSessionMake never does). A failed MAKE records
+## nothing — the failure message itself is the visible feedback.
+func apply_make(candidate: Dictionary, prompt: String) -> Dictionary:
+	var ctx := _build_ctx()
+	var result := ForgeSessionMake.apply_candidate(
+		candidate, ctx.get("player") as Node3D, ctx.get("root"))
+	if not bool(result.get("ok", false)):
+		return {"ok": false, "message": str(result.get("message", "MAKE failed.")),
+			"node": null, "target": str(result.get("target", ""))}
+	var label := str(result.get("message", "MAKE build"))
+	var node: Node = result.get("node")
+	var target := str(result.get("target", ""))
+	var structural := target in ["cover", "structure", "turret", "pickup"] \
+		and node != null and is_instance_valid(node)
+	_make_history.push_front({
+		"prompt": prompt.strip_edges(),
+		"label": label,
+		"kind": str(result.get("kind", "")),
+		"target": target,
+	})
+	if _make_history.size() > HISTORY_CAP:
+		_make_history.resize(HISTORY_CAP)
+	# Same undo slot shape as preset builds (structural = node removed,
+	# effect-only = message only).
+	_undo = {
+		"cost": 0,
+		"node": node if structural else null,
+		"label": label,
+		"structural": structural,
+		"make": true,
+	}
+	_undo_valid = true
+	# Same MP-sync hook as _execute_spec (second notify — deduped by
+	# the sync registry on the node's forge_instance_id meta).
+	if structural:
+		var spec: Dictionary = {}
+		if node.has_meta("forge_spec") and node.get_meta("forge_spec") is Dictionary:
+			spec = node.get_meta("forge_spec") as Dictionary
+		var nm := get_node_or_null("/root/NetManager")
+		if nm != null and nm.has_method("forge_notify_placed") and not spec.is_empty():
+			nm.call("forge_notify_placed", node, spec)
+	Sfx.play_2d("forge_success")
+	return {"ok": true, "message": label, "node": node, "target": target}
+
+
+## MAKE history entries, most recent first (cap ~10). A copy — callers
+## must not mutate the manager's view of it.
+func get_make_history() -> Array:
+	return _make_history.duplicate(true)
+
+
+## MAKE history filtered by text (case-insensitive substring over
+## prompt + label). "" = all.
+func search_make_history(query: String) -> Array:
+	var q := query.strip_edges().to_lower()
+	if q.is_empty():
+		return get_make_history()
+	var out: Array = []
+	for entry in _make_history:
+		var hay := (str(entry.get("prompt", "")) + " " + str(entry.get("label", ""))).to_lower()
+		if hay.contains(q):
+			out.append((entry as Dictionary).duplicate(true))
+	return out
 
 
 ## Recent submitted prompts, most recent first (cap ~10).
