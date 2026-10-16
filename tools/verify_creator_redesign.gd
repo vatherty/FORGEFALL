@@ -420,8 +420,8 @@ func _run_menu_structure_checks() -> void:
 		_skip("D(B): IMPORT/EXPORT placeholder", "creator menu did not open")
 		return
 	var tabs := _find_named(_creator_menu, "CreatorTabs") as TabContainer
-	_check(tabs != null and tabs.get_tab_count() == 3 and tabs.get_tab_title(0) == "CREATE" and tabs.get_tab_title(1) == "MODS" and tabs.get_tab_title(2) == "IMPORT/EXPORT",
-		"D(B): creator menu has three tabs CREATE / MODS / IMPORT/EXPORT")
+	_check(tabs != null and tabs.get_tab_count() == 4 and tabs.get_tab_title(0) == "CREATE" and tabs.get_tab_title(1) == "CHAT" and tabs.get_tab_title(2) == "MODS" and tabs.get_tab_title(3) == "IMPORT/EXPORT",
+		"D(B): creator menu has four tabs CREATE / CHAT / MODS / IMPORT/EXPORT")
 	# Structured form: 5 multi-choice category checkboxes + name + visual + logic.
 	var cats_ok := true
 	for n in ["CategoryWeapon", "CategoryBlockStructure", "CategoryEnemy", "CategoryEffect", "CategoryGameplay"]:
