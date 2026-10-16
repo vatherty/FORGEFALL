@@ -9,14 +9,23 @@
 # SAFETY: the sandbox NEVER writes to the real mod list, player
 # progression, or user://mods/ — it only builds throwaway nodes inside
 # its own SubViewport (UI path) or under a caller-owned root (build_room).
-# It NEVER executes the candidate's script: the test simulates the
-# candidate's DECLARED behaviour (projectile visual + explosion on
-# impact, derived from the form + payload by the creator menu) with the
-# local asset. An unapproved generation is never run as code.
+# It NEVER executes the candidate's ModBlock script (apply()): the test
+# simulates the candidate's DECLARED behaviour (projectile visual +
+# explosion on impact, derived from the form + payload by the creator
+# menu) with the local asset. It DOES execute the candidate's HOOK
+# SCRIPTS (code hooks only): they passed the same validation + compile
+# as install-time (allowlist, extends ModHook, run() present), they run
+# through ModHookRegistry in the throwaway room, and a hook that fails
+# there (invalid, won't compile, blows the run budget) disables the
+# candidate visibly instead of crashing. A hook that errors at RUN time
+# reports no effect here — in-game that error would disable its
+# installed mod. An unapproved ModBlock is never run as code.
 #
 # Two paths, one math: simulate_test() is the pure-logic simulation
 # (headless-testable, no nodes); the UI animation replays the same
 # constants (SHOOTER_POS / DUMMY0_POS / speed / HIT_DIST) visually.
+# simulate_test() takes an optional `live` dict (ModAPI + hit ctx) —
+# with it, code hooks run for real; without it, they are only listed.
 extends Control
 class_name SandboxTestRoom
 
@@ -32,6 +41,14 @@ const DUMMY_BASE_SPEED := 4.0  # v0.5.5: sandbox dummy's base speed (grunt-like)
 const EXPLOSION_RADIUS := 4.0
 const EXPLOSION_DAMAGE := 60.0
 const MAX_STEPS := 200
+
+## Minimal sandbox player: an HP pool + heal() so heal hooks change
+## something real in the throwaway room. Not a game player.
+class SandboxPlayer extends Node3D:
+	var _hp := 100.0
+
+	func heal(amount: float) -> void:
+		_hp = minf(_hp + amount, 100.0)
 
 var _candidate: Dictionary = {}
 var _asset: Dictionary = {}
@@ -66,6 +83,19 @@ var _anim_speed := PROJECTILE_SPEED
 ## v0.5.5: STATUS EFFECTS are exercised too — on_hit slow / freeze /
 ## burn / knockback hooks are parsed and reported (the dummy has a
 ## 4.0 m/s base speed, so a slow visibly drops its speed readout).
+## v0.5.6: HOOK SCRIPTS run here too when `live` carries a ModAPI + hit
+## ctx ({"api": ModAPI, "ctx": Dictionary}): code hooks at the fire
+## points run at shot time, code hooks at on_hit / on_kill run on the
+## hit, through ModHookRegistry (the same path as in-game). Reports land
+## in "hook_script_reports" ("hook script ran: <id> — status applied
+## (<description>)") and ran ids in "hook_scripts_run". A code hook that
+## is invalid, fails to compile, or blows the run budget sets
+## "hook_error" + "candidate_disabled" (Install goes dead in the menu).
+## A hook that errors at RUN time prints an engine error and reports
+## nothing (GDScript has no try/catch) — the sandbox never crashes on a
+## hook; in-game that error would disable its installed mod. Without
+## `live`, code hooks are only listed (never run): "hook_scripts_run"
+## stays empty.
 ## Returns {"placed": bool, "hit": bool, "explosion_fired": bool,
 ##  "projectile_voxels": int, "steps": int, "dummy_hit": int,
 ##  "explosion_radius": float, "explosion_damage": float,
@@ -74,11 +104,15 @@ var _anim_speed := PROJECTILE_SPEED
 ##  "status_effects": Array[Dictionary] (each {kind, factor,
 ##  duration_sec, damage_per_sec, force}),
 ##  "dummy_speed_before": float, "dummy_speed_after": float,
+##  "hook_scripts_run": Array[String], "hook_script_reports": Array[String],
+##  "hook_error": String, "candidate_disabled": bool,
 ##  "wrote_to_mod_list": false, "wrote_to_progression": false}.
-static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: Dictionary) -> Dictionary:
+static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: Dictionary, live: Dictionary = {}) -> Dictionary:
 	var voxels := int((asset as Dictionary).get("voxel_count", 0))
+	var empty_scripts := {"hook_scripts_run": [], "hook_script_reports": [],
+		"hook_error": "", "candidate_disabled": false}
 	if not bool(behavior.get("projectile", true)):
-		return {"placed": true, "hit": false, "explosion_fired": false,
+		var placed := {"placed": true, "hit": false, "explosion_fired": false,
 			"projectile_voxels": voxels, "steps": 0, "dummy_hit": -1,
 			"explosion_radius": 0.0, "explosion_damage": 0.0,
 			"heal_on_kill": 0.0, "healed": false, "hooks_run": [],
@@ -86,6 +120,8 @@ static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: D
 			"status_effects": [], "dummy_speed_before": DUMMY_BASE_SPEED,
 			"dummy_speed_after": DUMMY_BASE_SPEED,
 			"wrote_to_mod_list": false, "wrote_to_progression": false}
+		placed.merge(empty_scripts)
+		return placed
 	var spec: Dictionary = {}
 	if behavior.get("projectile_spec") is Dictionary:
 		spec = behavior.get("projectile_spec", {}) as Dictionary
@@ -105,6 +141,28 @@ static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: D
 		var d := h as Dictionary
 		if str(d.get("hook_point", "")) in ["on_fire", "projectile_spawn"] and d.has("projectile"):
 			hooks_run.append(str(d.get("hook_id", "")))
+	# v0.5.6: fire-point HOOK SCRIPTS run at shot time when the caller
+	# supplied a live ModAPI (the sandbox UI path does).
+	var live_api: ModAPI = null
+	var live_ctx: Dictionary = {}
+	if live.get("api") is ModAPI:
+		live_api = live.get("api") as ModAPI
+		if live.get("ctx") is Dictionary:
+			live_ctx = live.get("ctx", {}) as Dictionary
+	var hook_scripts_run: Array = []
+	var hook_script_reports: Array = []
+	var hook_error := ""
+	var candidate_disabled := false
+	if live_api != null:
+		var fire_ctx := {"weapon_id": "sandbox", "position": SHOOTER_POS,
+			"direction": (DUMMY0_POS - SHOOTER_POS).normalized()}
+		for point in ["on_fire", "projectile_spawn"]:
+			var fres := run_hook_scripts(hooks, point, live_api, fire_ctx)
+			hook_scripts_run.append_array(fres.get("ran", []))
+			hook_script_reports.append_array(fres.get("reports", []))
+			if str(fres.get("hook_error", "")) != "" and hook_error.is_empty():
+				hook_error = str(fres.get("hook_error", ""))
+				candidate_disabled = true
 	var pos := SHOOTER_POS
 	var steps := 0
 	var hit := false
@@ -152,6 +210,19 @@ static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: D
 						heal_on_kill = maxf(heal_on_kill, float((eff as Dictionary).get("amount", 0.0)))
 				if not hooks_run.has(str(d.get("hook_id", ""))):
 					hooks_run.append(str(d.get("hook_id", "")))
+		# v0.5.6: on_hit / on_kill HOOK SCRIPTS run for real on the hit.
+		if live_api != null:
+			var hit_ctx := live_ctx if not live_ctx.is_empty() else {
+				"position": DUMMY0_POS, "hit_position": DUMMY0_POS,
+				"damage": 0.0, "target": null,
+				"headshot": false, "weapon_id": "sandbox"}
+			for point in ["on_hit", "on_kill"]:
+				var hres := run_hook_scripts(hooks, point, live_api, hit_ctx)
+				hook_scripts_run.append_array(hres.get("ran", []))
+				hook_script_reports.append_array(hres.get("reports", []))
+				if str(hres.get("hook_error", "")) != "" and hook_error.is_empty():
+					hook_error = str(hres.get("hook_error", ""))
+					candidate_disabled = true
 	var spec_explodes := bool(spec.get("explodes_on_impact", false))
 	var explodes := bool(behavior.get("explodes_on_impact", false)) or spec_explodes or hit_explodes
 	var radius := EXPLOSION_RADIUS
@@ -183,7 +254,95 @@ static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: D
 		"status_effects": status_effects if hit else [],
 		"dummy_speed_before": DUMMY_BASE_SPEED,
 		"dummy_speed_after": dummy_speed_after if hit else DUMMY_BASE_SPEED,
+		"hook_scripts_run": hook_scripts_run,
+		"hook_script_reports": hook_script_reports,
+		"hook_error": hook_error,
+		"candidate_disabled": candidate_disabled,
 		"wrote_to_mod_list": false, "wrote_to_progression": false}
+
+
+## Runs the CODE hooks in `hooks` at `point` through the registry with
+## `api` + `ctx` (the same path as in-game). Returns {"ran":
+## Array[String] of hook_ids executed, "reports": Array[String]
+## human-readable lines, "hook_error": String ("" = none),
+## "candidate_disabled": bool}. An invalid hook (preview error), a hook
+## that fails to compile, or a hook that blows the run budget DISABLES
+## the candidate with a visible error and stops further code hooks. A
+## hook that errors at RUN time cannot be caught (GDScript has no
+## try/catch): the engine prints the error, the registry yields no
+## result, and the report says "no effect reported" — the sandbox never
+## crashes. (Sandbox hooks carry no "_mod_id", so a runtime error here
+## never writes to ModLoader — unlike in-game, where it disables the
+## installed mod.)
+static func run_hook_scripts(hooks: Array, point: String, api: ModAPI, ctx: Dictionary) -> Dictionary:
+	var ran: Array = []
+	var reports: Array = []
+	var hook_error := ""
+	var disabled := false
+	for h in hooks:
+		if not (h is Dictionary):
+			continue
+		var d := h as Dictionary
+		if str(d.get("hook_point", "")) != point:
+			continue
+		if not d.has("code"):
+			continue
+		var hid := str(d.get("hook_id", "?"))
+		var desc := str(d.get("description", "")).strip_edges()
+		var suffix := (" (" + desc + ")") if not desc.is_empty() else ""
+		var perr := str(d.get("error", ""))
+		if perr != "":
+			hook_error = "hook script '%s' is invalid: %s" % [hid, perr]
+			disabled = true
+			break
+		var inst: ModHook = null
+		if d.has("_instance") and d["_instance"] is ModHook:
+			inst = d["_instance"] as ModHook
+		else:
+			var compiled := ModHook.compile_hook_code(str(d.get("code", "")))
+			if str(compiled.get("error", "")) != "":
+				hook_error = "hook script '%s' failed to compile in the sandbox: %s" % [hid, str(compiled.get("error", ""))]
+				disabled = true
+				break
+			inst = compiled.get("instance") as ModHook
+		var single := d.duplicate(true)
+		single["_instance"] = inst
+		var res: Variant = ModHookRegistry.run_hooks([single], point, api, ctx)
+		ran.append(hid)
+		if res is Dictionary and bool((res as Dictionary).get("budget_exceeded", false)):
+			reports.append("hook script ran: " + hid + " — budget exceeded (over 200 ModAPI calls / 100 ms; it would disable the mod in-game)" + suffix)
+			hook_error = "hook script '%s' exceeded the run budget (200 ModAPI calls / 100 ms)" % hid
+			disabled = true
+			break
+		reports.append(_describe_hook_script_result(hid, str(d.get("description", "")), res))
+	return {"ran": ran, "reports": reports, "hook_error": hook_error, "candidate_disabled": disabled}
+
+
+## One human-readable line for an executed hook script, in the same
+## voice as the effect-kind reports: "hook script ran: <id> — status
+## applied (<description>)". A hook whose run() yielded nothing reports
+## "no effect reported".
+static func _describe_hook_script_result(hook_id: String, description: String, res: Variant) -> String:
+	var base := "hook script ran: " + hook_id
+	var desc := description.strip_edges()
+	var suffix := (" (" + desc + ")") if not desc.is_empty() else ""
+	if not (res is Dictionary):
+		return base + " — no effect reported" + suffix
+	var parts: Array[String] = []
+	var r := res as Dictionary
+	if bool(r.get("status_applied", false)):
+		parts.append("status applied")
+	if float(r.get("healed", 0.0)) > 0.0:
+		parts.append("healed +%.0f HP" % float(r.get("healed", 0.0)))
+	if not is_equal_approx(float(r.get("damage_mult", 1.0)), 1.0):
+		parts.append("damage x%.2f" % float(r.get("damage_mult", 1.0)))
+	if bool(r.get("exploded", false)):
+		parts.append("explosion fired")
+	if bool(r.get("announced", false)):
+		parts.append("banner shown")
+	if parts.is_empty():
+		return base + " — no effect reported" + suffix
+	return base + " — " + ", ".join(parts) + suffix
 
 
 ## Builds the flat voxel room under `root` (caller-owned): floor, back +
@@ -213,7 +372,10 @@ static func build_room(root: Node3D) -> Dictionary:
 
 
 static func _build_dummy(root: Node3D, at: Vector3, shirt: Color) -> Node3D:
-	var dummy := Node3D.new()
+	# CharacterBody3D (not plain Node3D) so knockback — the pull-hook
+	# mechanism — applies to sandbox dummies exactly as to in-game
+	# enemies. The dummy never moves: nothing calls move_and_slide.
+	var dummy := CharacterBody3D.new()
 	dummy.name = "SandboxDummy"
 	dummy.position = at
 	dummy.add_child(VoxelBuilder.cube(Vector3(0.6, 1.0, 0.4), shirt, Vector3(0, 0.5, 0)))
@@ -406,9 +568,11 @@ func _on_fire_pressed() -> void:
 
 
 ## Local-only explosion flash + dummy topple. No game FX, no damage to
-## anything real — the sandbox viewport is a throwaway world.
+## anything real — the sandbox viewport is a throwaway world. Hook
+## scripts run for real here (see _live_hook_run): their reports land in
+## the result label next to the effect-kind reports.
 func _detonate_visual() -> void:
-	_result = simulate_test(_candidate, _asset, _behavior)
+	_result = simulate_test(_candidate, _asset, _behavior, _live_hook_run())
 	if _projectile != null:
 		_projectile.visible = false
 	if bool(_result.get("explosion_fired", false)):
@@ -468,8 +632,40 @@ func _detonate_visual() -> void:
 			for h in (hooks_run as Array):
 				names.append(str(h))
 			_result_label.text += " Hooks run: " + ", ".join(names) + "."
+		# v0.5.6: report what the hook scripts actually did.
+		var script_reports: Variant = _result.get("hook_script_reports", [])
+		if script_reports is Array:
+			for line in (script_reports as Array):
+				_result_label.text += " " + str(line) + "."
+		if bool(_result.get("candidate_disabled", false)):
+			_result_label.text += " DISABLED — hook script error: " + str(_result.get("hook_error", "")) + "."
 	if _fire_button != null:
 		_fire_button.disabled = true
+
+
+## Builds the live hook-run context for the UI detonation: a ModAPI
+## bound to the sandbox room (throwaway world, SandboxPlayer with a
+## real HP pool) + a hit ctx aimed at dummy 0, mirroring the real
+## in-game hit ctx keys. {} when the room is not open (pure simulation
+## — no code hooks run).
+func _live_hook_run() -> Dictionary:
+	if _room_root == null or _dummies.is_empty():
+		return {}
+	var player := SandboxPlayer.new()
+	player.name = "SandboxPlayer"
+	player.position = SHOOTER_POS
+	_room_root.add_child(player)
+	var api := ModAPI.new(player, _room_root)
+	var spec: Dictionary = {}
+	if _behavior.get("projectile_spec") is Dictionary:
+		spec = _behavior.get("projectile_spec", {}) as Dictionary
+	var dmg := 0.0
+	if spec.has("damage") and (spec["damage"] is int or spec["damage"] is float):
+		dmg = maxf(float(spec["damage"]), 0.0)
+	var ctx := {"position": _target_pos, "hit_position": _target_pos,
+		"damage": dmg, "target": _dummies[0], "headshot": false,
+		"weapon_id": "sandbox", "projectile": spec}
+	return {"api": api, "ctx": ctx}
 
 
 func _on_close_pressed() -> void:
