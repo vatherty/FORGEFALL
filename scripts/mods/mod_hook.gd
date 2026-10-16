@@ -66,7 +66,13 @@
 #    "effects": [{"kind": "heal", "amount": 15.0}]}
 # EFFECT KINDS: heal {amount 1-500}, explosion {radius 0.5-20,
 # damage 0-500}, smoke {duration_sec 1-120}, announce {title, subtitle
-# strings}, damage_mult {value 0-5}.
+# strings}, damage_mult {value 0-5}, and the STATUS kinds (v0.5.5 —
+# the Bubble Blaster gap: slow was expressible nowhere before this):
+# slow {factor 0.05-1.0, duration_sec 0.5-30}, freeze
+# {duration_sec 0.5-10}, burn {damage_per_sec 1-500,
+# duration_sec 0.5-30}, knockback {force 1-30}. Status kinds need a
+# target: on_hit / on_kill (the hit target) or on_damage_taken (the
+# player). They are REJECTED on fire points (no target exists yet).
 # CODE HOOK SCHEMA: same keys, plus "code": "<GDScript source>".
 # A hook must carry at least one of projectile / effects / code.
 # Unknown keys are rejected (no silent typos).
@@ -86,11 +92,14 @@ const HOOK_POINT_ALIASES := {
 	"on_damage": "on_damage_taken",
 }
 
-const EFFECT_KINDS := ["heal", "explosion", "smoke", "announce", "damage_mult"]
+const EFFECT_KINDS := ["heal", "explosion", "smoke", "announce", "damage_mult", "slow", "freeze", "burn", "knockback"]
+
+## Status kinds: need a target, so they are rejected on fire points.
+const STATUS_KINDS := ["slow", "freeze", "burn", "knockback"]
 
 const HOOK_KEYS := ["hook_id", "hook_point", "display_name", "description", "projectile", "effects", "code"]
 
-const EFFECT_KEYS := ["kind", "amount", "radius", "damage", "duration_sec", "title", "subtitle", "value"]
+const EFFECT_KEYS := ["kind", "amount", "radius", "damage", "duration_sec", "title", "subtitle", "value", "factor", "damage_per_sec", "force"]
 
 const MAX_HOOK_CODE_CHARS := 20000
 
@@ -178,6 +187,8 @@ static func validate_hook_data(hook: Dictionary) -> String:
 			var eerr := validate_effect(eff as Dictionary)
 			if eerr != "":
 				return "hook '%s' effect: %s" % [str(hid), eerr]
+			if str((eff as Dictionary).get("kind", "")) in STATUS_KINDS and is_fire_point(norm):
+				return "hook '%s' effect '%s' needs a target — status effects go on on_hit / on_kill / on_damage_taken, not '%s'" % [str(hid), str((eff as Dictionary).get("kind", "")), norm]
 	if has_code:
 		var code: Variant = hook.get("code", null)
 		if not (code is String) or str(code).strip_edges().is_empty():
@@ -241,7 +252,7 @@ static func validate_effect(eff: Dictionary) -> String:
 			return "unknown effect field '%s'" % str(k)
 	var kind: Variant = eff.get("kind", null)
 	if not (kind is String) or str(kind) not in EFFECT_KINDS:
-		return "effect 'kind' must be heal|explosion|smoke|announce|damage_mult"
+		return "effect 'kind' must be heal|explosion|smoke|announce|damage_mult|slow|freeze|burn|knockback"
 	match str(kind):
 		"heal":
 			if not _is_num_in(eff.get("amount", null), 1.0, 500.0):
@@ -262,6 +273,22 @@ static func validate_effect(eff: Dictionary) -> String:
 		"damage_mult":
 			if not _is_num_in(eff.get("value", null), 0.0, 5.0):
 				return "damage_mult effect 'value' out of range 0-5"
+		"slow":
+			if not _is_num_in(eff.get("factor", null), 0.05, 1.0):
+				return "slow effect 'factor' out of range 0.05-1.0"
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
+				return "slow effect 'duration_sec' out of range 0.5-30"
+		"freeze":
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 10.0):
+				return "freeze effect 'duration_sec' out of range 0.5-10"
+		"burn":
+			if not _is_num_in(eff.get("damage_per_sec", null), 1.0, 500.0):
+				return "burn effect 'damage_per_sec' out of range 1-500"
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
+				return "burn effect 'duration_sec' out of range 0.5-30"
+		"knockback":
+			if not _is_num_in(eff.get("force", null), 1.0, 30.0):
+				return "knockback effect 'force' out of range 1-30"
 	return ""
 
 
@@ -389,8 +416,41 @@ static func summarize_hooks(hooks: Array) -> Array:
 		if d.has("projectile"):
 			var proj: Dictionary = d.get("projectile", {})
 			line += " [custom projectile: %s]" % str(proj.get("visual", "energy bolt"))
+		if d.has("effects") and d.get("effects") is Array:
+			var eff_lines: Array[String] = []
+			for eff in (d.get("effects", []) as Array):
+				if eff is Dictionary:
+					eff_lines.append(_describe_effect(eff as Dictionary))
+			if not eff_lines.is_empty():
+				line += " | Effects: " + ", ".join(eff_lines)
 		lines.append(line)
 	return lines
+
+
+## One-line human summary of a data-hook effect, so the approval
+## screen shows status effects ("slow x0.5 for 3.0s") instead of
+## leaving them visible only in the raw payload.
+static func _describe_effect(eff: Dictionary) -> String:
+	match str(eff.get("kind", "")):
+		"heal":
+			return "heal %.0f" % float(eff.get("amount", 0.0))
+		"explosion":
+			return "explosion r%.0f d%.0f" % [float(eff.get("radius", 0.0)), float(eff.get("damage", 0.0))]
+		"smoke":
+			return "smoke %.0fs" % float(eff.get("duration_sec", 0.0))
+		"announce":
+			return "announce '%s'" % str(eff.get("title", ""))
+		"damage_mult":
+			return "damage x%.2f" % float(eff.get("value", 1.0))
+		"slow":
+			return "slow x%.2f for %.1fs" % [float(eff.get("factor", 1.0)), float(eff.get("duration_sec", 0.0))]
+		"freeze":
+			return "freeze %.1fs" % float(eff.get("duration_sec", 0.0))
+		"burn":
+			return "burn %.0f dps for %.1fs" % [float(eff.get("damage_per_sec", 0.0)), float(eff.get("duration_sec", 0.0))]
+		"knockback":
+			return "knockback %.0f" % float(eff.get("force", 0.0))
+	return str(eff.get("kind", "?"))
 
 
 static func _is_num_in(v: Variant, lo: float, hi: float) -> bool:
