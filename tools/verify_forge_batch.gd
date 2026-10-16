@@ -1337,8 +1337,8 @@ func _ui_creator_tabs(creator_ui: Control) -> void:
 			if btn.visible and not btn.disabled:
 				live = true
 		var placeholder := _texts_contain(tab_ctl, "placeholder") or _texts_contain(tab_ctl, "coming soon") or _texts_contain(tab_ctl, "not yet") or _texts_contain(tab_ctl, "later update")
-		_check("creator", placeholder and not live,
-			"creator: IMPORT-EXPORT is a placeholder (placeholder label=%s, live button=%s)" % [str(placeholder), str(live)])
+		_check("creator", not placeholder and live,
+			"creator: IMPORT-EXPORT is live (placeholder label=%s, live button=%s)" % [str(placeholder), str(live)])
 	else:
 		_check("creator", false, "creator: IMPORT-EXPORT tab exists")
 	# CREATE form: multi-choice categories + name + visual + logic.
