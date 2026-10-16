@@ -238,6 +238,7 @@ static func _base_record(mod_id: String, path: String) -> Dictionary:
 		"enabled": bool(_enabled.get(mod_id, true)),
 		"error": "",
 		"path": path,
+		"spell_school": "",
 		"block_info": {},
 		"script_path": "",
 		"hooks": [],
@@ -254,6 +255,7 @@ static func _public_record(rec: Dictionary) -> Dictionary:
 		"enabled": bool(rec.get("enabled", false)),
 		"error": str(rec.get("error", "")),
 		"path": str(rec.get("path", "")),
+		"spell_school": str(rec.get("spell_school", "")),
 	}
 
 
@@ -460,6 +462,11 @@ static func _finish_json_block(rec: Dictionary, data: Variant, manifest_hooks: A
 	rec["hooks"] = validated.get("hooks", [])
 	_stamp_hook_mod_ids(rec["hooks"], str(rec.get("id", "")))
 	rec["block_info"] = block
+	# v0.5.8 spell schools: school lives OUTSIDE the block object, as a
+	# top-level payload field (wrapper form {"block": {...},
+	# "spell_school": ...}). Pure-block payloads carry no school.
+	if data is Dictionary and (data as Dictionary).has("block"):
+		rec["spell_school"] = SpellSchools.normalize(str((data as Dictionary).get("spell_school", "")))
 	_mods.append(rec)
 
 
@@ -704,6 +711,8 @@ static func _finish_script_mod(rec: Dictionary, script_path: String, manifest_ho
 		rec["error"] = "forbidden API in script: %s" % forbidden
 		_mods.append(rec)
 		return
+	# v0.5.8 spell schools: script mods carry "# spell_school: <school>".
+	rec["spell_school"] = SpellSchools.parse_from_payload(text)
 	if not _extends_mod_block(text):
 		rec["error"] = "script must 'extend ModBlock'"
 		_mods.append(rec)
