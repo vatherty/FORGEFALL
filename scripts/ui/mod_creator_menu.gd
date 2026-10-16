@@ -45,6 +45,7 @@ var _generate_button: Button
 var _status: Label
 var _approval_panel: VBoxContainer
 var _approval_summary: Label
+var _approval_hooks: Label
 var _approval_code: TextEdit
 var _asset_info: Label
 var _approval_status: Label
@@ -69,7 +70,10 @@ var _last_sandbox_result: Dictionary = {}
 ## same prompt (and the LLM's stable-prefix cache sees a stable shape).
 ## The technical notes steer the model to the EXISTING validated path:
 ## custom visuals via api.spawn_voxel_box, impact explosions via
-## api.fire_effect("explosion", ...), ModAPI only, no forbidden code.
+## api.fire_effect("explosion", ...), ModAPI only, no forbidden code —
+## PLUS (v0.5.3) invented hooks: when the mod needs behaviour no
+## existing block covers, the model invents a hook (projectile /
+## effects) instead of refusing or improvising raw code.
 static func compose_prompt(categories: Array, mod_name: String, visual: String, logic: String) -> String:
 	var lines: Array[String] = []
 	lines.append("Create a mod.")
@@ -78,17 +82,54 @@ static func compose_prompt(categories: Array, mod_name: String, visual: String, 
 	lines.append("Visual description: " + visual.strip_edges())
 	lines.append("Logic: " + logic.strip_edges())
 	lines.append("Technical notes (follow exactly): represent any custom projectile or visual with api.spawn_voxel_box calls using voxel-sized cubes in the visual description's colours; trigger impact explosions with api.fire_effect(\"explosion\", position, radius, damage); build only through the ModAPI methods; never emit filesystem, network, OS, eval, or code-loading code.")
+	lines.append("INVENTED HOOKS (follow exactly): if the mod needs behaviour no existing block covers (a custom projectile, heal-on-kill, thorns, an on-hit explosion, ...), INVENT A HOOK for it — prefer existing blocks/hooks when they fit; invent a hook only when nothing existing covers the request. Block mod: add a top-level \"hooks\" array to the payload, next to the \"block\" object. Script mod: implement get_hooks() -> Array returning the hook dicts. Hook dict: {\"hook_id\": \"<lowercase [a-z0-9_}>\", \"hook_point\": \"on_fire\"|\"projectile_spawn\"|\"on_hit\"|\"on_kill\"|\"on_damage_taken\", \"display_name\": \"<name>\", \"description\": \"<one line>\", ...}. A fire-point hook (on_fire / projectile_spawn) may carry \"projectile\": {\"visual\": \"<what it looks like>\", \"shape\": \"beam\"|\"sphere\"|\"cube\"|\"blob\"|\"bullet\", \"speed\": 1-200, \"damage\": 0-500 (-1 = use the weapon's damage), \"range\": 1-500, \"size\": 0.05-5, \"gravity\": -50-50, \"pierce\": true|false, \"explodes_on_impact\": true|false, \"explosion_radius\": 0-20, \"explosion_damage\": 0-500}. Any hook may carry \"effects\": [{\"kind\": \"heal\", \"amount\": 1-500} | {\"kind\": \"explosion\", \"radius\": 0.5-20, \"damage\": 0-500} | {\"kind\": \"smoke\", \"duration_sec\": 1-120} | {\"kind\": \"announce\", \"title\": \"...\", \"subtitle\": \"...\"} | {\"kind\": \"damage_mult\", \"value\": 0-5}]. A hook may instead carry \"code\": GDScript source starting with `extends ModHook` and implementing run(api, ctx) with ONLY ModAPI methods — data hooks are preferred. Never put filesystem, network, OS, eval, or code-loading code in a hook.")
 	return "\n".join(lines)
 
 
 ## Behaviour flags for the sandbox, derived from the form + payload.
 ## Never executes the candidate — the sandbox simulates this behaviour.
+## v0.5.3: invented hooks in the payload are merged in (see
+## _merge_hooks_into_behavior): a projectile hook sets the sandbox
+## projectile spec, an on_kill heal hook sets heal_on_kill, and the raw
+## hook list rides along in behavior["hooks"].
 static func behavior_for(categories: Array, logic: String, payload: String) -> Dictionary:
 	var l := logic.to_lower()
 	var p := payload.to_lower()
 	var projectile := categories.has("Weapon") or l.contains("shoot") or l.contains("projectile") or l.contains("fire") or l.contains("launch") or p.contains("spawn_voxel_box")
 	var explodes := l.contains("explod") or p.contains("explosion") or p.contains("fire_effect")
-	return {"projectile": projectile, "explodes_on_impact": explodes}
+	var behavior := {"projectile": projectile, "explodes_on_impact": explodes}
+	# Only block payloads are JSON — a script payload ("extends
+	# ModBlock...") would make JSON.parse_string print a benign error,
+	# so skip the parse for non-JSON payloads.
+	var parsed: Variant = null
+	if payload.strip_edges().begins_with("{"):
+		parsed = JSON.parse_string(payload)
+	if parsed is Dictionary:
+		var hooks: Variant = (parsed as Dictionary).get("hooks", null)
+		if hooks is Array:
+			_merge_hooks_into_behavior(behavior, hooks as Array)
+	return behavior
+
+
+## Merges invented hooks (ModHook dicts) into a sandbox behavior dict:
+## a fire-point projectile hook becomes behavior["projectile_spec"], an
+## on_kill heal effect becomes behavior["heal_on_kill"], and the hooks
+## themselves ride along as behavior["hooks"] for the sandbox to report.
+static func _merge_hooks_into_behavior(behavior: Dictionary, hooks: Array) -> void:
+	behavior["hooks"] = hooks
+	for h in hooks:
+		if not (h is Dictionary):
+			continue
+		var d := h as Dictionary
+		var point := str(d.get("hook_point", ""))
+		if point in ["on_fire", "projectile_spawn"] and d.has("projectile"):
+			behavior["projectile"] = true
+			behavior["projectile_spec"] = (d.get("projectile", {}) as Dictionary).duplicate(true)
+			behavior["explodes_on_impact"] = bool((d.get("projectile", {}) as Dictionary).get("explodes_on_impact", false))
+		if point == "on_kill":
+			for eff in (d.get("effects", []) as Array):
+				if eff is Dictionary and str((eff as Dictionary).get("kind", "")) == "heal":
+					behavior["heal_on_kill"] = float((eff as Dictionary).get("amount", 0.0))
 
 
 ## Visual description of what the mod FIRES (its projectile), derived
@@ -252,6 +293,13 @@ func _build_create_tab() -> void:
 	_approval_summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	StencilStyle.apply_body(_approval_summary, 18, StencilStyle.TEXT, 2)
 	_approval_panel.add_child(_approval_summary)
+	# v0.5.3: invented hooks are listed EXPLICITLY here — "this mod adds
+	# a new hook: X (hook point: Y)" — before Install. No silent installs.
+	_approval_hooks = Label.new()
+	_approval_hooks.name = "ApprovalHooks"
+	_approval_hooks.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	StencilStyle.apply_body(_approval_hooks, 18, StencilStyle.ORANGE, 2)
+	_approval_panel.add_child(_approval_hooks)
 	_approval_code = TextEdit.new()
 	_approval_code.name = "ApprovalCode"
 	_approval_code.editable = false
@@ -492,6 +540,12 @@ func _show_approval(candidate: Dictionary) -> void:
 		lines.append("")
 		lines.append(summary)
 	_approval_summary.text = "\n".join(lines)
+	# v0.5.3: invented hooks, listed EXPLICITLY (no silent installs).
+	var hooks := ModHook.preview_hooks_for_candidate(candidate)
+	var hook_lines := ModHook.summarize_hooks(hooks)
+	if hook_lines.is_empty():
+		hook_lines = ["No new hooks — this mod uses existing blocks only."]
+	_approval_hooks.text = "\n".join(hook_lines)
 	_approval_code.text = str(candidate.get("payload", ""))
 	_approval_code.scroll_vertical = 0
 	_approval_code.scroll_horizontal = 0
@@ -540,6 +594,12 @@ func _on_sandbox_pressed() -> void:
 	if _pending_candidate.is_empty():
 		return
 	var behavior := behavior_for(get_selected_categories(), _logic_input.text, str(_pending_candidate.get("payload", "")))
+	# v0.5.3: script candidates carry their hooks in get_hooks(), which
+	# behavior_for (pure payload-JSON parsing) cannot see — merge the
+	# previewed hooks in so the sandbox exercises them too.
+	var previewed := ModHook.preview_hooks_for_candidate(_pending_candidate)
+	if not previewed.is_empty():
+		_merge_hooks_into_behavior(behavior, previewed)
 	var sandbox: SandboxTestRoom
 	if ResourceLoader.exists("res://scenes/ui/sandbox_test_room.tscn"):
 		var ps := load("res://scenes/ui/sandbox_test_room.tscn") as PackedScene
