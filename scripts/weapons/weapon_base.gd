@@ -44,6 +44,23 @@ const MOVE_SPREAD_REF_SPEED := 6.0  # speed (m/s) at which move penalty maxes
 enum FireMode { AUTO, SEMI, BOLT, PUMP, BURST }
 enum _ReloadStage { NONE, MAG_OUT, MAG_IN, CHAMBER }
 
+## Maps a mod block's "fire_mode" string to a FireMode enum value.
+## Unknown / empty strings fall back to AUTO (the validator rejects
+## bad fire_mode strings at generation time; this is the runtime
+## belt-and-braces for direct setters). Case-insensitive.
+static func fire_mode_from_string(s: String) -> int:
+	match s.to_lower().strip_edges():
+		"semi":
+			return FireMode.SEMI
+		"bolt":
+			return FireMode.BOLT
+		"pump":
+			return FireMode.PUMP
+		"burst":
+			return FireMode.BURST
+		_:
+			return FireMode.AUTO
+
 signal ammo_changed(mag: int, reserve: int)
 signal fired
 
