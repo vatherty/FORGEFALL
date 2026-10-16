@@ -43,6 +43,9 @@ var _switching: bool = false
 var _ads_active: bool = false
 var _ads_signal_hooked: bool = false
 var _poll_ads_fallback: bool = false
+# v0.5.3: last observed player HP for the on_damage_taken hook poll
+# (-1 = not yet observed). See _poll_damage_taken().
+var _last_player_hp := -1.0
 
 
 func _ready() -> void:
@@ -84,6 +87,10 @@ func _hook_ads() -> void:
 
 
 func _process(_delta: float) -> void:
+	# v0.5.3: on_damage_taken hooks for the equipped mod weapon (see
+	# _poll_damage_taken). Runs even when there is no current weapon —
+	# it only tracks HP then.
+	_poll_damage_taken()
 	if _current == null:
 		return
 	if _camera == null or not is_instance_valid(_camera):
@@ -161,8 +168,81 @@ func switch_to(slot: String) -> void:
 
 
 ## Forge hook: replace the primary weapon with a new id (adds or upgrades).
+## v0.5.3: after the swap, a pending mod attach (see ModHookRegistry)
+## is consumed onto the fresh weapon — this is how a Forge-built mod
+## weapon gets its hooks + custom projectile, since ForgeBuilder calls
+## this with only the base arsenal id. Plain weapons (no pending mod)
+## are untouched.
 func give_weapon(weapon_id: String) -> void:
 	set_slot("primary", weapon_id)
+	var fresh: WeaponBase = _weapons.get("primary")
+	if fresh != null:
+		ModHookRegistry.try_attach_pending(fresh, weapon_id)
+
+
+## v0.5.3: on_damage_taken hooks for the equipped mod weapon. The
+## player script is not owned by this worker, so there is no
+## pre-damage interception point: instead this poll watches the
+## player's HP. On a drop, the current weapon's on_damage_taken hooks
+## run (heal / explosion / smoke / announce effects apply directly),
+## and a damage_mult < 1 is applied retroactively as a heal of the
+## reduced portion — net HP is exactly correct; the hurt feedback
+## still plays for one frame. A damage_mult > 1 (vulnerability) is
+## ignored here: amplifying damage retroactively would re-trigger
+## the poll on its own extra damage, so vulnerability needs the
+## player-side pre-damage call (ModHookRegistry/ModAPI surface is
+## ready for it). HP rises (regen, respawn, heals) never trigger hooks.
+## No-op without a player, without an HP var, or without attached hooks.
+func _poll_damage_taken() -> void:
+	if _player == null or not is_instance_valid(_player):
+		_last_player_hp = -1.0
+		return
+	var hp_v: Variant = _player.get("_hp")
+	if not (hp_v is int or hp_v is float):
+		return
+	var hp := float(hp_v)
+	if _last_player_hp < 0.0:
+		_last_player_hp = hp
+		return
+	if hp >= _last_player_hp - 0.001:
+		_last_player_hp = hp
+		return
+	var damage_taken := _last_player_hp - hp
+	_last_player_hp = hp
+	if _current == null or _current.mod_hooks.is_empty():
+		return
+	var has_point := false
+	for h in _current.mod_hooks:
+		if h is Dictionary and str((h as Dictionary).get("hook_point", "")) == "on_damage_taken":
+			has_point = true
+			break
+	if not has_point:
+		return
+	var root: Node = null
+	if is_inside_tree():
+		var tree := get_tree()
+		if tree != null:
+			root = tree.current_scene
+			if root == null:
+				root = tree.root
+	var api := ModAPI.new(_player as Node3D, root)
+	var ppos := Vector3.ZERO
+	if _player is Node3D:
+		ppos = (_player as Node3D).global_position
+	var ctx := {"damage": damage_taken, "hp_before": _last_player_hp + damage_taken,
+		"hp_after": hp, "position": ppos,
+		"weapon_id": _current.weapon_id}
+	var res := ModHookRegistry.run_hooks(_current.mod_hooks, "on_damage_taken", api, ctx)
+	# damage_mult < 1: retroactive reduction — heal back the portion
+	# the hooks negated, so net HP equals the reduced damage.
+	var mult := float(res.get("damage_mult", 1.0))
+	if mult < 1.0:
+		api.heal_player(damage_taken * (1.0 - mult))
+	# Hooks may have healed: re-observe HP so the heal is not mistaken
+	# for a second event (and so a heal does not mask a later drop).
+	var hp2: Variant = _player.get("_hp")
+	if hp2 is int or hp2 is float:
+		_last_player_hp = float(hp2)
 
 
 ## v0.6 LOADOUTS: replace the weapon in a GIVEN slot, reusing the same
