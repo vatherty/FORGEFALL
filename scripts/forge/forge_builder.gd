@@ -346,6 +346,14 @@ static func _build_json_mod(rec: Dictionary, spec: Dictionary, params: Dictionar
 					var mag_size := maxi(1, int(round(float(weapon.get("mag_size")) * float(info.get("mag_mult", 1.0)))))
 					weapon.set("mag_size", mag_size)
 					weapon.set("mag", mag_size)
+				# v0.5.11 BURST: a weapon block may declare its fire
+				# mode + burst size (e.g. "3-round burst lightning
+				# gun"). The Forge grant path applies them to the
+				# fresh weapon, same as the multipliers above.
+				if info.has("fire_mode"):
+					weapon.set("fire_mode", WeaponBase.fire_mode_from_string(str(info.get("fire_mode", ""))))
+				if info.has("burst_size"):
+					weapon.set("burst_size", maxi(2, int(info.get("burst_size", 3))))
 				var at := str(params.get("ammo_type", info.get("ammo_type", "standard")))
 				if at != "standard":
 					_apply_ammo_modifiers(weapon, at)
