@@ -28,6 +28,7 @@ const DUMMY1_POS := Vector3(2.5, 1.0, -1.5)
 const PROJECTILE_SPEED := 6.0
 const STEP_DT := 0.05
 const HIT_DIST := 0.7
+const DUMMY_BASE_SPEED := 4.0  # v0.5.5: sandbox dummy's base speed (grunt-like), for status-effect readouts.
 const EXPLOSION_RADIUS := 4.0
 const EXPLOSION_DAMAGE := 60.0
 const MAX_STEPS := 200
@@ -62,11 +63,17 @@ var _anim_speed := PROJECTILE_SPEED
 ## projectile flies at the hook's speed with the hook's explosion, an
 ## on_hit explosion hook detonates on impact, and an on_kill heal hook
 ## heals (the sandbox dummy dies on any hit, so a hit is a kill).
+## v0.5.5: STATUS EFFECTS are exercised too — on_hit slow / freeze /
+## burn / knockback hooks are parsed and reported (the dummy has a
+## 4.0 m/s base speed, so a slow visibly drops its speed readout).
 ## Returns {"placed": bool, "hit": bool, "explosion_fired": bool,
 ##  "projectile_voxels": int, "steps": int, "dummy_hit": int,
 ##  "explosion_radius": float, "explosion_damage": float,
 ##  "heal_on_kill": float, "healed": bool, "hooks_run": Array[String],
 ##  "projectile_speed": float, "projectile_damage": float,
+##  "status_effects": Array[Dictionary] (each {kind, factor,
+##  duration_sec, damage_per_sec, force}),
+##  "dummy_speed_before": float, "dummy_speed_after": float,
 ##  "wrote_to_mod_list": false, "wrote_to_progression": false}.
 static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: Dictionary) -> Dictionary:
 	var voxels := int((asset as Dictionary).get("voxel_count", 0))
@@ -76,6 +83,8 @@ static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: D
 			"explosion_radius": 0.0, "explosion_damage": 0.0,
 			"heal_on_kill": 0.0, "healed": false, "hooks_run": [],
 			"projectile_speed": 0.0, "projectile_damage": 0.0,
+			"status_effects": [], "dummy_speed_before": DUMMY_BASE_SPEED,
+			"dummy_speed_after": DUMMY_BASE_SPEED,
 			"wrote_to_mod_list": false, "wrote_to_progression": false}
 	var spec: Dictionary = {}
 	if behavior.get("projectile_spec") is Dictionary:
@@ -106,10 +115,13 @@ static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: D
 			hit = true
 			break
 	# On hit: on_hit explosion hooks detonate; on_kill hooks run (the
-	# dummy dies on any hit) — a heal effect heals.
+	# dummy dies on any hit) — a heal effect heals. v0.5.5: on_hit
+	# STATUS effects are parsed + reported (the dummy's 4.0 m/s base
+	# speed drops by the slow factor; freeze drops it to 0).
 	var hit_explodes := false
 	var hit_radius := EXPLOSION_RADIUS
 	var hit_damage := EXPLOSION_DAMAGE
+	var status_effects: Array = []
 	if hit:
 		for h in hooks:
 			if not (h is Dictionary):
@@ -117,10 +129,21 @@ static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: D
 			var d := h as Dictionary
 			if str(d.get("hook_point", "")) == "on_hit":
 				for eff in (d.get("effects", []) as Array):
-					if eff is Dictionary and str((eff as Dictionary).get("kind", "")) == "explosion":
+					if not (eff is Dictionary):
+						continue
+					var ek := str((eff as Dictionary).get("kind", ""))
+					if ek == "explosion":
 						hit_explodes = true
 						hit_radius = float((eff as Dictionary).get("radius", EXPLOSION_RADIUS))
 						hit_damage = float((eff as Dictionary).get("damage", EXPLOSION_DAMAGE))
+					elif ek in ["slow", "freeze", "burn", "knockback"]:
+						status_effects.append({
+							"kind": ek,
+							"factor": float((eff as Dictionary).get("factor", 1.0)),
+							"duration_sec": float((eff as Dictionary).get("duration_sec", 0.0)),
+							"damage_per_sec": float((eff as Dictionary).get("damage_per_sec", 0.0)),
+							"force": float((eff as Dictionary).get("force", 0.0)),
+						})
 				if not hooks_run.has(str(d.get("hook_id", ""))):
 					hooks_run.append(str(d.get("hook_id", "")))
 			if str(d.get("hook_point", "")) == "on_kill":
@@ -142,6 +165,10 @@ static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: D
 	var proj_damage := 0.0
 	if spec.has("damage") and (spec["damage"] is int or spec["damage"] is float) and float(spec["damage"]) >= 0.0:
 		proj_damage = float(spec["damage"])
+	var dummy_speed_after := DUMMY_BASE_SPEED
+	for st in status_effects:
+		if str((st as Dictionary).get("kind", "")) in ["slow", "freeze"]:
+			dummy_speed_after = minf(dummy_speed_after, DUMMY_BASE_SPEED * float((st as Dictionary).get("factor", 1.0)))
 	return {"placed": false, "hit": hit,
 		"explosion_fired": hit and explodes,
 		"projectile_voxels": voxels, "steps": steps,
@@ -153,6 +180,9 @@ static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: D
 		"hooks_run": hooks_run,
 		"projectile_speed": speed,
 		"projectile_damage": proj_damage,
+		"status_effects": status_effects if hit else [],
+		"dummy_speed_before": DUMMY_BASE_SPEED,
+		"dummy_speed_after": dummy_speed_after if hit else DUMMY_BASE_SPEED,
 		"wrote_to_mod_list": false, "wrote_to_progression": false}
 
 
@@ -412,6 +442,26 @@ func _detonate_visual() -> void:
 		# v0.5.3: report the hooks the shot exercised.
 		if bool(_result.get("healed", false)):
 			_result_label.text += " On-kill hook healed +%.0f HP." % float(_result.get("heal_on_kill", 0.0))
+		# v0.5.5: report status effects visibly — a status mod must be
+		# verifiable here, not just "HIT".
+		var st_eff: Variant = _result.get("status_effects", [])
+		if st_eff is Array:
+			for st in (st_eff as Array):
+				if not (st is Dictionary):
+					continue
+				var sk := str((st as Dictionary).get("kind", ""))
+				if sk in ["slow", "freeze"]:
+					_result_label.text += " %s: dummy speed %.1f → %.1f m/s for %.1fs." % [
+						"SLOWED" if sk == "slow" else "FROZEN",
+						float(_result.get("dummy_speed_before", DUMMY_BASE_SPEED)),
+						float(_result.get("dummy_speed_after", DUMMY_BASE_SPEED)),
+						float((st as Dictionary).get("duration_sec", 0.0))]
+				elif sk == "burn":
+					_result_label.text += " BURNING: %.0f damage/s for %.1fs." % [
+						float((st as Dictionary).get("damage_per_sec", 0.0)),
+						float((st as Dictionary).get("duration_sec", 0.0))]
+				elif sk == "knockback":
+					_result_label.text += " KNOCKBACK: force %.0f." % float((st as Dictionary).get("force", 0.0))
 		var hooks_run: Variant = _result.get("hooks_run", [])
 		if hooks_run is Array and not (hooks_run as Array).is_empty():
 			var names: Array[String] = []
