@@ -13,14 +13,28 @@
 #     points). The registry applies the effects via ModAPI.
 # (b) CODE hooks: a GDScript source string ("code") that MUST
 #     `extend ModHook` and implement run(api, ctx). The source passes
-#     the same forbidden-API text scan as ModBlock scripts, plus a
-#     compile check, BEFORE it is ever instantiated. At run time the
-#     instance receives ONLY a ModAPI + a context Dictionary. GDScript
-#     has no try/catch, so a code hook that errors at run time prints an
-#     engine error and returns nothing (the registry treats that as an
-#     empty result) — it cannot crash the game, but like ModBlock it
-#     carries the same GMod-addon trust bar: only install hooks from
-#     sources you trust.
+#     the ALLOWLIST validator (validate_hook_code, v0.5.6 route B —
+#     the flip from the old blocklist scan): it may call ONLY ModAPI
+#     methods (ModAPI.HOOK_ALLOWED_API_METHODS, the single authoritative
+#     list) plus the safe builtins ModAPI documents. NO engine
+#     internals, NO file/network/eval/dynamic loading, NO raw node
+#     manipulation, NO ClassDB / GDScript.new / Expression / load /
+#     preload. A violation is REJECTED with the violation named (e.g.
+#     "hook script calls non-ModAPI (forbidden API): OS.execute").
+#     The source also passes a compile check BEFORE it is ever
+#     instantiated. At run time the instance receives ONLY a ModAPI +
+#     a context Dictionary, under a step/time budget enforced by
+#     ModHookRegistry (see ModAPI.HOOK_MAX_*). GDScript has no
+#     try/catch: RECOVERABLE run-time errors (out-of-bounds index,
+#     method on null) print an engine error and the call CONTINUES,
+#     so the registry cannot detect them — such a hook completes.
+#     ABORTING errors (stack overflow) synthesize a default return in
+#     this engine version, so they cannot be detected by return value
+#     either — the real guard is validation: call cycles (direct AND
+#     mutual recursion) are rejected, which closes the overflow vector
+#     for every hook that passes validation. A hook that exceeds its
+#     step/time budget DISABLES ITS MOD VISIBLY (the registry records
+#     the failure on the ModLoader record), never crashes.
 #
 # HOW HOOKS REACH THE GAME (authoring):
 # - JSON block mods: top-level "hooks": [...] in the payload (next to
@@ -103,6 +117,10 @@ const EFFECT_KEYS := ["kind", "amount", "radius", "damage", "duration_sec", "tit
 
 const MAX_HOOK_CODE_CHARS := 20000
 
+## Max effects entries in one data hook (bounds interpreted dispatch:
+## each effect is one ModAPI call; a hook with more is rejected).
+const MAX_HOOK_EFFECTS := 64
+
 
 ## Catalog entry for this hook (code hooks may override; data hooks
 ## never instantiate this class). Default: {}.
@@ -141,7 +159,7 @@ static func validate_hook_data(hook: Dictionary) -> String:
 	if hook.is_empty():
 		return "hook is empty"
 	for k in hook.keys():
-		if str(k) not in HOOK_KEYS and str(k) != "_instance":
+		if str(k) not in HOOK_KEYS and str(k) not in ["_instance", "_mod_id"]:
 			return "unknown hook field '%s'" % str(k)
 	var hid: Variant = hook.get("hook_id", null)
 	if not (hid is String) or str(hid).is_empty() or str(hid).length() > 48:
@@ -181,6 +199,8 @@ static func validate_hook_data(hook: Dictionary) -> String:
 			return "hook '%s' effects must be an array" % str(hid)
 		if (effs as Array).is_empty():
 			return "hook '%s' effects array is empty" % str(hid)
+		if (effs as Array).size() > MAX_HOOK_EFFECTS:
+			return "hook '%s' effects exceed %d entries (data hooks are bounded — use code hooks for longer sequences, still under budget)" % [str(hid), MAX_HOOK_EFFECTS]
 		for eff in (effs as Array):
 			if not (eff is Dictionary):
 				return "hook '%s' has a non-object effect" % str(hid)
@@ -292,17 +312,32 @@ static func validate_effect(eff: Dictionary) -> String:
 	return ""
 
 
-## Validates hook CODE (a GDScript source string): forbidden-API text
-## scan, extends ModHook, run() present, and a real compile check.
+## Validates hook CODE (a GDScript source string): ALLOWLIST
+## enforcement (v0.5.6 route B — this is the flip from the old
+## blocklist scan). The script may call ONLY:
+##   - `api.<method>` for <method> in ModAPI.HOOK_ALLOWED_API_METHODS,
+##   - `ctx.<method>` for <method> in ModAPI.HOOK_ALLOWED_CTX_METHODS,
+##   - bare globals in ModAPI.HOOK_ALLOWED_BUILTIN_CALLS,
+##   - types in ModAPI.HOOK_ALLOWED_TYPES (annotations / `is` / `as`),
+##   - methods in ModAPI.HOOK_ALLOWED_SAFE_METHODS on its own locals
+##     and on values chained off a call, plus HOOK_ALLOWED_COMPONENTS.
+## Everything else is a violation, REJECTED with the violation named
+## (e.g. "hook script calls non-ModAPI (forbidden API): OS.execute").
+## Structural rules, also enforced here: `extends ModHook`,
+## `run(api, ctx)` present, no engine callbacks (`_init`, `_process`,
+## ...), no anonymous functions, no `while` loops (unbounded — use a
+## bounded `for`), no `range()` literal over HOOK_MAX_RANGE_LITERAL, no
+## recursion, no `@` annotations, no `$` node-path lookups.
 ## "" = OK, else an error naming the violation. Never repairs.
+## NOTE: strings/comments are stripped before analysis, so a forbidden
+## name inside a string literal ("OS.execute" as text) is inert and
+## does NOT trip the validator — only real code is judged.
 static func validate_hook_code(code: String) -> String:
 	if code.length() > MAX_HOOK_CODE_CHARS:
 		return "hook code exceeds %d chars" % MAX_HOOK_CODE_CHARS
-	var forbidden := ModLoader._scan_forbidden(code)
-	if forbidden != "":
-		return "forbidden API in hook code: %s" % forbidden
+	var cleaned := _strip_hook_strings_comments(code)
 	var extends_ok := false
-	for raw_line in code.split("\n"):
+	for raw_line in cleaned.split("\n"):
 		var line := raw_line.strip_edges()
 		if line.begins_with("extends "):
 			extends_ok = (line == "extends ModHook")
@@ -312,8 +347,362 @@ static func validate_hook_code(code: String) -> String:
 			break
 	if not extends_ok:
 		return "hook code must 'extend ModHook'"
-	if not code.contains("func run("):
+	if not cleaned.contains("func run("):
 		return "hook code must implement run(api, ctx)"
+	return _validate_hook_allowlist(cleaned)
+
+
+## The allowlist engine. `cleaned` is hook code with strings/comments
+## stripped (see _strip_hook_strings_comments). "" = OK, else an error
+## naming the violation.
+static func _validate_hook_allowlist(cleaned: String) -> String:
+	# --- Whole-word forbidden tokens (keywords / annotations) --------
+	var kw := RegEx.new()
+	kw.compile("\\b(await|yield|while|preload|super|signal|enum|class|static|breakpoint)\\b")
+	if kw.search(cleaned) != null:
+		var m := kw.search(cleaned)
+		return "hook script calls non-ModAPI (forbidden API): '%s' is not allowed in hook code" % m.get_string()
+	if cleaned.contains("@"):
+		return "hook script calls non-ModAPI (forbidden API): '@' annotations are not allowed in hook code"
+	if cleaned.contains("$"):
+		return "hook script calls non-ModAPI (forbidden API): '$' node-path lookup is raw node access, not allowed in hook code"
+	var anon := RegEx.new()
+	anon.compile("\\bfunc\\s*\\(")
+	if anon.search(cleaned) != null:
+		return "hook script calls non-ModAPI (forbidden API): anonymous functions (func(...) lambdas) are not allowed in hook code"
+	# --- Function definitions: names, params, engine callbacks -------
+	var func_re := RegEx.new()
+	func_re.compile("(?m)^[ \\t]*func[ \\t]+([A-Za-z_]\\w*)[ \\t]*\\(")
+	var func_names: Array[String] = []
+	var func_headers: Array[Dictionary] = []
+	for fm in func_re.search_all(cleaned):
+		var fname := fm.get_string(1)
+		func_names.append(fname)
+		var open_idx := fm.get_start(0) + fm.get_string(0).length() - 1
+		var close_idx := _matching_paren(cleaned, open_idx)
+		var params := ""
+		if close_idx > open_idx:
+			params = cleaned.substr(open_idx + 1, close_idx - open_idx - 1)
+		func_headers.append({"name": fname, "params": params,
+			"body_start": close_idx + 1 if close_idx >= 0 else fm.get_end(0),
+			"start": fm.get_start(0)})
+	var ENGINE_CALLBACKS := ["_init", "_process", "_physics_process", "_ready",
+		"_enter_tree", "_exit_tree", "_notification", "_input",
+		"_unhandled_input", "_unhandled_key_input", "_shortcut_input", "_get",
+		"_set", "_get_property_list", "_validate_property", "_to_string"]
+	for h in func_headers:
+		if str(h.get("name", "")) in ENGINE_CALLBACKS:
+			return "hook script calls non-ModAPI (forbidden API): engine callback '%s' is not allowed in hook code" % str(h.get("name", ""))
+	# Call cycles (direct AND mutual recursion): a recursing hook
+	# overflows the stack at run time, and the engine synthesizes a
+	# default return on abort — the registry CANNOT detect that by
+	# return value — so cycles are rejected here, at validation.
+	# (Direct recursion is the 1-cycle case of the same check.)
+	var call_edges := {}
+	for i in range(func_headers.size()):
+		var h3: Dictionary = func_headers[i]
+		var bend := cleaned.length()
+		if i + 1 < func_headers.size():
+			bend = int((func_headers[i + 1] as Dictionary).get("start", bend))
+		var fbody := cleaned.substr(int(h3.get("body_start", 0)), bend - int(h3.get("body_start", 0)))
+		var callees: Array[String] = []
+		var call_re := RegEx.new()
+		call_re.compile("\\b(?:self\\s*\\.\\s*)?([A-Za-z_]\\w*)\\s*\\(")
+		for cm in call_re.search_all(fbody):
+			var callee := cm.get_string(1)
+			if callee in func_names and callee not in callees:
+				callees.append(callee)
+		call_edges[str(h3.get("name", ""))] = callees
+	for fname in func_names:
+		var cycle := _find_call_cycle(str(fname), call_edges)
+		if not cycle.is_empty():
+			return "hook script calls non-ModAPI (forbidden API): call cycle %s (recursion is not allowed in hook code)" % " -> ".join(cycle)
+	# --- Declared identifiers (locals the hook itself introduces) ----
+	var declared := {"_": true, "api": true, "ctx": true}
+	for h in func_headers:
+		declared[str(h.get("name", ""))] = true
+		for param in _split_top_level(str(h.get("params", "")), ","):
+			var pm := RegEx.new()
+			pm.compile("^\\s*([A-Za-z_]\\w*)")
+			var pmm := pm.search(param)
+			if pmm != null:
+				declared[pmm.get_string(1)] = true
+	var var_re := RegEx.new()
+	var_re.compile("\\b(var|const)[ \\t]+([A-Za-z_]\\w*)")
+	for vm in var_re.search_all(cleaned):
+		declared[vm.get_string(2)] = true
+	var for_re := RegEx.new()
+	for_re.compile("\\bfor[ \\t]+([A-Za-z_]\\w*)[ \\t]+in\\b")
+	for frm in for_re.search_all(cleaned):
+		declared[frm.get_string(1)] = true
+	# --- range() literal cap ------------------------------------------
+	var range_re := RegEx.new()
+	range_re.compile("range\\s*\\(")
+	for rm in range_re.search_all(cleaned):
+		var open_r := rm.get_start(0) + rm.get_string(0).length() - 1
+		var close_r := _matching_paren(cleaned, open_r)
+		if close_r > open_r:
+			var args := cleaned.substr(open_r + 1, close_r - open_r - 1)
+			var num_re := RegEx.new()
+			num_re.compile("\\b\\d+\\b")
+			for nm in num_re.search_all(args):
+				if int(nm.get_string()) > ModAPI.HOOK_MAX_RANGE_LITERAL:
+					return "hook script calls non-ModAPI (forbidden API): range() literal %s exceeds %d (runaway-loop bound)" % [nm.get_string(), ModAPI.HOOK_MAX_RANGE_LITERAL]
+	# --- Dotted access: receiver.member --------------------------------
+	var dot_re := RegEx.new()
+	dot_re.compile("([A-Za-z_]\\w*)\\s*\\.\\s*([A-Za-z_]\\w*)")
+	for dm in dot_re.search_all(cleaned):
+		var receiver := dm.get_string(1)
+		var member := dm.get_string(2)
+		if member == "new":
+			return "hook script calls non-ModAPI (forbidden API): %s.new (dynamic instantiation is not allowed in hook code)" % receiver
+		var derr := _check_dotted(receiver, member, func_names, declared)
+		if derr != "":
+			return derr
+	# Chained off a call / literal: `).member`, `].member`, `}.member`.
+	# Only safe value methods / components / constants may follow.
+	var chain_re := RegEx.new()
+	chain_re.compile("[\\)\\]\\}]\\s*\\.\\s*([A-Za-z_]\\w*)")
+	for cm in chain_re.search_all(cleaned):
+		var cmember := cm.get_string(1)
+		if cmember == "new":
+			return "hook script calls non-ModAPI (forbidden API): .new (dynamic instantiation is not allowed in hook code)"
+		if not (cmember in ModAPI.HOOK_ALLOWED_SAFE_METHODS
+				or cmember in ModAPI.HOOK_ALLOWED_COMPONENTS
+				or _is_all_caps(cmember)):
+			return "hook script calls non-ModAPI (forbidden API): .%s after a call (only safe value methods may follow a call in hook code)" % cmember
+	# --- Bare identifiers ----------------------------------------------
+	var kwds := {"extends": true, "func": true, "var": true, "const": true,
+		"if": true, "elif": true, "else": true, "for": true, "in": true,
+		"match": true, "return": true, "break": true, "continue": true,
+		"pass": true, "and": true, "or": true, "not": true, "is": true,
+		"as": true, "self": true, "true": true, "false": true, "null": true,
+		"void": true, "PI": true, "TAU": true, "INF": true, "NAN": true}
+	var id_re := RegEx.new()
+	id_re.compile("([A-Za-z_]\\w*)")
+	var depth := 0
+	var last_end := 0
+	for im in id_re.search_all(cleaned):
+		var gap := cleaned.substr(last_end, im.get_start(0) - last_end)
+		for ch in gap:
+			if ch == "{":
+				depth += 1
+			elif ch == "}":
+				depth -= 1
+		last_end = im.get_end(0)
+		var ident := im.get_string(1)
+		# Member name (preceded by `.`) or receiver (followed by `.`):
+		# already judged by the dotted check above.
+		var before := _prev_nonspace(cleaned, im.get_start(0))
+		if before == ".":
+			continue
+		var after := _next_nonspace(cleaned, im.get_end(0))
+		if after == ".":
+			continue
+		if ident in kwds or ident in declared:
+			continue
+		if ident in ModAPI.HOOK_ALLOWED_TYPES:
+			continue
+		if ident in ModAPI.HOOK_ALLOWED_BUILTIN_CALLS:
+			continue
+		# Dict key: `ident:` inside braces (e.g. `{healed: 5.0}`).
+		if after == ":" and depth > 0:
+			continue
+		return "hook script calls non-ModAPI (forbidden API): %s (only ModAPI + safe builtins allowed in hook code)" % ident
+	return ""
+
+
+## Judges ONE `receiver.member` pair. "" = allowed, else the violation.
+static func _check_dotted(receiver: String, member: String, func_names: Array[String], declared: Dictionary) -> String:
+	if receiver == "api":
+		if member in ModAPI.HOOK_ALLOWED_API_METHODS:
+			return ""
+		return "hook script calls non-ModAPI (forbidden API): api.%s (not a ModAPI method)" % member
+	if receiver == "ctx":
+		if member in ModAPI.HOOK_ALLOWED_CTX_METHODS:
+			return ""
+		return "hook script calls non-ModAPI (forbidden API): ctx.%s (ctx is read-only; only %s)" % [member, ", ".join(ModAPI.HOOK_ALLOWED_CTX_METHODS)]
+	if receiver == "self":
+		if member in func_names:
+			return ""
+		return "hook script calls non-ModAPI (forbidden API): self.%s (only own helper functions)" % member
+	if receiver in ModAPI.HOOK_ALLOWED_TYPES or _is_all_caps(receiver):
+		if _is_all_caps(member) or member in ModAPI.HOOK_ALLOWED_SAFE_METHODS:
+			return ""
+		return "hook script calls non-ModAPI (forbidden API): %s.%s" % [receiver, member]
+	if receiver in declared:
+		if member in ModAPI.HOOK_ALLOWED_SAFE_METHODS \
+				or member in ModAPI.HOOK_ALLOWED_COMPONENTS \
+				or _is_all_caps(member):
+			return ""
+		return "hook script calls non-ModAPI (forbidden API): %s.%s (raw node access is not allowed in hook code)" % [receiver, member]
+	return "hook script calls non-ModAPI (forbidden API): %s.%s" % [receiver, member]
+
+
+## True when `s` is an ALL_CAPS constant name (ZERO, RED, AXIS_X, ...).
+static func _is_all_caps(s: String) -> bool:
+	if s.is_empty():
+		return false
+	for ch in s:
+		if not ("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_".contains(ch)):
+			return false
+	return true
+
+
+## Depth-first search for a call cycle starting at `start` in the
+## call graph `edges` (func name -> called func names). Returns the
+## cycle path (e.g. ["a", "b", "a"]), or [] when none.
+static func _find_call_cycle(start: String, edges: Dictionary) -> Array[String]:
+	var visited: Array[String] = []
+	var stack: Array[String] = []
+	return _cycle_dfs(start, start, edges, visited, stack)
+
+
+static func _cycle_dfs(node: String, start: String, edges: Dictionary, visited: Array[String], stack: Array[String]) -> Array[String]:
+	if node in stack:
+		if node == start:
+			var cyc := stack.duplicate()
+			cyc.append(node)
+			return cyc
+		return []
+	if node in visited:
+		return []
+	visited.append(node)
+	stack.append(node)
+	var nexts: Array = edges.get(node, [])
+	for nxt in nexts:
+		var found := _cycle_dfs(str(nxt), start, edges, visited, stack)
+		if not found.is_empty():
+			return found
+	stack.pop_back()
+	return []
+## replacing their contents with spaces (newlines preserved, so line
+## structure survives). Handles '...', "...", '''...''', \"\"\"...\"\"\"
+## and backslash escapes. The validator judges real code only.
+static func _strip_hook_strings_comments(code: String) -> String:
+	var out := PackedStringArray()
+	var i := 0
+	var n := code.length()
+	var state := ""  # "" | "#" | "'" | '"' | "'''" | '"""'
+	while i < n:
+		var ch := code[i]
+		if state == "":
+			if ch == "#":
+				state = "#"
+				out.append(" ")
+				i += 1
+			elif ch == "'":
+				if code.substr(i, 3) == "'''":
+					state = "'''"
+					out.append("   ")
+					i += 3
+				else:
+					state = "'"
+					out.append(" ")
+					i += 1
+			elif ch == '"':
+				if code.substr(i, 3) == '"""':
+					state = '"""'
+					out.append("   ")
+					i += 3
+				else:
+					state = '"'
+					out.append(" ")
+					i += 1
+			else:
+				out.append(ch)
+				i += 1
+		elif state == "#":
+			if ch == "\n":
+				state = ""
+				out.append("\n")
+			else:
+				out.append(" ")
+			i += 1
+		elif state == "'" or state == '"':
+			if ch == "\\" and i + 1 < n:
+				out.append("  ")
+				i += 2
+			elif ch == "\n":
+				state = ""
+				out.append("\n")
+				i += 1
+			elif ch == state:
+				state = ""
+				out.append(" ")
+				i += 1
+			else:
+				out.append(" ")
+				i += 1
+		else:  # triple-quoted
+			if ch == "\\" and i + 1 < n:
+				out.append("  ")
+				i += 2
+			elif code.substr(i, 3) == state:
+				state = ""
+				out.append("   ")
+				i += 3
+			elif ch == "\n":
+				out.append("\n")
+				i += 1
+			else:
+				out.append(" ")
+				i += 1
+	return "".join(out)
+
+
+## Index of the `)` matching the `(` at `open_idx` (-1 when unbalanced).
+static func _matching_paren(text: String, open_idx: int) -> int:
+	var depth := 0
+	for i in range(open_idx, text.length()):
+		var ch := text[i]
+		if ch == "(":
+			depth += 1
+		elif ch == ")":
+			depth -= 1
+			if depth == 0:
+				return i
+	return -1
+
+
+## Splits `s` on `sep` at nesting depth 0 for ()[]{}.
+static func _split_top_level(s: String, sep: String) -> Array[String]:
+	var out: Array[String] = []
+	var depth := 0
+	var cur := ""
+	for ch in s:
+		if ch in ["(", "[", "{"]:
+			depth += 1
+		elif ch in [")", "]", "}"]:
+			depth -= 1
+		if ch == sep and depth == 0:
+			out.append(cur)
+			cur = ""
+		else:
+			cur += ch
+	out.append(cur)
+	return out
+
+
+## Previous non-whitespace char before `idx` ("" when none).
+static func _prev_nonspace(text: String, idx: int) -> String:
+	var j := idx - 1
+	while j >= 0:
+		var ch := text[j]
+		if ch != " " and ch != "\t" and ch != "\n" and ch != "\r":
+			return ch
+		j -= 1
+	return ""
+
+
+## Next non-whitespace char at/after `idx` ("" when none).
+static func _next_nonspace(text: String, idx: int) -> String:
+	var j := idx
+	while j < text.length():
+		var ch := text[j]
+		if ch != " " and ch != "\t" and ch != "\n" and ch != "\r":
+			return ch
+		j += 1
 	return ""
 
 
