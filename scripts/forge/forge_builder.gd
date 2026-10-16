@@ -255,6 +255,38 @@ static func _build_mod_block(spec: Dictionary, params: Dictionary, player: Node3
 	return _build_json_mod(rec, spec, params, player, root)
 
 
+## Session MAKE (v0.5.3): builds a JSON-block candidate that lives in
+## memory only (never installed to user://mods/). The candidate was
+## already validated by the generation pipeline (ModCreator.validate);
+## this routes its block_info through the SAME _build_json_mod path an
+## installed block mod uses, so a MAKE'd block behaves identically to
+## an installed one for this match. No file I/O, no registry, no
+## persistence: the built nodes live in the scene tree and die with the
+## match. Script candidates never reach here (the menu refuses them).
+static func build_session_block(block_info: Dictionary, player: Node3D, root: Node, session_hooks: Array = [], session_mod_id: String = "") -> String:
+	var target := str(block_info.get("target", ""))
+	if target.is_empty():
+		return FAIL_PREFIX + "session block has no target."
+	# v0.5.3: the candidate's hooks travel on the synthetic record so
+	# _build_json_mod can attach them to a MAKE'd weapon. A session mod
+	# is NOT in ModLoader (never installed), so nothing here may rely
+	# on a ModLoader lookup to recover the hooks.
+	var hooks: Array = session_hooks.duplicate(true)
+	if hooks.is_empty() and block_info.get("hooks") is Array:
+		hooks = (block_info.get("hooks") as Array).duplicate(true)
+	var rec := {
+		"id": session_mod_id if not session_mod_id.is_empty() else str(block_info.get("block_id", "session_make")),
+		"kind": "block",
+		"enabled": true,
+		"error": "",
+		"block_info": block_info,
+		"hooks": hooks,
+	}
+	var spec := {"target": target}
+	var params := {"position": "near_player"}
+	return _build_json_mod(rec, spec, params, player, root)
+
+
 ## JSON block: data-driven spawn through the existing builder paths, with
 ## the block's declared stats merged in (block wins over any duplicate
 ## spec keys; the spec's position / composition keys still apply).
@@ -278,6 +310,31 @@ static func _build_json_mod(rec: Dictionary, spec: Dictionary, params: Dictionar
 			wm.give_weapon(arsenal_id)
 			var weapon := _find_fresh_weapon(wm, arsenal_id)
 			if weapon != null:
+				# v0.5.3: attach the mod's hooks to the fresh weapon.
+				# The record's hooks are authoritative here — for an
+				# installed mod they are the ModLoader record's hooks,
+				# for a session MAKE they are the candidate's hooks
+				# (carried on the synthetic record by
+				# build_session_block). Deliberately NOT via
+				# ModHookRegistry.attach_mod_to_weapon(): that helper
+				# re-derives hooks through ModLoader.find_mod(mod_id),
+				# which has no record for a never-installed session
+				# mod and would attach empty hooks (and its find_mod
+				# calls would pollute the find-pair history the
+				# pending-attach path keys off). WeaponBase.set_mod
+				# sets mod_id + projectile spec + hooks in one call;
+				# it overwrites any pending-attach result with the
+				# same (or, for MAKE, the correct) hooks.
+				var rec_hooks: Array = rec.get("hooks", []) if rec.get("hooks") is Array else []
+				var mod_id := str(rec.get("id", ""))
+				if mod_id.is_empty():
+					mod_id = str(info.get("block_id", ""))
+				if weapon.has_method("set_mod"):
+					weapon.call("set_mod", mod_id, _projectile_spec_from_hooks(rec_hooks), rec_hooks)
+				else:
+					weapon.set("mod_id", mod_id)
+					weapon.set("mod_projectile_spec", _projectile_spec_from_hooks(rec_hooks))
+					weapon.set("mod_hooks", rec_hooks.duplicate(true))
 				if info.has("damage_mult"):
 					weapon.set("damage", float(weapon.get("damage")) * float(info.get("damage_mult", 1.0)))
 				if info.has("range_mult"):
@@ -379,6 +436,27 @@ static func _build_script_mod(rec: Dictionary, spec: Dictionary, params: Diction
 			last_built_position = api.last_spawned_position
 			last_built_valid = true
 	return str(result)
+
+
+## The custom projectile spec for a hook list (mirrors
+## ModHookRegistry.projectile_for_mod, but over the supplied hooks
+## instead of a ModLoader lookup): the LAST on_fire / projectile_spawn
+## hook carrying a "projectile" dict wins, tagged with its _hook_id.
+## {} when no hook defines a projectile.
+static func _projectile_spec_from_hooks(hooks: Array) -> Dictionary:
+	var out: Dictionary = {}
+	for h in hooks:
+		if not (h is Dictionary):
+			continue
+		var d := h as Dictionary
+		if str(d.get("error", "")) != "":
+			continue
+		if str(d.get("hook_point", "")) in ["on_fire", "projectile_spawn"] and d.has("projectile"):
+			var proj: Variant = d.get("projectile", {})
+			if proj is Dictionary:
+				out = (proj as Dictionary).duplicate(true)
+				out["_hook_id"] = str(d.get("hook_id", ""))
+	return out
 
 
 ## Newest live weapon node on the manager with this arsenal id (skips the
