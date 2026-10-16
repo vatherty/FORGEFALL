@@ -166,6 +166,13 @@ const EFFECT_KINDS := ["heal", "explosion", "smoke", "announce", "damage_mult",
 	"exhaustion", "typed_damage",
 	"shield", "vulnerable", "thorns", "petrified"]
 
+## The 10 elemental emitter elements (mirrors
+## ElementalEmitter.ELEMENTS — kept as a local list so the hook
+## validator stays dependency-free). A projectile's "element" tags
+## its chain jumps with this element's rider.
+const PROJECTILE_ELEMENTS := ["fire", "cold", "lightning", "acid", "poison",
+	"radiant", "necrotic", "thunder", "force", "water"]
+
 ## Status kinds: need a target, so they are rejected on fire points.
 ## shield / vulnerable / thorns / petrified are damage-interception
 ## states: they matter ONLY through the take_damage interception
@@ -299,7 +306,7 @@ static func validate_projectile_spec(p: Variant) -> String:
 		return "projectile must be an object"
 	var spec := p as Dictionary
 	for k in spec.keys():
-		if str(k) not in ["visual", "shape", "speed", "damage", "range", "size", "gravity", "pierce", "explodes_on_impact", "explosion_radius", "explosion_damage", "color"]:
+		if str(k) not in ["visual", "shape", "speed", "damage", "range", "size", "gravity", "pierce", "explodes_on_impact", "explosion_radius", "explosion_damage", "color", "chain_targets", "chain_radius", "chain_falloff", "element"]:
 			return "unknown projectile field '%s'" % str(k)
 	if spec.has("visual") and not (spec["visual"] is String):
 		return "projectile 'visual' must be a string"
@@ -329,6 +336,14 @@ static func validate_projectile_spec(p: Variant) -> String:
 		return "projectile 'explosion_damage' out of range 0-500"
 	if spec.has("color") and not (spec["color"] is String):
 		return "projectile 'color' must be a string"
+	if spec.has("chain_targets") and not _is_int_in(spec.get("chain_targets", null), 0, 5):
+		return "projectile 'chain_targets' out of range 0-5"
+	if spec.has("chain_radius") and not _is_num_in(spec.get("chain_radius", null), 1.0, 15.0):
+		return "projectile 'chain_radius' out of range 1-15"
+	if spec.has("chain_falloff") and not _is_num_in(spec.get("chain_falloff", null), 0.1, 1.0):
+		return "projectile 'chain_falloff' out of range 0.1-1.0"
+	if spec.has("element") and not (spec["element"] is String and str(spec["element"]) in PROJECTILE_ELEMENTS):
+		return "projectile 'element' must be fire|cold|lightning|acid|poison|radiant|necrotic|thunder|force|water"
 	return ""
 
 
@@ -1022,3 +1037,14 @@ static func _describe_effect(eff: Dictionary) -> String:
 
 static func _is_num_in(v: Variant, lo: float, hi: float) -> bool:
 	return (v is int or v is float) and float(v) >= lo and float(v) <= hi
+
+
+## Accepts int, or a float with an integral value (Godot's JSON parser
+## returns ALL numbers as float, so a JSON projectile's 2 arrives as
+## 2.0). Mirrors ModLoader._is_int_in.
+static func _is_int_in(v: Variant, lo: int, hi: int) -> bool:
+	if v is int:
+		return int(v) >= lo and int(v) <= hi
+	if v is float and float(v) == floor(float(v)):
+		return int(v) >= lo and int(v) <= hi
+	return false
