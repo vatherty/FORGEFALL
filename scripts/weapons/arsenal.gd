@@ -293,6 +293,208 @@ const WEAPONS := {
 }
 #endregion
 
+#region MOD WEAPONS (v0.5.9, Worker B)
+## Installed user weapon-mods as first-class Arsenal entries.
+## A weapon-mod is a JSON block mod (kind "block") whose block_info has
+## target "weapon" and a base_weapon_id mapping to a base Arsenal id.
+## Script mods are NOT listed: their behaviour lives in ModBlock.apply()
+## code, which Arsenal cannot run — they stay Forge-only (ForgeBuilder
+## runs apply()). A JSON weapon-mod is fully declarative (base stats x
+## multipliers + data hooks + projectile spec), so Arsenal can build it
+## exactly like ForgeBuilder._build_json_mod does for the weapon target.
+## Canonical id: "mod:<mod_id>" (mod id = the ModLoader record id, i.e.
+## the mod folder/file name — stable, and never collides with a base id,
+## which never contains ":"). The id is the persisted form: loadouts
+## store it, WeaponManager slots hold it, get_slot_weapon_id returns it.
+## A mod weapon is live-validated on EVERY lookup (enabled + error-free
+## + target + base): disabling/removing a mod makes has_weapon() return
+## false for its id immediately, so stale ids fail safe everywhere.
+const MOD_PREFIX := "mod:"
+## Forge prompt ids (what mod blocks declare) -> Arsenal ids. Mirrors
+## ModHookRegistry.FORGE_TO_ARSENAL / ForgeBuilder.FORGE_WEAPON_IDS.
+const MOD_FORGE_TO_ARSENAL := {
+	"manticore": "ar7",
+	"longeye": "lr8",
+	"breacher": "sg12",
+	"hornet": "smg9",
+	"trident": "br3",
+	"judge": "hv44",
+}
+
+
+## True when `weapon_id` is a mod-weapon id ("mod:<mod_id>").
+static func is_mod_weapon(weapon_id: String) -> bool:
+	return weapon_id.begins_with(MOD_PREFIX)
+
+
+## The mod id inside a mod-weapon id, or "" for a base weapon id.
+static func mod_id_of(weapon_id: String) -> String:
+	if not weapon_id.begins_with(MOD_PREFIX):
+		return ""
+	return weapon_id.substr(MOD_PREFIX.length())
+
+
+## Canonical Arsenal id for a mod id ("mod:<mod_id>").
+static func mod_weapon_id(mod_id: String) -> String:
+	return MOD_PREFIX + mod_id
+
+
+## The base Arsenal id a mod record builds on, or "" when the record is
+## not a buildable weapon-mod (no/unknown base_weapon_id).
+static func _mod_base_id(rec: Dictionary) -> String:
+	var info: Dictionary = rec.get("block_info", {})
+	var base := str(info.get("base_weapon_id", ""))
+	if base.is_empty():
+		return ""
+	var mapped := str(MOD_FORGE_TO_ARSENAL.get(base, base))
+	if not WEAPONS.has(mapped):
+		return ""
+	return mapped
+
+
+## The validated full ModLoader record for a mod-weapon id, or {} when
+## the id is not a live weapon-mod (unknown / disabled / broken / not a
+## JSON weapon block / no known base). Uses find_mod(..., false) so
+## Arsenal lookups never pollute ModHookRegistry's find-pair history.
+static func _mod_record(weapon_id: String) -> Dictionary:
+	var mod_id := mod_id_of(weapon_id)
+	if mod_id.is_empty():
+		return {}
+	var rec := ModLoader.find_mod(mod_id, false)
+	if rec.is_empty() or not bool(rec.get("enabled", false)) or str(rec.get("error", "")) != "":
+		return {}
+	if str(rec.get("kind", "")) != "block":
+		return {} # script mods stay Forge-only (apply() code)
+	var info: Dictionary = rec.get("block_info", {})
+	if str(info.get("target", "")) != "weapon":
+		return {}
+	if _mod_base_id(rec).is_empty():
+		return {}
+	return rec
+
+
+## Every live weapon-mod, sorted by display name: {"weapon_id",
+## "mod_id", "name", "base_weapon_id", "slot"}. The Arsenal list /
+## Forge Loadouts tab build from this.
+static func get_mod_weapons() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for public_rec in ModLoader.get_mods():
+		if not (public_rec is Dictionary):
+			continue
+		var mod_id := str((public_rec as Dictionary).get("id", ""))
+		if mod_id.is_empty():
+			continue
+		var rec := _mod_record(mod_weapon_id(mod_id))
+		if rec.is_empty():
+			continue
+		var info: Dictionary = rec.get("block_info", {})
+		var base_id := _mod_base_id(rec)
+		out.append({
+			"weapon_id": mod_weapon_id(mod_id),
+			"mod_id": mod_id,
+			"name": str(info.get("display_name", rec.get("name", mod_id))),
+			"base_weapon_id": base_id,
+			"slot": str((WEAPONS.get(base_id, {}) as Dictionary).get("slot", "primary")),
+		})
+	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return str(a.get("name", "")).to_lower() < str(b.get("name", "")).to_lower())
+	return out
+
+
+## Every weapon id Arsenal knows: base ids + live mod-weapon ids,
+## sorted. The Loadouts store builds its picker list from this.
+static func all_weapon_ids() -> Array[String]:
+	var ids: Array[String] = []
+	for key in WEAPONS.keys():
+		ids.append(str(key))
+	for m in get_mod_weapons():
+		ids.append(str(m.get("weapon_id", "")))
+	ids.sort()
+	return ids
+
+
+## The custom projectile spec for a hook list: the LAST on_fire /
+## projectile_spawn hook carrying a "projectile" dict wins, tagged with
+## its _hook_id. Mirrors ForgeBuilder._projectile_spec_from_hooks. {}
+## when no hook defines a projectile.
+static func _mod_projectile_spec_from_hooks(hooks: Array) -> Dictionary:
+	var out: Dictionary = {}
+	for h in hooks:
+		if not (h is Dictionary):
+			continue
+		var d := h as Dictionary
+		if str(d.get("error", "")) != "":
+			continue
+		if str(d.get("hook_point", "")) in ["on_fire", "projectile_spawn"] and d.has("projectile"):
+			var proj: Variant = d.get("projectile", {})
+			if proj is Dictionary:
+				out = (proj as Dictionary).duplicate(true)
+				out["_hook_id"] = str(d.get("hook_id", ""))
+	return out
+
+
+## A composed ammo_type applied to already-derived mod stats. Mirrors
+## ForgeBuilder._apply_ammo_modifiers exactly (same multipliers).
+static func _apply_mod_ammo(stats: Dictionary, ammo_type: String) -> void:
+	match ammo_type:
+		"sniper":
+			stats["damage"] = float(stats.get("damage", 0.0)) * 1.5
+			stats["near_range"] = float(stats.get("near_range", 0.0)) * 1.5
+			stats["far_range"] = float(stats.get("far_range", 0.0)) * 1.5
+			var mag_size := maxi(1, int(round(float(stats.get("mag_size", 1)) * 0.5)))
+			stats["mag_size"] = mag_size
+		"armor_piercing":
+			stats["damage"] = float(stats.get("damage", 0.0)) * 1.25
+			stats["spread_hip"] = float(stats.get("spread_hip", 0.0)) * 1.2
+			stats["spread_move"] = float(stats.get("spread_move", 0.0)) * 1.2
+		"buckshot":
+			stats["damage"] = float(stats.get("damage", 0.0)) * 1.3
+			stats["near_range"] = float(stats.get("near_range", 0.0)) * 0.6
+			stats["far_range"] = float(stats.get("far_range", 0.0)) * 0.6
+			stats["spread_hip"] = float(stats.get("spread_hip", 0.0)) * 1.6
+			stats["spread_move"] = float(stats.get("spread_move", 0.0)) * 1.6
+
+
+## Synthesized stats for a live mod-weapon id: base stats with the
+## block's multipliers applied (same order as ForgeBuilder._build_json_mod
+## for the weapon target: damage_mult, range_mult, mag_mult, then
+## ammo_type), plus the mod attachment WeaponBase.setup already
+## understands (mod_id / mod_hooks / mod_projectile_spec). {} when the
+## id is not a live weapon-mod.
+static func _mod_stats(weapon_id: String) -> Dictionary:
+	var rec := _mod_record(weapon_id)
+	if rec.is_empty():
+		return {}
+	var info: Dictionary = rec.get("block_info", {})
+	var base_id := _mod_base_id(rec)
+	var stats := (WEAPONS.get(base_id, {}) as Dictionary).duplicate(true)
+	if stats.is_empty():
+		return {}
+	stats["weapon_id"] = weapon_id
+	stats["name"] = str(info.get("display_name", rec.get("name", weapon_id)))
+	stats["mod_base_weapon_id"] = base_id
+	stats["mod_id"] = str(rec.get("id", ""))
+	if info.has("damage_mult"):
+		stats["damage"] = float(stats.get("damage", 0.0)) * float(info.get("damage_mult", 1.0))
+	if info.has("range_mult"):
+		stats["near_range"] = float(stats.get("near_range", 0.0)) * float(info.get("range_mult", 1.0))
+		stats["far_range"] = float(stats.get("far_range", 0.0)) * float(info.get("range_mult", 1.0))
+	if info.has("mag_mult"):
+		var mag_size := maxi(1, int(round(float(stats.get("mag_size", 1)) * float(info.get("mag_mult", 1.0)))))
+		stats["mag_size"] = mag_size
+	var hooks: Array = (rec.get("hooks", []) as Array).duplicate(true) if rec.get("hooks") is Array else []
+	# Belt-and-braces: scan stamps _mod_id, but stamp any unstamped
+	# hook so the registry's live-record gate applies to it.
+	for h in hooks:
+		if h is Dictionary and str((h as Dictionary).get("_mod_id", "")) == "":
+			(h as Dictionary)["_mod_id"] = str(rec.get("id", ""))
+	stats["mod_hooks"] = hooks
+	stats["mod_projectile_spec"] = _mod_projectile_spec_from_hooks(hooks)
+	var ammo_type := str(info.get("ammo_type", "standard"))
+	if ammo_type != "standard":
+		_apply_mod_ammo(stats, ammo_type)
+	return stats
+#endregion
+
 
 ## Sight-line height (viewmodel-local Y of the aiming point) per weapon.
 ## WeaponBase reads this to place ADS_POS so the sight sits exactly on the
@@ -312,26 +514,43 @@ const SIGHT_Y := {
 
 
 static func sight_height(weapon_id: String) -> float:
+	if is_mod_weapon(weapon_id):
+		# A mod weapon aims down its base weapon's sight line.
+		var rec := _mod_record(weapon_id)
+		if not rec.is_empty():
+			return float(SIGHT_Y.get(_mod_base_id(rec), 0.090))
+		return 0.090
 	return float(SIGHT_Y.get(weapon_id, 0.090))
 
 
 static func get_stats(weapon_id: String) -> Dictionary:
+	if is_mod_weapon(weapon_id):
+		return _mod_stats(weapon_id)
 	return (WEAPONS.get(weapon_id, {}) as Dictionary).duplicate(true)
 
 
 static func has_weapon(weapon_id: String) -> bool:
-	return WEAPONS.has(weapon_id)
+	if WEAPONS.has(weapon_id):
+		return true
+	if is_mod_weapon(weapon_id):
+		return not _mod_record(weapon_id).is_empty()
+	return false
 
 
-## Build a WeaponBase (or RaptorGun for "raptor") with stats + viewmodel.
+## Build a WeaponBase (or RaptorGun for "raptor" / raptor-based mods)
+## with stats + viewmodel. Mod stats already carry the mod attachment,
+## so the built weapon fires with its hooks/projectiles immediately.
 static func make_weapon(weapon_id: String) -> WeaponBase:
 	var w: WeaponBase
 	if weapon_id == "raptor":
 		w = RaptorGun.new()
+	elif is_mod_weapon(weapon_id) and _mod_base_id(_mod_record(weapon_id)) == "raptor":
+		w = RaptorGun.new()
 	else:
 		w = WeaponBase.new()
 	w.setup(get_stats(weapon_id))
-	w.name = "Weapon_" + weapon_id
+	# Node names must not contain ":" (NodePath subname separator).
+	w.name = "Weapon_" + weapon_id.replace(":", "_")
 	return w
 
 
@@ -376,7 +595,14 @@ static func _glow(parent: Node3D, size: Vector3, color: Color, pos: Vector3) -> 
 
 
 ## Build the voxel viewmodel for a weapon id. Forward = -Z.
+## A mod weapon reuses its base weapon's viewmodel (mods are stat +
+## hook compositions, not new geometry).
 static func build_viewmodel(weapon_id: String) -> Node3D:
+	if is_mod_weapon(weapon_id):
+		var rec := _mod_record(weapon_id)
+		if not rec.is_empty():
+			return build_viewmodel(_mod_base_id(rec))
+		return _build_ar7()
 	match weapon_id:
 		"ar7":
 			return _build_ar7()
