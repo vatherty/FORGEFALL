@@ -28,6 +28,8 @@ var _strafe_t := 0.0
 func _configure() -> void:
 	type_id = "brute"
 	display_name = "Juggernaut"
+	creature_type = "humanoid"
+	ability_scores = DnDTypes.ability_scores(19, 9, 18, 8, 10, 9)
 	base_hp = 1200.0  # 12x grunt: the tank. Kite it — it cannot catch you.
 	base_speed = 2.4  # was 2.6: slowest type, always kiteable
 	base_damage = 9.0  # was 11: heavy but survivable per hit
