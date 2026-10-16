@@ -26,6 +26,8 @@
 # LineEdit and pops the phone keyboard); the user taps the field to type.
 extends Control
 
+const PlayerClasses := preload("res://scripts/progression/classes.gd")
+
 const HISTORY_CAP := 8
 const TOAST_HOLD_SEC := 4.0
 
@@ -136,6 +138,8 @@ var _mods_list: VBoxContainer
 var _mods_scroll: ScrollContainer
 var _mods_path_label: Label
 var _mods_rescan_button: Button
+var _class_label: Label
+var _class_detail_label: Label
 var _mods_tab_idx := -1
 var _mods_rows: Array[Control] = []
 # Create-Mod now lives in the standalone Mod Creator menu (main menu ->
@@ -261,6 +265,10 @@ func _build() -> void:
 
 	# v0.7 MODS tab (6th tab): installed user mods from ModLoader.
 	_build_mods_tab()
+
+	# v0.5.8 CLASSES tab: 12 D&D class buttons — direct swap, no
+	# Forge pipeline (no cooldown / busy gates; the swap is instant).
+	_build_class_tab()
 
 	# v0.5.3 MAKE (session-scoped creation): ONE prompt box. MAKE calls
 	# the same ModCreator.generate() entry point the Create-a-Mod menu
@@ -656,6 +664,7 @@ func open() -> void:
 	_refresh_history()
 	_refresh_key_status()
 	_refresh_mods()
+	_refresh_class_tab()
 	_refresh_placed()
 	_update_preview()
 	# v0.5.1 FIX 6: NEVER grab focus on open — grabbing focus pops the
@@ -1256,6 +1265,82 @@ const LOADOUT_PRESETS := {
 }
 
 
+# ------------------------------------------------------------------ v0.5.8 CLASSES
+# CLASS tab: current-class label + detail line + 12 class buttons.
+# Buttons swap DIRECTLY via Player.set_player_class (not via the
+# Forge pipeline), so a menu swap is instant and never waits out
+# the Forge cooldown. The Forge-prompt path ("make me a rogue")
+# goes through the pipeline instead — same end state, both live.
+func _build_class_tab() -> void:
+	var scroll := ScrollContainer.new()
+	scroll.name = "Class"
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_tabs.add_child(scroll)
+	var box := VBoxContainer.new()
+	box.name = "ClassBox"
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(box)
+	_class_label = Label.new()
+	_class_label.name = "ClassCurrentLabel"
+	_class_label.text = "CLASS: FIGHTER"
+	_class_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_class_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	StencilStyle.apply_body(_class_label, UiScale.scaled_font(20, _vp_size()), StencilStyle.TEXT_DIM, 2)
+	box.add_child(_class_label)
+	_class_detail_label = Label.new()
+	_class_detail_label.name = "ClassDetailLabel"
+	_class_detail_label.text = PlayerClasses.summary("fighter")
+	_class_detail_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_class_detail_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.apply_body(_class_detail_label, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
+	box.add_child(_class_detail_label)
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(grid)
+	_grids.append(grid)
+	for class_id in PlayerClasses.CLASS_IDS:
+		var b := Button.new()
+		b.name = "Class_" + class_id
+		b.text = PlayerClasses.display_name(class_id).to_upper()
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		StencilStyle.style_button(b)
+		b.pressed.connect(_on_class_pressed.bind(class_id))
+		grid.add_child(b)
+		_menu_buttons.append(b)
+
+
+func _on_class_pressed(class_id: String) -> void:
+	var tree := get_tree()
+	var player_node: Node = null
+	if tree != null:
+		player_node = tree.get_first_node_in_group("player")
+	if player_node == null or not player_node.has_method("set_player_class"):
+		_show_toast("No player in this scene — class swap needs a live match.")
+		return
+	var switched: bool = bool(player_node.call("set_player_class", class_id))
+	if switched:
+		_show_toast("You are now a %s — %s" % [PlayerClasses.display_name(class_id), PlayerClasses.summary(class_id)])
+	else:
+		_show_toast("Already a %s — kit unchanged." % PlayerClasses.display_name(class_id))
+	_refresh_class_tab()
+	_play("ui_click")
+
+
+func _refresh_class_tab() -> void:
+	if _class_label == null:
+		return
+	var tree := get_tree()
+	var class_id := "fighter"
+	if tree != null:
+		var player_node := tree.get_first_node_in_group("player")
+		if player_node != null and player_node.has_method("get_active_class_id"):
+			class_id = str(player_node.call("get_active_class_id"))
+	_class_label.text = "CLASS: " + PlayerClasses.display_name(class_id).to_upper()
+	if _class_detail_label != null:
+		_class_detail_label.text = PlayerClasses.summary(class_id)
+
+
 func _build_loadouts_tab() -> void:
 	var scroll := ScrollContainer.new()
 	scroll.name = "Loadouts"
@@ -1438,6 +1523,14 @@ func _add_mod_row(mod: Dictionary, idx: int) -> void:
 	kind_lbl.text = "Script" if str(mod.get("kind", "")) == "script" else "Block"
 	StencilStyle.apply_body(kind_lbl, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
 	row.add_child(kind_lbl)
+	# v0.5.8 spell schools (tag only): show the school in mod info.
+	var school := str(mod.get("spell_school", ""))
+	if not school.is_empty():
+		var school_lbl := Label.new()
+		school_lbl.name = "ModSchool"
+		school_lbl.text = school.capitalize()
+		StencilStyle.apply_body(school_lbl, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
+		row.add_child(school_lbl)
 	var status_lbl := Label.new()
 	status_lbl.name = "ModStatus"
 	status_lbl.text = "ENABLED" if enabled else "DISABLED"
