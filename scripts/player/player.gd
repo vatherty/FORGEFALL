@@ -11,6 +11,9 @@
 #   - Damageable: take_damage(amount, hit_position, is_headshot)
 extends CharacterBody3D
 
+const PlayerClasses := preload("res://scripts/progression/classes.gd")
+const DnDTypes := preload("res://scripts/data/dnd_types.gd")
+
 #region TUNABLES
 const WALK_SPEED := 6.0
 const SPRINT_SPEED := 11.0
@@ -73,6 +76,7 @@ signal died()
 signal landed(hard: bool)
 signal ads_changed(active: bool)
 signal sprint_changed(active: bool)
+signal class_changed(class_id: String)
 #endregion
 
 @onready var head: Node3D = $Head
@@ -107,6 +111,13 @@ var _step_accum := 0.0
 var _land_offset := 0.0
 var _cam_roll := 0.0
 var _prev_vy := 0.0
+# --- CLASS KIT (v0.5.8): active D&D class id + derived kit state. ---
+var active_class_id := "fighter"
+## Base ability scores (all 10s — DnDTypes default). The EFFECTIVE block
+## is base + active-class bonuses via PlayerClasses (see get_ability_scores).
+var ability_scores := DnDTypes.default_ability_scores()
+var _class_max_hp := MAX_HP
+var _second_wind_used := false
 var _was_on_floor := true
 
 
@@ -116,7 +127,13 @@ func _ready() -> void:
 	head.rotation.x = 0.0
 	grapple.setup(self, camera, $Head/Camera3D/GrappleAnchor, floor_ray)
 	portal_emitter.setup(self, camera, $Head/Camera3D/WristL, $Head/Camera3D/WristR)
-	health_changed.emit(_hp, MAX_HP)
+	# v0.5.8 CLASSES: restore the saved class kit before the first HUD emit.
+	var saved_class := PlayerClasses.load_saved_class()
+	if PlayerClasses.is_valid_class(saved_class):
+		active_class_id = saved_class
+		_class_max_hp = MAX_HP * PlayerClasses.get_mod(saved_class, "max_hp_mult", 1.0)
+		_hp = _class_max_hp
+	health_changed.emit(_hp, get_max_hp())
 
 
 # Public look entry: every caller passes RADIANS (see LOOK CONTRACT above).
@@ -179,6 +196,112 @@ func get_camera() -> Camera3D:
 	return camera
 
 
+# ------------------------------------------------------------------ CLASS KIT (v0.5.8)
+# D&D 5e class (PlayerClasses): the active class's kit is a set of
+# multipliers consulted at the exact choke points where the value is
+# used (regen, speed, jump, wall-run, heal, take_damage). set_player_class
+# swaps mid-match: the old kit is dropped (multipliers are read live
+# from active_class_id, never cached) and the new kit applies on the
+# next tick; HP keeps its FRACTION across the swap so changing class
+# can neither heal nor hurt. Class ability bonuses (+2 STR etc.) are
+# Worker A's stat-block domain — the effective block is base +
+# class bonuses via DnDTypes.with_bonus (see get_ability_scores);
+# this file never converts an ability score into HP/damage.
+func get_active_class_id() -> String:
+	return active_class_id
+
+
+## Effective stat block: base + active-class bonuses (DnDTypes
+## with_bonus primitive, via PlayerClasses). Read-only consumption —
+## no formula lives here.
+func get_ability_scores() -> Dictionary:
+	return PlayerClasses.effective_ability_scores(ability_scores, active_class_id)
+
+
+## 5e modifier for one ability ("str"|"dex"|...) in the EFFECTIVE block.
+func get_ability_modifier(ability: String) -> int:
+	return DnDTypes.get_ability_modifier(get_ability_scores(), ability)
+
+
+## "STR 12 (+1)  DEX 10 (+0)  ..." — character-info line.
+func get_stat_block_text() -> String:
+	return DnDTypes.format_stat_block(get_ability_scores())
+
+
+func get_max_hp() -> float:
+	return _class_max_hp
+
+
+func set_player_class(class_id: String) -> bool:
+	if not PlayerClasses.is_valid_class(class_id):
+		return false
+	if class_id == active_class_id:
+		return false
+	var old_max := _class_max_hp
+	var frac := clampf(_hp / maxf(old_max, 1.0), 0.0, 1.0)
+	active_class_id = class_id
+	_class_max_hp = MAX_HP * PlayerClasses.get_mod(class_id, "max_hp_mult", 1.0)
+	_hp = clampf(frac * _class_max_hp, 0.0, _class_max_hp)
+	_second_wind_used = false
+	PlayerClasses.save_class(class_id)
+	class_changed.emit(class_id)
+	health_changed.emit(_hp, _class_max_hp)
+	return true
+
+
+func class_damage_mult() -> float:
+	return PlayerClasses.get_mod(active_class_id, "damage_mult", 1.0)
+
+
+func class_crit_chance() -> float:
+	return PlayerClasses.get_mod(active_class_id, "crit_chance", 0.0)
+
+
+func class_crit_mult() -> float:
+	return PlayerClasses.get_mod(active_class_id, "crit_mult", 2.0)
+
+
+func class_damage_taken_mult() -> float:
+	# Rogue Sneak: the crouch damage-taken multiplier replaces the
+	# base one while crouching or sliding.
+	var crouch_mult := float(PlayerClasses.get_mod(active_class_id, "damage_taken_crouch_mult", 0.0))
+	if crouch_mult > 0.0 and (_crouching or _sliding):
+		return crouch_mult
+	return PlayerClasses.get_mod(active_class_id, "damage_taken_mult", 1.0)
+
+
+func class_speed_mult() -> float:
+	return PlayerClasses.get_mod(active_class_id, "speed_mult", 1.0)
+
+
+func class_crouch_speed_mult() -> float:
+	return PlayerClasses.get_mod(active_class_id, "crouch_speed_mult", 1.0)
+
+
+func class_jump_mult() -> float:
+	return PlayerClasses.get_mod(active_class_id, "jump_mult", 1.0)
+
+
+func class_wallrun_mult() -> float:
+	return PlayerClasses.get_mod(active_class_id, "wallrun_mult", 1.0)
+
+
+func class_regen_rate_mult() -> float:
+	return PlayerClasses.get_mod(active_class_id, "regen_rate_mult", 1.0)
+
+
+func class_regen_delay_mult() -> float:
+	return PlayerClasses.get_mod(active_class_id, "regen_delay_mult", 1.0)
+
+
+func class_heal_mult() -> float:
+	return PlayerClasses.get_mod(active_class_id, "heal_mult", 1.0)
+
+
+func class_forge_cooldown_mult() -> float:
+	return PlayerClasses.get_mod(active_class_id, "forge_cooldown_mult", 1.0)
+
+
 func _physics_process(delta: float) -> void:
 	if _dead:
 		velocity.y -= GRAVITY * delta
@@ -187,9 +310,9 @@ func _physics_process(delta: float) -> void:
 
 	# --- health regen ---
 	_regen_t += delta
-	if _regen_t >= REGEN_DELAY and _hp < MAX_HP:
-		_hp = minf(_hp + REGEN_RATE * delta, MAX_HP)
-		health_changed.emit(_hp, MAX_HP)
+	if _regen_t >= REGEN_DELAY * class_regen_delay_mult() and _hp < get_max_hp():
+		_hp = minf(_hp + REGEN_RATE * class_regen_rate_mult() * delta, get_max_hp())
+		health_changed.emit(_hp, get_max_hp())
 
 	# --- coyote time + jump buffering ---
 	if is_on_floor():
@@ -283,7 +406,7 @@ func _update_wallrun(delta: float, wish: Vector3) -> void:
 	if _wallrunning:
 		var ray := _wall_ray_for_side()
 		var keep := ray != null and not is_on_floor() \
-			and _wallrun_time < WALLRUN_MAX_TIME and wish.length() > 0.1
+			and _wallrun_time < WALLRUN_MAX_TIME * class_wallrun_mult() and wish.length() > 0.1
 		if keep:
 			_wall_normal = ray.get_collision_normal()
 			_wallrun_time += delta
@@ -398,7 +521,7 @@ func _update_jump() -> void:
 		_jump_buf = 0.0
 		_just_jumped = true
 	elif is_on_floor() or _coyote > 0.0:
-		velocity.y = JUMP_VELOCITY
+		velocity.y = JUMP_VELOCITY * class_jump_mult()
 		_coyote = 0.0
 		_jump_buf = 0.0
 		_sliding = false
@@ -422,8 +545,8 @@ func _update_horizontal(delta: float, wish: Vector3) -> void:
 		return
 	if _wallrunning:
 		var rate := ACCEL_GROUND * AIR_CONTROL
-		velocity.x = move_toward(velocity.x, wish.x * SPRINT_SPEED, rate * delta)
-		velocity.z = move_toward(velocity.z, wish.z * SPRINT_SPEED, rate * delta)
+		velocity.x = move_toward(velocity.x, wish.x * SPRINT_SPEED * class_speed_mult(), rate * delta)
+		velocity.z = move_toward(velocity.z, wish.z * SPRINT_SPEED * class_speed_mult(), rate * delta)
 		return
 	if grapple.is_active():
 		velocity = grapple.apply_grapple(delta, velocity, wish)
@@ -432,7 +555,8 @@ func _update_horizontal(delta: float, wish: Vector3) -> void:
 	if _sprinting:
 		speed = SPRINT_SPEED
 	elif _crouching:
-		speed = CROUCH_SPEED
+		speed = CROUCH_SPEED * class_crouch_speed_mult()
+	speed *= class_speed_mult()
 	# v0.5.5: mod status effects (slow / freeze) on the player.
 	speed *= ModStatusEffects.speed_multiplier(self)
 	if not is_on_floor() or _just_jumped:
@@ -526,17 +650,23 @@ func _update_footsteps(delta: float) -> void:
 func heal(amount: float) -> void:
 	if _dead:
 		return
-	_hp = minf(_hp + amount, MAX_HP)
-	health_changed.emit(_hp, MAX_HP)
+	_hp = minf(_hp + amount * class_heal_mult(), get_max_hp())
+	health_changed.emit(_hp, get_max_hp())
 
 
 # Damageable interface: take_damage(amount, hit_position, is_headshot).
 func take_damage(amount: float, hit_position: Vector3, is_headshot: bool) -> void:
 	if _dead:
 		return
-	_hp = maxf(_hp - amount, 0.0)
+	_hp = maxf(_hp - amount * class_damage_taken_mult(), 0.0)
 	_regen_t = 0.0
-	health_changed.emit(_hp, MAX_HP)
+	# v0.5.8 FIGHTER Second Wind: once per life, dropping to <=30% HP
+	# (but not to 0) restores 30% of max HP instead of staying low.
+	if _hp > 0.0 and _hp <= 0.30 * _class_max_hp and not _second_wind_used \
+		and bool(PlayerClasses.get_mod(active_class_id, "second_wind", false)):
+		_second_wind_used = true
+		_hp = minf(_hp + 0.30 * _class_max_hp, _class_max_hp)
+	health_changed.emit(_hp, get_max_hp())
 	var dir := hit_position - global_position
 	dir.y = 0.0
 	damaged.emit(dir.normalized() if dir.length() > 0.01 else Vector3.ZERO)
@@ -571,7 +701,8 @@ func _die() -> void:
 func respawn(pos: Vector3) -> void:
 	global_position = pos
 	velocity = Vector3.ZERO
-	_hp = MAX_HP
+	_hp = get_max_hp()
+	_second_wind_used = false
 	_dead = false
 	_regen_t = 99.0
 	_pitch = 0.0
@@ -587,7 +718,7 @@ func respawn(pos: Vector3) -> void:
 	grapple.release()
 	_land_offset = 0.0
 	_cam_roll = 0.0
-	health_changed.emit(_hp, MAX_HP)
+	health_changed.emit(_hp, get_max_hp())
 #endregion
 
 
