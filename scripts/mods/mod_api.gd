@@ -6,10 +6,198 @@
 # are rejected by ModLoader's forbidden-API text scan before the script
 # ever loads. Every spawn is tracked (last_spawned) so ForgeBuilder can
 # register the node for undo / the structure cap.
+#
+# v0.5.6 route B — HOOK-SCRIPT ALLOWLIST + BUDGET (Worker A): hook
+# scripts (GDScript `extends ModHook`) are held to a STRICTER rule than
+# ModBlock scripts. A hook script may call ONLY the methods in
+# HOOK_ALLOWED_API_METHODS (on `api`) plus the safe builtins listed
+# below (on `ctx`, on locals, and bare). ModHook.validate_hook_code()
+# enforces that allowlist — it is the SINGLE authoritative list, kept
+# here so the prompt worker documents this exact surface (read it here;
+# do not duplicate it anywhere else). Anything outside it is REJECTED
+# with the violation named (e.g. "hook script calls non-ModAPI
+# (forbidden API): OS.execute"). A hook script that errors at load or
+# run DISABLES ITS MOD VISIBLY (ModLoader.note_hook_runtime_failure),
+# never crashes. Runaway hooks are bounded by the step/time budget
+# below (ModHookRegistry enforces it around every code-hook run).
 extends RefCounted
 class_name ModAPI
 
 const TURRET_SCRIPT := preload("res://scripts/forge/forge_turret.gd")
+
+# --- HOOK-SCRIPT ALLOWLIST (v0.5.6 route B) --------------------------------
+# SINGLE AUTHORITATIVE LIST for what a hook script (extends ModHook) may
+# call. ModHook.validate_hook_code() reads these constants — it defines
+# NO allowlist of its own. The prompt worker documents this exact surface
+# from here. Default is REJECT: anything not listed here is a violation.
+#
+# What a hook script gets: `api` (this object), `ctx` (a Dictionary of
+# hook-point facts: position / hit_position / damage / target /
+# weapon_id / ...), locals it declares itself, and the safe builtins
+# below. Values that flow OUT of `api` (a Node, a Vector3, ...) may only
+# be passed BACK into `api` or used through the safe methods below —
+# there is NO way to reach into a node (`.position = ...`, `.queue_free()`,
+# `.get_node(...)`, `["hp"]`, ...) because no such member is listed.
+
+## Every ModAPI method a hook script may call as `api.<method>`.
+## (All public ModAPI methods — the whole surface, nothing else.)
+const HOOK_ALLOWED_API_METHODS := ["get_player", "get_root",
+	"get_player_position", "get_aim_point", "spawn_voxel_box", "spawn_cover",
+	"spawn_pickup", "spawn_turret", "give_weapon", "fire_effect", "announce",
+	"get_player_health", "heal_player", "apply_status_effect", "spawn_projectile"]
+
+## Read-only Dictionary methods a hook may call on `ctx`. `ctx` is input:
+## a hook must never mutate it (no erase / clear / assignment).
+const HOOK_ALLOWED_CTX_METHODS := ["get", "has", "has_all", "keys", "values",
+	"size", "is_empty"]
+
+## Global functions / type constructors a hook may call bare (no receiver).
+## Pure math, conversions, and value construction only — no engine access.
+const HOOK_ALLOWED_BUILTIN_CALLS := ["print", "str", "int", "float", "bool",
+	"Vector2", "Vector3", "Vector3i", "Vector4", "Color", "Dictionary", "Array",
+	"String", "StringName", "clampf", "clampi", "min", "max", "minf", "maxf",
+	"abs", "absf", "sign", "signf", "floor", "ceil", "round", "lerp", "lerpf",
+	"lerp_angle", "randf", "randi", "randf_range", "randi_range", "sqrt", "pow",
+	"sin", "cos", "tan", "asin", "acos", "atan", "atan2", "deg_to_rad",
+	"rad_to_deg", "is_equal_approx", "is_zero_approx", "is_inf", "is_nan",
+	"is_finite", "typeof", "range", "snapped", "snappedf", "clamp",
+	"move_toward", "posmod", "fmod", "wrap", "wrapf", "wrapi", "pingpong",
+	"smoothstep", "inverse_lerp", "remap", "ease", "step_decimals", "is_same"]
+
+## Types a hook may name (annotations, `is` / `as` checks, constructors).
+## Engine node types appear ONLY for `is` checks (e.g. `if tgt is Node:` —
+## the documented status-effect pattern); naming a node type never grants
+## access to its members (see the dotted-access rule above).
+const HOOK_ALLOWED_TYPES := ["ModAPI", "ModHook", "Dictionary", "Array",
+	"String", "StringName", "int", "float", "bool", "Vector2", "Vector3",
+	"Vector3i", "Vector4", "Color", "Variant", "Node", "Node3D",
+	"CharacterBody3D", "PackedStringArray", "PackedVector3Array",
+	"PackedFloat32Array", "PackedInt32Array"]
+
+## Methods a hook may call on its OWN locals and on values chained off a
+## call (e.g. `dir.normalized()`, `api.get_player_position().x`,
+## `ctx.get("target", null)` is ctx — this list is for everything else).
+## Pure value methods on Vector / Dictionary / Array / String / Color
+## only — NO node methods (no queue_free / add_child / get_node / set /
+## get / set_meta / get_meta / call / free / ...).
+const HOOK_ALLOWED_SAFE_METHODS := [
+	# Vector2/3/4 (pure math).
+	"normalized", "length", "length_squared", "distance_to",
+	"distance_squared_to", "direction_to", "dot", "cross", "lerp", "slerp",
+	"rotated", "angle_to", "angle_to_point", "abs", "ceil", "floor", "round",
+	"sign", "clamp", "clamped", "snapped", "bounce", "reflect", "slide",
+	"project", "limit_length", "is_equal_approx", "is_zero_approx", "is_finite",
+	"is_normalized", "posmod", "max_axis_index", "min_axis_index",
+	# Dictionary (read + local mutation of a hook-owned dict only).
+	"get", "has", "has_all", "keys", "values", "size", "is_empty", "duplicate",
+	"get_or_add", "find_key", "erase", "clear", "merge", "sort",
+	# Array (read + local mutation of a hook-owned array only).
+	"front", "back", "count", "append", "push_back", "pop_back", "pop_front",
+	"push_front", "insert", "remove_at", "slice", "reverse", "min", "max",
+	"bsearch", "shuffle", "sort_custom",
+	# String (pure text).
+	"substr", "find", "findn", "rfind", "contains", "begins_with", "ends_with",
+	"to_lower", "to_upper", "strip_edges", "trim_prefix", "trim_suffix",
+	"replace", "replacen", "split", "join", "format", "pad_zeros",
+	"pad_decimals", "is_valid_int", "is_valid_float", "to_int", "to_float",
+	"capitalize", "repeat", "reverse", "lpad", "rpad", "get_slice", "left",
+	"right", "mid", "dedent", "indent", "split_floats", "hex_encode",
+	"hex_decode",
+	# Color (pure).
+	"to_html", "lightened", "darkened", "inverted", "blend", "srgb_to_linear",
+	"linear_to_srgb",
+]
+
+## Component reads a hook may do on a value (`.x`, `.r`, ...). Any other
+## dotted attribute read (`.position`, `.hp`, `.name`, ...) is rejected.
+const HOOK_ALLOWED_COMPONENTS := ["x", "y", "z", "w", "r", "g", "b", "a"]
+
+## Runaway-hook budget (enforced by ModHookRegistry around every
+## code-hook run; ModAPI counts the steps). One hook run may make at
+## most HOOK_MAX_API_STEPS ModAPI calls and take at most
+## HOOK_MAX_SINGLE_MSEC wall ms; a whole dispatch (all hooks at one hook
+## point) may take at most HOOK_MAX_DISPATCH_MSEC wall ms. Exceeding any
+## of them aborts the rest of the dispatch and disables the mod visibly.
+## HONEST LIMIT: GDScript has no preemptive timeout, so a truly infinite
+## TIGHT loop inside one hook call (no api calls, never returns) cannot
+## be preempted — it hangs the frame. What the budget DOES bound: total
+## ModAPI side-effects per run (step cap turns further api calls into
+## no-ops), hooks that loop long but return (wall check after the call),
+## and unbounded `while` loops (rejected at validation — hooks use
+## bounded `for` loops; `range()` literals over HOOK_MAX_RANGE are
+## rejected too). Prefer data hooks (interpreted, no code runs at all)
+## for anything the effect-kinds table can express.
+const HOOK_MAX_API_STEPS := 200
+const HOOK_MAX_SINGLE_MSEC := 100
+const HOOK_MAX_DISPATCH_MSEC := 250
+const HOOK_MAX_RANGE_LITERAL := 1000
+
+## Human-readable summary of the allowlist, for the prompt worker to
+## document. Read the constants above — this is just their rendering.
+static func hook_allowlist_doc() -> String:
+	var lines: Array[String] = []
+	lines.append("Hook scripts (extends ModHook) may call ONLY:")
+	lines.append("- api.<method> for: " + ", ".join(HOOK_ALLOWED_API_METHODS))
+	lines.append("- ctx.<method> for: " + ", ".join(HOOK_ALLOWED_CTX_METHODS))
+	lines.append("- bare globals: " + ", ".join(HOOK_ALLOWED_BUILTIN_CALLS))
+	lines.append("- types (annotations / is / as): " + ", ".join(HOOK_ALLOWED_TYPES))
+	lines.append("- methods on own locals / chained values: " + ", ".join(HOOK_ALLOWED_SAFE_METHODS))
+	lines.append("- components: " + ", ".join(HOOK_ALLOWED_COMPONENTS))
+	lines.append("Everything else is REJECTED (forbidden API). No while loops; for loops only, range() literals <= %d." % HOOK_MAX_RANGE_LITERAL)
+	lines.append("Per-hook budget: at most %d ModAPI calls and %d ms per hook run, %d ms per dispatch." % [HOOK_MAX_API_STEPS, HOOK_MAX_SINGLE_MSEC, HOOK_MAX_DISPATCH_MSEC])
+	return "\n".join(lines)
+
+
+# --- Hook step budget (static: shared across ModAPI instances) -------------
+# Static on purpose: a hook could stash the `api` it was given in an
+# instance var and call THAT object on a later run. Per-instance budget
+# state would let the stashed object dodge the cap; static state means
+# every ModAPI call made while a hook run is in progress is charged,
+# whichever instance it goes through. The registry activates the budget
+# for exactly one code-hook run at a time (begin/end around run()).
+
+static var _hook_budget_active := false
+static var _hook_budget_steps := 0
+static var _hook_budget_exceeded := false
+
+
+## Activates the per-hook step budget (registry calls this before a
+## code hook's run()). Resets the step count + exceeded flag.
+static func begin_hook_budget() -> void:
+	_hook_budget_active = true
+	_hook_budget_steps = 0
+	_hook_budget_exceeded = false
+
+
+## Deactivates the budget. Returns true when the run exceeded the step
+## cap (further api calls in that run were no-ops).
+static func end_hook_budget() -> bool:
+	var exceeded := _hook_budget_exceeded
+	_hook_budget_active = false
+	_hook_budget_steps = 0
+	_hook_budget_exceeded = false
+	return exceeded
+
+
+## True when the current hook run has exceeded the step cap.
+static func hook_budget_exceeded() -> bool:
+	return _hook_budget_exceeded
+
+
+## Charges one ModAPI call against the active hook budget. Returns false
+## when the budget is exhausted — the caller returns its safe default
+## immediately (no side effect). No-op when no hook budget is active
+## (game code, data hooks, ModBlock apply).
+func _charge_step() -> bool:
+	if not _hook_budget_active:
+		return true
+	_hook_budget_steps += 1
+	if _hook_budget_steps > HOOK_MAX_API_STEPS:
+		_hook_budget_exceeded = true
+		return false
+	return true
+
+
 
 ## Last node a spawn_* call produced (null when nothing spawned).
 var last_spawned: Node = null
@@ -28,16 +216,22 @@ func _init(player: Node3D, root: Node) -> void:
 ## The player node (may be null in headless tests). Prefer the helpers
 ## below over reaching into the player yourself.
 func get_player() -> Node3D:
+	if not _charge_step():
+		return null
 	return _player
 
 
 ## The scene root builds attach to.
 func get_root() -> Node:
+	if not _charge_step():
+		return null
 	return _root
 
 
 ## Player position, or Vector3.ZERO when there is no player.
 func get_player_position() -> Vector3:
+	if not _charge_step():
+		return Vector3.ZERO
 	if _player != null:
 		return _player.global_position
 	return Vector3.ZERO
@@ -45,12 +239,16 @@ func get_player_position() -> Vector3:
 
 ## Crosshair raycast point (the "marked" position).
 func get_aim_point() -> Vector3:
+	if not _charge_step():
+		return Vector3.ZERO
 	return ForgeBuilder.crosshair_point(_player)
 
 
 ## One voxel block: visible cube + optional solid collider, at `position`.
 ## Returns the Node3D (already added to the root), or null without a root.
 func spawn_voxel_box(size: Vector3, color: Color, position: Vector3, solid: bool) -> Node3D:
+	if not _charge_step():
+		return null
 	if _root == null:
 		return null
 	var node := Node3D.new()
@@ -69,6 +267,8 @@ func spawn_voxel_box(size: Vector3, color: Color, position: Vector3, solid: bool
 ## A destructible voxel cover slab. shape: wall|tower|barricade.
 ## size_voxels in voxels (each 1-12), hp 50-500. Null when unavailable.
 func spawn_cover(shape: String, size_voxels: Vector3i, hp: float, position: Vector3) -> Node:
+	if not _charge_step():
+		return null
 	if _root == null or not _has_script_class("DestructibleCover"):
 		return null
 	if not (shape in ["wall", "tower", "barricade"]):
@@ -87,6 +287,8 @@ func spawn_cover(shape: String, size_voxels: Vector3i, hp: float, position: Vect
 
 ## An ammo/health pickup at `position`. kind: ammo|health.
 func spawn_pickup(kind: String, position: Vector3) -> Node:
+	if not _charge_step():
+		return null
 	if _root == null:
 		return null
 	var node := ForgeBuilder.spawn_pickup(_root, position, kind)
@@ -98,6 +300,8 @@ func spawn_pickup(kind: String, position: Vector3) -> Node:
 ## the turret (same precedent as the Forge's own turret composition —
 ## forge_turret.gd reads them and applies them to damage/range).
 func spawn_turret(position: Vector3, duration_sec: float, damage_mult: float, range_mult: float) -> Node:
+	if not _charge_step():
+		return null
 	if _root == null:
 		return null
 	var t = TURRET_SCRIPT.new()
@@ -122,6 +326,8 @@ func spawn_turret(position: Vector3, duration_sec: float, damage_mult: float, ra
 ## weapon_id is a Forge id (manticore/longeye/breacher/hornet/p9/raptor/lmg).
 ## False when there is no player / WeaponManager / unknown weapon.
 func give_weapon(weapon_id: String, damage_mult: float, range_mult: float, mag_mult: float) -> bool:
+	if not _charge_step():
+		return false
 	if _player == null:
 		return false
 	var wm = _player.get_node_or_null("WeaponManager")
@@ -155,6 +361,8 @@ func give_weapon(weapon_id: String, damage_mult: float, range_mult: float, mag_m
 ## A one-shot effect. kind: "explosion" (uses radius + damage) or "smoke"
 ## (uses duration_sec). Unknown kinds are ignored.
 func fire_effect(kind: String, position: Vector3, radius: float, damage: float, duration_sec: float = 20.0) -> void:
+	if not _charge_step():
+		return
 	match kind:
 		"explosion":
 			ForgeBuilder.fx_detonate(position, radius, damage)
@@ -165,6 +373,8 @@ func fire_effect(kind: String, position: Vector3, radius: float, damage: float, 
 
 ## HUD banner. Silent no-op when no HUD is listening.
 func announce(title: String, subtitle: String) -> void:
+	if not _charge_step():
+		return
 	var tree := Engine.get_main_loop() as SceneTree
 	if tree == null:
 		return
@@ -179,6 +389,8 @@ func announce(title: String, subtitle: String) -> void:
 
 ## Current player HP, or -1 when there is no player / no HP to read.
 func get_player_health() -> float:
+	if not _charge_step():
+		return -1.0
 	if _player == null or not is_instance_valid(_player):
 		return -1.0
 	var v: Variant = _player.get("_hp")
@@ -190,6 +402,8 @@ func get_player_health() -> float:
 ## Heals the player (clamped by the player's own heal()). Returns the
 ## player's HP afterwards, or -1 when there is no player / heal().
 func heal_player(amount: float) -> float:
+	if not _charge_step():
+		return -1.0
 	if _player == null or not is_instance_valid(_player):
 		return -1.0
 	if not _player.has_method("heal"):
@@ -203,6 +417,8 @@ func heal_player(amount: float) -> float:
 ## (knockback direction is away from it). No-op (false) for a null /
 ## freed / out-of-tree target or an unknown kind.
 func apply_status_effect(target: Node, kind: String, params: Dictionary, origin: Vector3) -> bool:
+	if not _charge_step():
+		return false
 	return ModStatusEffects.apply_status(target, kind, params, origin)
 
 
@@ -212,6 +428,8 @@ func apply_status_effect(target: Node, kind: String, params: Dictionary, origin:
 ## the firing weapon's attached hooks (on_hit / on_kill run on impact).
 ## Returns the ModProjectile node, or null without a root.
 func spawn_projectile(spec: Dictionary, origin: Vector3, direction: Vector3, hooks: Array = []) -> Node:
+	if not _charge_step():
+		return null
 	if _root == null:
 		return null
 	var p := ModProjectile.new()
