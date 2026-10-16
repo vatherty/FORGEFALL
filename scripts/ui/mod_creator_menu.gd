@@ -1,6 +1,6 @@
 # FORGEFALL — ModCreatorMenu (Forge batch, Worker D: Mod Creator redesign)
 # CREATE-A-MOD is its own MAIN-MENU widget now (main menu -> CREATE A MOD),
-# not a panel inside the Forge menu. Dedicated menu, three tabs:
+# not a panel inside the Forge menu. Dedicated menu, four tabs:
 #   CREATE — structured form (NOT one text box): multi-choice CATEGORIES
 #     checkboxes (Weapon / Block-Structure / Enemy / Effect / Gameplay —
 #     a mod can be several at once), NAME, VISUAL DESCRIPTION, LOGIC.
@@ -8,7 +8,12 @@
 #     EXISTING generation -> strict validation -> approval pipeline
 #     (ModCreator): summary + FULL payload -> Install / Discard /
 #     Regenerate. Approval also offers TEST IN SANDBOX.
-#   MODS — the same installed-mods list (ModLoader data, no second list):
+#   CHAT (v0.5.4, Worker A) — free-form conversation with the model
+#     about mods. Shares ONE ChatSession with the CREATE tab: chatting
+#     "make me a watermelon LMG" then hitting CREATE FROM CHAT sends
+#     the chat history as context to the generation call, whose
+#     candidate lands on the CREATE tab's approval screen (same
+#     validation -> approval -> Install path, nothing installs from chat).
 #     list / enable / disable / Rescan. The Forge menu's Mods tab keeps
 #     the same list — one create flow, no duplicates.
 #   IMPORT/EXPORT — PLACEHOLDER / DISABLED tab ONLY, no functionality.
@@ -34,7 +39,7 @@ class_name ModCreatorMenu
 signal creator_closed
 
 const CATEGORIES := ["Weapon", "Block/Structure", "Enemy", "Effect", "Gameplay"]
-const CREATOR_TABS := ["CREATE", "MODS", "IMPORT/EXPORT"]
+const CREATOR_TABS := ["CREATE", "CHAT", "MODS", "IMPORT/EXPORT"]
 
 var _tabs: TabContainer
 var _category_checks: Dictionary = {}
@@ -63,6 +68,20 @@ var _pending_asset: Dictionary = {}
 var _pending_projectile_asset: Dictionary = {}
 var _generating := false
 var _last_sandbox_result: Dictionary = {}
+# Chat tab (v0.5.4): the ONE shared session — the Chat tab and the
+# Create tab both use this same object. Created in _build_chat_tab
+# (loads the persisted conversation, so reopening keeps the chat).
+var _chat_session: ChatSession = null
+var _chat_panel: ChatPanel = null
+# True while a CREATE FROM CHAT generation is in flight: its candidate
+# switches the view to the CREATE tab's approval screen on success, or
+# shows the error as a red bubble in the chat on failure.
+var _chat_generation_pending := false
+# Last chat-driven generation, kept so REGENERATE retries it with the
+# same conversation context. Cleared by a form GENERATE (which owns the
+# regenerate path from then on).
+var _pending_chat_conversation: Array = []
+var _pending_chat_request: String = ""
 
 
 ## Composes ONE stable prompt from the structured form. Fixed section
@@ -198,6 +217,7 @@ func _build() -> void:
 	_tabs.tab_changed.connect(_on_tab_changed)
 	vb.add_child(_tabs)
 	_build_create_tab()
+	_build_chat_tab()
 	_build_mods_tab()
 	_build_import_export_tab()
 
@@ -345,6 +365,73 @@ func _build_create_tab() -> void:
 	btn_row.add_child(_sandbox_button)
 
 
+# --- CHAT tab (v0.5.4, Worker A) -------------------------------------------------
+# Free-form conversation. Shares _chat_session with the CREATE tab
+# (same object, not a copy): the panel SENDs via
+# ModCreator.chat(session.get_messages()) and CREATE FROM CHAT via
+# ModCreator.generate_with_context(session.get_messages(),
+# session.last_user_request()). The panel calls generate_with_context
+# itself right after emitting create_from_chat_requested — this handler
+# only records the pending state (tab switch on success, error bubble
+# on failure, REGENERATE path), it must NOT call generate again.
+
+func _build_chat_tab() -> void:
+	_chat_session = ChatSession.new()
+	_chat_panel = ChatPanel.new()
+	_chat_panel.name = "ChatPanel"
+	_chat_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_chat_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_tabs.add_child(_chat_panel)
+	_tabs.set_tab_title(1, CREATOR_TABS[1])
+	_chat_panel.setup(_chat_session, _creator_instance())
+	_chat_panel.create_from_chat_requested.connect(_on_chat_create_requested)
+
+
+func get_chat_session() -> ChatSession:
+	return _chat_session
+
+
+func get_chat_panel() -> ChatPanel:
+	return _chat_panel
+
+
+func _on_chat_create_requested(conversation: Array, request: String) -> void:
+	# Pending state ONLY — the panel makes the generate_with_context
+	# call itself right after emitting this signal.
+	_chat_generation_pending = true
+	_pending_chat_conversation = conversation.duplicate(true)
+	_pending_chat_request = request
+	# Fallback for REGENERATE if the conversation is later cleared:
+	# plain-generate the request text itself.
+	_pending_prompt = request
+	_generating = true
+	if _generate_button != null:
+		_generate_button.disabled = true
+
+
+func _start_chat_generation(conversation: Array, request: String) -> void:
+	# REGENERATE path for a chat-driven generation: same pending state
+	# as _on_chat_create_requested, PLUS the actual generation call
+	# (the panel only makes that call for its own button press).
+	if _generating:
+		return
+	var creator := _creator_instance()
+	if creator == null or not creator.has_method("generate_with_context"):
+		_status.text = "Creation from chat is unavailable — the generation backend is not ready yet."
+		if _chat_panel != null:
+			_chat_panel.show_error("Creation from chat is unavailable — the generation backend is not ready yet.")
+		return
+	_chat_generation_pending = true
+	_pending_chat_conversation = conversation.duplicate(true)
+	_pending_chat_request = request
+	_pending_prompt = request
+	_generating = true
+	if _generate_button != null:
+		_generate_button.disabled = true
+	_status.text = "Generating from chat…"
+	creator.call("generate_with_context", conversation, request)
+
+
 # --- MODS tab (same ModLoader list as the Forge menu) --------------------------
 
 func _build_mods_tab() -> void:
@@ -357,7 +444,7 @@ func _build_mods_tab() -> void:
 	box.name = "ModsBox"
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_tabs.add_child(box)
-	_tabs.set_tab_title(1, CREATOR_TABS[1])
+	_tabs.set_tab_title(2, CREATOR_TABS[2])
 	_mods_path_label = Label.new()
 	_mods_path_label.name = "ModsPathLabel"
 	_mods_path_label.text = "Mods folder: " + OS.get_user_data_dir() + "/mods"
@@ -396,7 +483,7 @@ func _build_mods_tab() -> void:
 
 func _build_import_export_tab() -> void:
 	var scroll := _tab_scroll("ImportExportTab")
-	_tabs.set_tab_title(2, CREATOR_TABS[2])
+	_tabs.set_tab_title(3, CREATOR_TABS[3])
 	var box := VBoxContainer.new()
 	box.name = "ImportExportBox"
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -447,7 +534,7 @@ func get_last_sandbox_result() -> Dictionary:
 
 
 func _on_tab_changed(tab: int) -> void:
-	if tab == 1:
+	if tab == 2:
 		_refresh_mods()
 
 
@@ -474,11 +561,21 @@ func _on_generate_pressed() -> void:
 	if _logic_input.text.strip_edges().is_empty():
 		_status.text = "Describe what it does."
 		return
+	# A form GENERATE owns the regenerate path from here on: the
+	# chat-driven pending state no longer applies.
+	_pending_chat_conversation = []
+	_pending_chat_request = ""
+	_chat_generation_pending = false
 	_pending_prompt = compose_prompt(cats, _name_input.text, _visual_input.text, _logic_input.text)
 	_start_generation(_pending_prompt)
 
 
 func _on_regenerate_pressed() -> void:
+	# Chat-driven generation regenerates WITH its conversation context;
+	# form generation regenerates with its composed prompt (unchanged).
+	if not _pending_chat_conversation.is_empty():
+		_start_chat_generation(_pending_chat_conversation, _pending_chat_request)
+		return
 	if _pending_prompt.is_empty():
 		return
 	_start_generation(_pending_prompt)
@@ -506,7 +603,20 @@ func _on_generation_ready(candidate: Dictionary) -> void:
 		_pending_candidate = {}
 		_approval_panel.visible = false
 		_status.text = "Generation failed: " + err
+		# Chat-driven generation: surface the failure where the user
+		# is — as a red bubble in the chat — and stay on the CHAT tab.
+		# The pending conversation is kept, so REGENERATE retries it.
+		if _chat_generation_pending:
+			_chat_generation_pending = false
+			if _chat_panel != null:
+				_chat_panel.show_error("Generation failed: " + err)
 		return
+	# Chat-driven generation succeeded: its approval screen lives on
+	# the CREATE tab — switch there so the user sees it. The pending
+	# conversation is kept, so REGENERATE retries it with context.
+	if _chat_generation_pending:
+		_chat_generation_pending = false
+		_tabs.current_tab = 0
 	_pending_candidate = candidate
 	# Voxel asset from the VISUAL DESCRIPTION (local, cached) — the WEAPON.
 	_pending_asset = VoxelAssetGenerator.get_or_generate(_visual_input.text)
