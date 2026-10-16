@@ -87,6 +87,12 @@ func _hook_ads() -> void:
 
 
 func _process(_delta: float) -> void:
+	# v0.5.9 MOD WEAPONS: a mod weapon whose mod was disabled / removed
+	# / broken mid-match drops out to its slot fallback (its hooks
+	# would already stop via the registry's live-record gate; this also
+	# drops the baked multipliers + custom projectile). Base weapons
+	# cost one begins_with check each — see prune_stale_mod_weapons().
+	prune_stale_mod_weapons()
 	# v0.5.3: on_damage_taken hooks for the equipped mod weapon (see
 	# _poll_damage_taken). Runs even when there is no current weapon —
 	# it only tracks HP then.
@@ -175,6 +181,13 @@ func switch_to(slot: String) -> void:
 ## are untouched.
 func give_weapon(weapon_id: String) -> void:
 	set_slot("primary", weapon_id)
+	# v0.5.9 MOD WEAPONS: a mod weapon already carries its hooks +
+	# projectile spec from Arsenal stats (WeaponBase.setup) — the
+	# pending-attach path below is for Forge-built BASE weapons only.
+	# Attaching pending state to a mod weapon would overwrite its own
+	# hooks with whatever a stale Forge build left behind.
+	if Arsenal.is_mod_weapon(weapon_id):
+		return
 	var fresh: WeaponBase = _weapons.get("primary")
 	if fresh != null:
 		ModHookRegistry.try_attach_pending(fresh, weapon_id)
@@ -264,6 +277,29 @@ func set_slot(slot: String, weapon_id: String) -> void:
 		_current.on_equip()
 		_current.set_ads(_ads_active)
 		weapon_changed.emit(_current.display_name)
+
+
+## v0.5.9 MOD WEAPONS: drop equipped mod weapons whose mod is no longer
+## valid (disabled / removed / broken) — each stale slot falls back to
+## its base default (primary ar7, secondary p9, prototype raptor).
+## Never touches base weapons. Stale mod ids in a saved loadout never
+## reach here as live weapons: set_slot() already no-ops on them
+## (Arsenal.has_weapon is live-validated), and the Loadouts store
+## sanitizes them to the fallback on load — this covers the mid-match
+## case, where the weapon already exists. Safe to call any time (also
+## called every frame from _process); no-op while switching.
+func prune_stale_mod_weapons() -> void:
+	if _switching:
+		return
+	for slot in SLOT_ORDER:
+		var w: WeaponBase = _weapons.get(slot)
+		if w == null or not Arsenal.is_mod_weapon(w.weapon_id):
+			continue
+		if Arsenal.has_weapon(w.weapon_id):
+			continue
+		var fallback := str(DEFAULT_LOADOUT.get(slot, ""))
+		if fallback != "" and fallback != w.weapon_id:
+			set_slot(slot, fallback)
 
 
 ## v0.6 LOADOUTS: equip a primary + secondary pair immediately. The
