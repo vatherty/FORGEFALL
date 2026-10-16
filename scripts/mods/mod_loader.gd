@@ -21,9 +21,10 @@
 # Records: internal records carry the 8 public keys (id, name, kind,
 # version, author, enabled, error, path) PLUS block_info (the validated
 # block dict — for JSON mods, the "block" object; for script mods, the
-# get_block_info() result) and script_path ("" for JSON mods). get_mods()
-# returns ONLY the 8 public keys; find_mod() returns the full record for
-# the catalog / builder / gate, which need block_info.
+# get_block_info() result), script_path ("" for JSON mods), and hooks
+# (validated invented hooks, see ModHook — [] when the mod adds none).
+# get_mods() returns ONLY the 8 public keys; find_mod() returns the full
+# record for the catalog / builder / gate, which need block_info + hooks.
 extends RefCounted
 class_name ModLoader
 
@@ -63,6 +64,13 @@ const FORBIDDEN_SNIPPETS := [
 static var _mods: Array = []
 static var _enabled: Dictionary = {}
 static var _scanned := false
+
+## Recent find_mod calls ({"ref": String, "at_msec": int}, oldest first,
+## capped at 8). ModHookRegistry's pending-attach rule reads this: a
+## real build calls find_mod for the same ref twice in quick succession
+## (gate + build), while speculative lookups (catalog listing, offline
+## name matching) never produce two consecutive same-ref calls.
+static var _find_history: Array = []
 
 
 ## Scan user://mods/, validate, register. Safe to call repeatedly.
@@ -117,10 +125,17 @@ static func get_enabled_mods() -> Array:
 
 
 ## Full internal record for `ref` (a mod id, or a block_id declared by a
-## mod) — public keys PLUS block_info + script_path. {} when not found.
-## Prefer exact mod-id matches; fall back to block_id matches.
-static func find_mod(ref: String) -> Dictionary:
+## mod) — public keys PLUS block_info + script_path + hooks. {} when not
+## found. Prefer exact mod-id matches; fall back to block_id matches.
+## `track_history` (default true) records the lookup for
+## ModHookRegistry's pending-attach pair rule; pass false for internal /
+## re-reads that must not count as a build lookup.
+static func find_mod(ref: String, track_history: bool = true) -> Dictionary:
 	_ensure_scanned()
+	if track_history:
+		_find_history.append({"ref": ref, "at_msec": Time.get_ticks_msec()})
+		while _find_history.size() > 8:
+			_find_history.pop_front()
 	for rec in _mods:
 		if str(rec.get("id", "")) == ref:
 			return rec
@@ -129,6 +144,18 @@ static func find_mod(ref: String) -> Dictionary:
 		if str(info.get("block_id", "")) == ref:
 			return rec
 	return {}
+
+
+## Recent find_mod history (see _find_history). A copy; callers must
+## not mutate the registry's view of it.
+static func get_find_history() -> Array:
+	return _find_history.duplicate(true)
+
+
+## Clears the find_mod history (called when a pending attach is
+## consumed, so a stale pair can never attach a second weapon).
+static func clear_find_history() -> void:
+	_find_history = []
 
 
 ## Updates enabled state AND persists it to user://mods_enabled.json.
@@ -170,6 +197,7 @@ static func _base_record(mod_id: String, path: String) -> Dictionary:
 		"path": path,
 		"block_info": {},
 		"script_path": "",
+		"hooks": [],
 	}
 
 
@@ -206,8 +234,28 @@ static func _scan_folder(mod_id: String, folder: String) -> void:
 		_mods.append(rec)
 		return
 	var kind := str(rec.get("kind", "block"))
+	# v0.5.3 INVENTED HOOKS: a folder manifest may carry data hooks
+	# ("hooks") and, for script mods, hook-code files ("hook_files").
+	var manifest_hooks: Array = []
+	var manifest_hook_files: Array = []
+	if (manifest as Dictionary).has("hooks"):
+		if not ((manifest as Dictionary)["hooks"] is Array):
+			rec["error"] = "manifest 'hooks' must be an array"
+			_mods.append(rec)
+			return
+		manifest_hooks = ((manifest as Dictionary)["hooks"] as Array).duplicate(true)
+	if (manifest as Dictionary).has("hook_files"):
+		if kind != "script":
+			rec["error"] = "manifest 'hook_files' requires kind 'script'"
+			_mods.append(rec)
+			return
+		if not ((manifest as Dictionary)["hook_files"] is Array):
+			rec["error"] = "manifest 'hook_files' must be an array"
+			_mods.append(rec)
+			return
+		manifest_hook_files = ((manifest as Dictionary)["hook_files"] as Array).duplicate(true)
 	if kind == "block" and (manifest as Dictionary).has("block") and (manifest as Dictionary)["block"] is Dictionary:
-		_finish_json_block(rec, (manifest as Dictionary)["block"])
+		_finish_json_block(rec, (manifest as Dictionary)["block"], manifest_hooks)
 		return
 	var payload := str((manifest as Dictionary).get("file", ""))
 	if payload.is_empty():
@@ -218,9 +266,9 @@ static func _scan_folder(mod_id: String, folder: String) -> void:
 		return
 	if kind == "block":
 		var data: Variant = _parse_json_file(folder.path_join(payload))
-		_finish_json_block(rec, data)
+		_finish_json_block(rec, data, manifest_hooks)
 	else:
-		_finish_script_mod(rec, folder.path_join(payload))
+		_finish_script_mod(rec, folder.path_join(payload), manifest_hooks, manifest_hook_files, folder)
 
 
 ## Single-file mod: <id>.json (manifest + block inline) or <id>.gd
@@ -246,6 +294,8 @@ static func _scan_file(entry: String, full: String) -> void:
 		return
 	# .gd single file: companion <id>.json may carry manifest fields.
 	var companion := full.get_basename() + ".json"
+	var companion_hooks: Array = []
+	var companion_hook_files: Array = []
 	if FileAccess.file_exists(companion):
 		var m: Variant = _parse_json_file(companion)
 		if m is Dictionary:
@@ -253,9 +303,13 @@ static func _scan_file(entry: String, full: String) -> void:
 			if rec["error"] != "":
 				_mods.append(rec)
 				return
+			if (m as Dictionary).has("hooks") and (m as Dictionary)["hooks"] is Array:
+				companion_hooks = ((m as Dictionary)["hooks"] as Array).duplicate(true)
+			if (m as Dictionary).has("hook_files") and (m as Dictionary)["hook_files"] is Array:
+				companion_hook_files = ((m as Dictionary)["hook_files"] as Array).duplicate(true)
 	# A lone .gd is a script mod regardless of what the companion said.
 	rec["kind"] = "script"
-	_finish_script_mod(rec, full)
+	_finish_script_mod(rec, full, companion_hooks, companion_hook_files, MODS_DIR)
 
 
 ## Manifest fields (name/kind/version/author) + basic manifest validation.
@@ -329,10 +383,13 @@ static func _infer_payload(folder: String, kind: String, manifest: Dictionary) -
 # block via params {"mod_block": "<mod id or block_id>"}; the game looks
 # the block up and recomputes cost from its declared cost.
 
-static func _finish_json_block(rec: Dictionary, data: Variant) -> void:
-	var block: Variant = data
-	if block is Dictionary and (block as Dictionary).has("block") and (block as Dictionary)["block"] is Dictionary:
-		block = (block as Dictionary)["block"]
+static func _finish_json_block(rec: Dictionary, data: Variant, manifest_hooks: Array = []) -> void:
+	var split := _split_block_and_hooks(data)
+	if str(split.get("error", "")) != "":
+		rec["error"] = str(split.get("error", ""))
+		_mods.append(rec)
+		return
+	var block: Variant = split.get("block", null)
 	if not (block is Dictionary):
 		rec["error"] = "block payload is not a JSON object"
 		_mods.append(rec)
@@ -347,8 +404,105 @@ static func _finish_json_block(rec: Dictionary, data: Variant) -> void:
 		rec["error"] = "duplicate block_id '%s'" % bid
 		_mods.append(rec)
 		return
+	# v0.5.3 INVENTED HOOKS: manifest hooks + payload hooks, merged.
+	# A bad hook disables the whole mod with a visible error.
+	var hooks_raw: Array = []
+	hooks_raw.append_array(manifest_hooks)
+	hooks_raw.append_array(split.get("hooks", []))
+	var validated := _validate_hook_list(hooks_raw)
+	if str(validated.get("error", "")) != "":
+		rec["error"] = str(validated.get("error", ""))
+		_mods.append(rec)
+		return
+	rec["hooks"] = validated.get("hooks", [])
 	rec["block_info"] = block
 	_mods.append(rec)
+
+
+## Splits a JSON block payload into its block dict + its hooks array.
+## Accepts {"block": {...}, "hooks": [...]} and a pure block dict with
+## a top-level "hooks" key. Returns {"block", "hooks", "error"}.
+static func _split_block_and_hooks(data: Variant) -> Dictionary:
+	if not (data is Dictionary):
+		return {"block": null, "hooks": [], "error": "block payload is not a JSON object"}
+	var d := data as Dictionary
+	if d.has("block") and d["block"] is Dictionary:
+		var hooks: Variant = d.get("hooks", null)
+		if hooks != null and not (hooks is Array):
+			return {"block": null, "hooks": [], "error": "payload 'hooks' must be an array"}
+		return {"block": (d["block"] as Dictionary).duplicate(true),
+			"hooks": (hooks as Array).duplicate(true) if hooks is Array else [], "error": ""}
+	var block := d.duplicate(true)
+	var hooks2: Variant = block.get("hooks", null)
+	if hooks2 != null:
+		if not (hooks2 is Array):
+			return {"block": null, "hooks": [], "error": "payload 'hooks' must be an array"}
+		block.erase("hooks")
+		return {"block": block, "hooks": (hooks2 as Array).duplicate(true), "error": ""}
+	return {"block": block, "hooks": [], "error": ""}
+
+
+## Validates a merged hook list (data hooks from any source). Returns
+## {"hooks": Array (validated, in order), "error": String}. "" error = OK.
+## Duplicate hook_ids are rejected; a hook that fails validation
+## rejects the whole list (the mod is disabled with the error).
+static func _validate_hook_list(raw: Array) -> Dictionary:
+	var out: Array = []
+	var seen := {}
+	for item in raw:
+		if not (item is Dictionary):
+			return {"hooks": [], "error": "hook is not an object"}
+		var copy: Dictionary = (item as Dictionary).duplicate(true)
+		var err := ModHook.validate_hook_data(copy)
+		if err != "":
+			return {"hooks": [], "error": err}
+		var hid := str(copy.get("hook_id", ""))
+		if seen.has(hid):
+			return {"hooks": [], "error": "duplicate hook_id '%s'" % hid}
+		seen[hid] = true
+		out.append(copy)
+	return {"hooks": out, "error": ""}
+
+
+## Loads ONE hook-code file (a folder manifest "hook_files" entry) into
+## a hook record {"hook_id", "hook_point", "display_name"?, "description"?,
+## "code"}. The file must extend ModHook, pass the forbidden-API scan,
+## compile, and declare its id/point via get_hook_info(). Returns
+## {"record": Dictionary, "error": String}.
+static func _load_hook_file(folder: String, name: Variant) -> Dictionary:
+	if not (name is String) or str(name).strip_edges().is_empty():
+		return {"record": {}, "error": "hook file name must be a non-empty string"}
+	var fname := str(name)
+	if ".." in fname or fname.begins_with("/") or fname.begins_with("user://"):
+		return {"record": {}, "error": "bad hook file path '%s'" % fname}
+	if not fname.ends_with(".gd"):
+		return {"record": {}, "error": "hook file '%s' must be a .gd file" % fname}
+	var path := folder.path_join(fname)
+	if not FileAccess.file_exists(path):
+		return {"record": {}, "error": "hook file '%s' not found" % fname}
+	var text := FileAccess.get_file_as_string(path)
+	var cerr := ModHook.validate_hook_code(text)
+	if cerr != "":
+		return {"record": {}, "error": cerr}
+	var compiled := ModHook.compile_hook_code(text)
+	if str(compiled.get("error", "")) != "":
+		return {"record": {}, "error": str(compiled.get("error", ""))}
+	var inst := compiled.get("instance") as ModHook
+	var info: Variant = inst.get_hook_info()
+	if not (info is Dictionary):
+		return {"record": {}, "error": "hook file '%s': get_hook_info() did not return a Dictionary" % fname}
+	var hid: Variant = (info as Dictionary).get("hook_id", null)
+	var point: Variant = (info as Dictionary).get("hook_point", null)
+	if not (hid is String) or str(hid).strip_edges().is_empty():
+		return {"record": {}, "error": "hook file '%s': get_hook_info() has no hook_id" % fname}
+	if not (point is String) or str(point).strip_edges().is_empty():
+		return {"record": {}, "error": "hook file '%s': get_hook_info() has no hook_point" % fname}
+	var record := {"hook_id": str(hid), "hook_point": str(point), "code": text}
+	if (info as Dictionary).has("display_name"):
+		record["display_name"] = str((info as Dictionary).get("display_name", ""))
+	if (info as Dictionary).has("description"):
+		record["description"] = str((info as Dictionary).get("description", ""))
+	return {"record": record, "error": ""}
 
 
 ## Validates + normalizes a block dict in place (cost -> int, color ->
@@ -487,7 +641,7 @@ static func instantiate_script_mod(rec: Dictionary) -> ModBlock:
 
 # --- GDScript mods ----------------------------------------------------------
 
-static func _finish_script_mod(rec: Dictionary, script_path: String) -> void:
+static func _finish_script_mod(rec: Dictionary, script_path: String, manifest_hooks: Array = [], hook_files: Array = [], hook_folder: String = "") -> void:
 	rec["script_path"] = script_path
 	if not FileAccess.file_exists(script_path):
 		rec["error"] = "script file not found"
@@ -527,6 +681,30 @@ static func _finish_script_mod(rec: Dictionary, script_path: String) -> void:
 		rec["error"] = "duplicate block_id '%s'" % bid
 		_mods.append(rec)
 		return
+	# v0.5.3 INVENTED HOOKS: manifest data hooks + get_hooks() +
+	# hook-code files, merged. A bad hook disables the whole mod.
+	var hooks_raw: Array = []
+	hooks_raw.append_array(manifest_hooks)
+	var gh: Variant = (inst as ModBlock).get_hooks()
+	if not (gh is Array):
+		rec["error"] = "get_hooks() did not return an Array"
+		_mods.append(rec)
+		return
+	hooks_raw.append_array(gh)
+	var folder := hook_folder if not hook_folder.is_empty() else MODS_DIR
+	for fname in hook_files:
+		var loaded := _load_hook_file(folder, fname)
+		if str(loaded.get("error", "")) != "":
+			rec["error"] = str(loaded.get("error", ""))
+			_mods.append(rec)
+			return
+		hooks_raw.append(loaded.get("record", {}))
+	var validated := _validate_hook_list(hooks_raw)
+	if str(validated.get("error", "")) != "":
+		rec["error"] = str(validated.get("error", ""))
+		_mods.append(rec)
+		return
+	rec["hooks"] = validated.get("hooks", [])
 	rec["block_info"] = info
 	_mods.append(rec)
 
@@ -640,7 +818,7 @@ static func _is_size_voxels(v: Variant) -> bool:
 
 static func validate_generated_mod(manifest: Dictionary, payload: String) -> String:
 	for k in manifest.keys():
-		if str(k) not in ["name", "kind", "version", "description", "author", "file"]:
+		if str(k) not in ["name", "kind", "version", "description", "author", "file", "hooks"]:
 			return "unknown manifest field '%s'" % str(k)
 	var mname: Variant = manifest.get("name", null)
 	if not (mname is String) or str(mname).strip_edges().is_empty():
@@ -659,18 +837,39 @@ static func validate_generated_mod(manifest: Dictionary, payload: String) -> Str
 		return "manifest 'author' must be a string"
 	if manifest.has("file") and not (manifest["file"] is String):
 		return "manifest 'file' must be a string"
+	# v0.5.3: manifest-level data hooks (folder mods) validate here too.
+	if manifest.has("hooks"):
+		if not (manifest["hooks"] is Array):
+			return "manifest 'hooks' must be an array"
+		var merr := _validate_hook_list(manifest["hooks"] as Array)
+		if str(merr.get("error", "")) != "":
+			return str(merr.get("error", ""))
 	if payload.strip_edges().is_empty():
 		return "mod payload is empty"
 	if str(kind) == "block":
 		var data: Variant = JSON.parse_string(payload)
 		if not (data is Dictionary):
 			return "block payload is not a JSON object"
-		var block: Dictionary = data
-		if block.has("block") and block["block"] is Dictionary:
-			block = block["block"]
-		return _validate_block(block)
+		var split := _split_block_and_hooks(data as Dictionary)
+		if str(split.get("error", "")) != "":
+			return str(split.get("error", ""))
+		var block: Variant = split.get("block", null)
+		if not (block is Dictionary):
+			return "block payload is not a JSON object"
+		var berr := _validate_block(block as Dictionary)
+		if berr != "":
+			return berr
+		# v0.5.3 INVENTED HOOKS: payload "hooks" validate here; a bad
+		# hook rejects the generation (install-time rescan re-checks).
+		var herr := _validate_hook_list(split.get("hooks", []))
+		if str(herr.get("error", "")) != "":
+			return str(herr.get("error", ""))
+		return ""
 	# Script: same gates as scan-time, minus the load (the script is not
 	# on disk yet — install() re-verifies via rescan after writing).
+	# Hook code embedded in the script's get_hooks() data is covered by
+	# the whole-payload forbidden scan below (forbidden substrings in a
+	# hook's "code" string trip it exactly like top-level code).
 	var forbidden := _scan_forbidden(payload)
 	if forbidden != "":
 		return "forbidden API in script: %s" % forbidden
