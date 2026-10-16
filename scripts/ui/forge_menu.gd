@@ -113,6 +113,14 @@ var _make_button: Button
 var _make_status: Label
 var _make_creator: ModCreator
 var _make_generating := false
+# v0.5.9 MAKE parity: the prompt awaiting generation (the manager
+# records it in MAKE history on success), and the MAKE-history list
+# (MAKE builds, most recent first — separate from the Forge-prompt
+# history, since a MAKE prompt re-sent as a Forge prompt would build
+# the wrong thing).
+var _make_pending_prompt := ""
+var _make_history_title: Label
+var _make_history_list: VBoxContainer
 # v0.6.1 UiScale refs: every size/font in the menu is (re)applied from
 # these in _apply_scale(), which runs at build, on open, and on viewport
 # resize — _build itself carries no hardcoded pixel sizes.
@@ -455,13 +463,13 @@ func _build() -> void:
 # MAKE (this match only — not saved): ONE prompt box. The player types a
 # single idea ("a chunky concrete wall"); MAKE feeds it verbatim to the
 # EXISTING generation pipeline (ModCreator.generate — the exact entry
-# point the Create-a-Mod menu uses) and applies a validated BLOCK
-# candidate in-session via ForgeSessionMake. Create-a-Mod remains the
-# ONLY path that saves a permanent mod: MAKE never calls install() and
-# never writes to user://mods/. A generated SCRIPT candidate cannot run
-# in-session (running unsaved code would need a disk file or dynamic
-# code loading, both blocked) — MAKE shows that visibly and points at
-# Create-a-Mod instead of silently falling back to a preset.
+# point the Create-a-Mod menu uses) and applies the validated
+# candidate in-session via ForgeManager.apply_make (block or script —
+# script candidates run through the session loader, ForgeSessionMake).
+# Create-a-Mod remains the ONLY path that saves a permanent mod: MAKE
+# never calls install() and never writes to user://mods/. A candidate
+# that cannot run for a real reason shows its exact reason instead of
+# silently falling back to a preset.
 func _build_make_section() -> void:
 	var panel := PanelContainer.new()
 	panel.name = "MakePanel"
@@ -506,6 +514,17 @@ func _build_make_section() -> void:
 	_make_status.text = "MAKE creates something new for this match only — nothing is saved."
 	_make_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(_make_status)
+	# v0.5.9 MAKE parity: MAKE history — the MAKE builds this match
+	# (prompt + result), most recent first. Undo removes the latest
+	# MAKE build via the shared UNDO LAST button below.
+	_make_history_title = Label.new()
+	_make_history_title.name = "MakeHistoryTitleLabel"
+	_make_history_title.text = "MAKE HISTORY"
+	_make_history_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(_make_history_title)
+	_make_history_list = VBoxContainer.new()
+	_make_history_list.name = "MakeHistoryList"
+	box.add_child(_make_history_list)
 
 
 # ------------------------------------------------------------------ scaling
@@ -563,6 +582,8 @@ func _apply_scale() -> void:
 		_make_button.add_theme_font_size_override("font_size", UiScale.scaled_font(22, vp))
 	if _make_status != null:
 		StencilStyle.apply_body(_make_status, UiScale.scaled_font(17, vp), StencilStyle.TEXT, 2)
+	if _make_history_title != null:
+		StencilStyle.apply_body(_make_history_title, UiScale.scaled_font(17, vp), StencilStyle.GOLD, 2)
 	for grid in _grids:
 		grid.add_theme_constant_override("h_separation", int(UiScale.scaled_size(10, vp)))
 		grid.add_theme_constant_override("v_separation", int(UiScale.scaled_size(10, vp)))
@@ -662,6 +683,7 @@ func open() -> void:
 	_refresh_budget()
 	_refresh_undo_visibility()
 	_refresh_history()
+	_refresh_make_history()
 	_refresh_key_status()
 	_refresh_mods()
 	_refresh_class_tab()
@@ -769,6 +791,8 @@ func _on_undo_pressed() -> void:
 	_show_toast(msg)
 	_refresh_budget()
 	_refresh_history()
+	_refresh_placed()
+	_refresh_make_history()
 	_play("ui_click")
 
 
@@ -843,8 +867,9 @@ func _record_local_history(prompt: String) -> void:
 # MAKE calls the EXISTING generation pipeline read-only:
 # ModCreator.generate(single-box prompt) -> generation_ready(candidate).
 # install() is NEVER called from this path — the candidate is applied
-# in-session (blocks) or refused visibly (scripts / errors). No silent
-# fallback to a preset, ever.
+# in-session via ForgeManager.apply_make (blocks and scripts; a script
+# that cannot run shows its exact reason). No silent fallback to a
+# preset, ever.
 func _make_creator_instance() -> ModCreator:
 	if _make_creator != null and is_instance_valid(_make_creator):
 		return _make_creator
@@ -871,6 +896,7 @@ func _on_make_pressed(_text: String = "") -> void:
 		_show_make_error("MAKE unavailable — creator not found.")
 		return
 	_make_generating = true
+	_make_pending_prompt = prompt
 	if _make_button != null:
 		_make_button.disabled = true
 	_show_make_status("Making… (this match only — nothing is saved)")
@@ -898,18 +924,34 @@ func _on_make_generation_ready(candidate: Dictionary) -> void:
 		if not verr.is_empty():
 			_show_make_error("MAKE failed: " + verr)
 			return
-	var kind := str(candidate.get("kind", ""))
-	if kind == "script":
-		# Session scope cannot run unsaved code: instantiating a script
-		# mod needs its file on disk (ModLoader) or dynamic code loading
-		# (blocked in scripts/forge/*). Visible error, no fallback.
-		_show_make_error("MAKE can't run script mods in-session — custom code must be installed before it can run. Use CREATE A MOD in the main menu to install '" + str(candidate.get("name", "")) + "'. Nothing was saved.")
+	# v0.5.9 MAKE parity: the candidate goes through ForgeManager
+	# (apply_make) — MAKE builds get the same treatment as preset
+	# Forge builds: MAKE-history record, the shared undo slot, MP
+	# sync. Script candidates now RUN in-session via the session
+	# loader (ForgeSessionMake) instead of being refused; a script
+	# that cannot run for a real reason returns its exact reason.
+	var forge := _get_forge()
+	if forge != null and forge.has_method("apply_make"):
+		var mresult: Variant = forge.call("apply_make", candidate, _make_pending_prompt)
+		_make_pending_prompt = ""
+		if mresult is Dictionary and bool((mresult as Dictionary).get("ok", false)):
+			var mmsg := str((mresult as Dictionary).get("message", "Made."))
+			_show_make_status(mmsg + " — this match only, not saved.")
+			_show_toast(mmsg + " (MAKE: this match only)")
+			_refresh_placed()
+			_refresh_make_history()
+			_play("forge_success")
+		else:
+			var merr := "unknown error"
+			if mresult is Dictionary:
+				merr = str((mresult as Dictionary).get("message", merr))
+			_show_make_error("MAKE failed: " + merr)
 		return
-	if kind != "block":
-		_show_make_error("MAKE failed: unknown mod kind '%s'." % kind)
-		return
+	# Fallback (no Forge autoload): direct session apply — same
+	# loader, same result shape, just no history/undo/sync recording.
 	var player := get_tree().get_first_node_in_group("player") as Node3D
 	var root := get_tree().current_scene
+	_make_pending_prompt = ""
 	var result := ForgeSessionMake.apply_candidate(candidate, player, root)
 	if bool(result.get("ok", false)):
 		var msg := str(result.get("message", "Made."))
@@ -919,6 +961,30 @@ func _on_make_generation_ready(candidate: Dictionary) -> void:
 		_play("forge_success")
 	else:
 		_show_make_error("MAKE failed: " + str(result.get("message", "unknown error")))
+
+
+## Rebuilds the MAKE HISTORY list from Forge.get_make_history().
+## v0.5.9 MAKE parity display: prompt + result per MAKE build.
+func _refresh_make_history() -> void:
+	if _make_history_list == null:
+		return
+	for child in _make_history_list.get_children():
+		child.queue_free()
+	var forge := _get_forge()
+	if forge == null or not forge.has_method("get_make_history"):
+		return
+	var raw: Variant = forge.call("get_make_history")
+	if not (raw is Array):
+		return
+	for entry in (raw as Array):
+		if not (entry is Dictionary):
+			continue
+		var d := entry as Dictionary
+		var lbl := Label.new()
+		lbl.text = "%s — %s" % [str(d.get("prompt", "?")), str(d.get("label", ""))]
+		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		StencilStyle.apply_body(lbl, UiScale.scaled_font(16, _vp_size()), StencilStyle.TEXT_DIM, 2)
+		_make_history_list.add_child(lbl)
 
 
 func _show_make_status(text: String) -> void:
@@ -1346,10 +1412,14 @@ func _build_loadouts_tab() -> void:
 	scroll.name = "Loadouts"
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_tabs.add_child(scroll)
+	var box := VBoxContainer.new()
+	box.name = "LoadoutsBox"
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(box)
 	var grid := GridContainer.new()
 	grid.columns = 2
 	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(grid)
+	box.add_child(grid)
 	_grids.append(grid)
 	for loadout_name in LOADOUT_PRESETS:
 		var preset: Array = LOADOUT_PRESETS[loadout_name]
@@ -1361,6 +1431,64 @@ func _build_loadouts_tab() -> void:
 		b.pressed.connect(_on_loadout_pressed.bind(loadout_name, str(preset[0]), str(preset[1])))
 		grid.add_child(b)
 		_menu_buttons.append(b)
+	# v0.5.9 MOD WEAPONS: installed user weapon-mods equip into the
+	# primary slot (secondary untouched), same free gear as the presets.
+	# The button list snapshots at menu build (the menu is rebuilt per
+	# match); the press handler re-validates live, so a button for a mod
+	# disabled/removed since the menu opened fails safe with a toast
+	# instead of equipping a dangling id.
+	var mod_label := Label.new()
+	mod_label.name = "LoadoutsModLabel"
+	mod_label.text = "MOD WEAPONS"
+	mod_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.apply_body(mod_label, UiScale.scaled_font(20, _vp_size()), StencilStyle.ORANGE, 2)
+	box.add_child(mod_label)
+	var mod_weapons: Array = Arsenal.get_mod_weapons()
+	if mod_weapons.is_empty():
+		var none_lbl := Label.new()
+		none_lbl.name = "LoadoutsModNoneLabel"
+		none_lbl.text = "No weapon mods installed — install one to equip it here."
+		none_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		StencilStyle.apply_body(none_lbl, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
+		box.add_child(none_lbl)
+	else:
+		var mod_grid := GridContainer.new()
+		mod_grid.columns = 2
+		mod_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		box.add_child(mod_grid)
+		_grids.append(mod_grid)
+		var mod_idx := 0
+		for m in mod_weapons:
+			if not (m is Dictionary):
+				continue
+			var weapon_id := str((m as Dictionary).get("weapon_id", ""))
+			var mod_name := str((m as Dictionary).get("name", weapon_id))
+			if weapon_id.is_empty():
+				continue
+			var mb := Button.new()
+			mb.name = "LoadoutMod_%d" % mod_idx
+			mb.text = (mod_name + " (MOD)").to_upper()
+			mb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			StencilStyle.style_button(mb)
+			mb.pressed.connect(_on_mod_weapon_pressed.bind(weapon_id, mod_name))
+			mod_grid.add_child(mb)
+			_menu_buttons.append(mb)
+			mod_idx += 1
+
+
+func _on_mod_weapon_pressed(weapon_id: String, mod_name: String) -> void:
+	# Live re-validation: the button list snapshots at menu build, so a
+	# mod disabled/removed since then must fail safe here, never equip.
+	if not Arsenal.has_weapon(weapon_id):
+		_show_toast("'%s' is no longer available — the mod was disabled or removed." % mod_name)
+		return
+	var wm := _get_weapon_manager()
+	if wm == null or not wm.has_method("set_slot"):
+		_show_toast("Loadouts unavailable.")
+		return
+	wm.call("set_slot", "primary", weapon_id)
+	_show_toast("%s equipped (mod) — free." % mod_name)
+	_play("ui_click")
 
 
 func _on_loadout_pressed(loadout_name: String, primary_id: String, secondary_id: String) -> void:
