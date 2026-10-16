@@ -14,6 +14,16 @@
 #   mutate the stored list). Error bubbles are DISPLAY-ONLY in the
 #   ChatPanel and are NEVER stored here, so an error can never pollute
 #   the model context or the persisted file.
+#
+# - EDIT CONTEXT (v0.5.9): when the player taps EDIT on an installed
+#   mod, the menu seeds this session with that mod's context
+#   (begin_edit: mod_id, name, version, categories, visual, logic,
+#   current payload). The context persists alongside the messages
+#   (same file, "edit_context" key) so an edit survives reopening the
+#   menu, and generation requests include it (the model refines THAT
+#   mod). clear_edit() abandons the edit — the installed mod is
+#   untouched, and the conversation stays. clear() wipes the edit
+#   context too (a new chat is not an edit).
 extends RefCounted
 class_name ChatSession
 
@@ -24,6 +34,11 @@ const SAVE_PATH := "user://chat_session.json"
 const MAX_MESSAGES := 20
 
 var _messages: Array = []
+## EDIT context (v0.5.9): the installed mod being refined, or {} when
+## no edit is in progress. Shape: ModCreator.edit_context_for() output
+## (mod_id / name / kind / version / categories / visual / logic /
+## payload / manifest). Persisted with the messages.
+var _edit_context: Dictionary = {}
 
 
 func _init() -> void:
@@ -89,9 +104,67 @@ func add_assistant(text: String) -> void:
 ## after this starts with an empty chat.
 func clear() -> void:
 	_messages.clear()
+	_edit_context = {}
 	_delete_save_file()
 	session_cleared.emit()
 	messages_changed.emit()
+
+
+# --- EDIT CONTEXT (v0.5.9) -------------------------------------------------
+
+## True while an EDIT is in progress (an installed mod is seeded).
+func is_editing() -> bool:
+	return not _edit_context.is_empty()
+
+
+## The seeded edit context (deep copy), or {} when no edit is in
+## progress. Callers must not mutate the stored dict.
+func get_edit_context() -> Dictionary:
+	return _edit_context.duplicate(true)
+
+
+## The mod id being edited, or "" when no edit is in progress.
+func get_edit_mod_id() -> String:
+	return str(_edit_context.get("mod_id", ""))
+
+
+## Seeds the session with an installed mod's context for EDIT
+## (ModCreator.edit_context_for() output). Adds ONE assistant message
+## announcing the edit ("Editing '<name>' (vX) — ..."), so the chat
+## shows what is being refined; the full context (incl. the current
+## payload) rides in _edit_context, not in the messages, so it never
+## pollutes the trimmed conversation or counts against the cap.
+## Replaces any previous edit context (one edit at a time).
+func begin_edit(context: Dictionary) -> void:
+	_edit_context = context.duplicate(true)
+	var name := str(context.get("name", ""))
+	var version := str(context.get("version", ""))
+	_messages.append({"role": "assistant",
+		"text": "Editing '%s' (v%s) — describe the change and I'll refine THIS mod. Nothing changes until you approve the diff and tap Install." % [name, version]})
+	_trim()
+	_save()
+	messages_changed.emit()
+
+
+## Abandons the edit: the edit context is dropped (the installed mod
+## is untouched — Discard never writes). The conversation stays.
+func clear_edit() -> void:
+	_edit_context = {}
+	_save()
+	messages_changed.emit()
+
+
+## Generation preamble for an edit ("" when no edit is in progress):
+## the original mod's identity + current payload, so the model
+## refines THAT mod instead of generating a fresh one. The caller
+## prepends this to the generation request (CREATE tab + CREATE
+## FROM CHAT both go through the menu, which reads this).
+static func edit_preamble(context: Dictionary) -> String:
+	if context.is_empty():
+		return ""
+	return "EDIT AN EXISTING MOD — refine it, do NOT create a fresh mod. Keep the mod's identity (same name, same kind, same mod_id '%s') unless the request explicitly renames it, and change ONLY what the request asks for. The current installed version is v%s. Its full current payload follows — start from THESE bytes and return the FULL updated payload (not a patch):\n%s" % [
+		str(context.get("mod_id", "")), str(context.get("version", "")),
+		str(context.get("payload", ""))]
 
 
 # --- Persistence ---------------------------------------------------------------
@@ -105,12 +178,13 @@ func _save() -> void:
 	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
 	if f == null:
 		return
-	f.store_string(JSON.stringify({"messages": _messages}))
+	f.store_string(JSON.stringify({"messages": _messages, "edit_context": _edit_context}))
 	f.close()
 
 
 func _load() -> void:
 	_messages = []
+	_edit_context = {}
 	if not FileAccess.file_exists(SAVE_PATH):
 		return
 	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(SAVE_PATH))
@@ -133,6 +207,12 @@ func _load() -> void:
 			continue
 		_messages.append({"role": role, "text": (text as String).strip_edges()})
 	_trim()
+	# v0.5.9: an edit in progress survives reopening the menu. A
+	# stale context (mod uninstalled since) is kept as-is — the menu
+	# re-validates it against the installed list before generating.
+	var ctx: Variant = (parsed as Dictionary).get("edit_context", {})
+	if ctx is Dictionary:
+		_edit_context = (ctx as Dictionary).duplicate(true)
 
 
 func _delete_save_file() -> void:
