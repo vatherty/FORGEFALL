@@ -56,6 +56,9 @@ var _status: Label
 var _approval_panel: VBoxContainer
 var _approval_summary: Label
 var _approval_hooks: Label
+# v0.5.9 EDIT: diff vs the installed version (ModCreator.
+# diff_candidate_vs_installed). Visible only while editing.
+var _approval_diff: Label
 var _approval_code: TextEdit
 # v0.5.6: LLM-authored HOOK SCRIPT display — shown ONLY when the
 # candidate carries hook scripts ("code" hooks). Hidden for pure
@@ -94,6 +97,13 @@ var _chat_generation_pending := false
 # regenerate path from then on).
 var _pending_chat_conversation: Array = []
 var _pending_chat_request: String = ""
+# EDIT state (v0.5.9): the installed mod being refined. "" = creating
+# fresh. _edit_original is ModCreator.load_installed() output for the
+# diff + the version bump. The ChatSession carries the same context
+# (it survives reopening the menu); _restore_edit_state() re-syncs
+# these from the session in _ready().
+var _editing_mod_id := ""
+var _edit_original: Dictionary = {}
 
 
 ## Composes ONE stable prompt from the structured form. Fixed section
@@ -113,7 +123,7 @@ static func compose_prompt(categories: Array, mod_name: String, visual: String, 
 	lines.append("Visual description: " + visual.strip_edges())
 	lines.append("Logic: " + logic.strip_edges())
 	lines.append("Technical notes (follow exactly): represent any custom projectile or visual with api.spawn_voxel_box calls using voxel-sized cubes in the visual description's colours; trigger impact explosions with api.fire_effect(\"explosion\", position, radius, damage); build only through the ModAPI methods; never emit filesystem, network, OS, eval, or code-loading code.")
-	lines.append("HOOKS — PREFER THE EFFECT-KINDS TABLE (follow exactly): if the mod needs behaviour no existing block covers (a custom projectile, heal-on-kill, thorns, an on-hit explosion, ...), add a HOOK for it — prefer the table below whenever it covers the request; write a hook SCRIPT only when nothing in the table covers it. Block mod: add a top-level \"hooks\" array to the payload, next to the \"block\" object. Script mod: implement get_hooks() -> Array returning the hook dicts. Hook dict: {\"hook_id\": \"<lowercase [a-z0-9_]>\", \"hook_point\": \"on_fire\"|\"projectile_spawn\"|\"on_hit\"|\"on_kill\"|\"on_damage_taken\", \"display_name\": \"<name>\", \"description\": \"<one line>\", ...}. A fire-point hook (on_fire / projectile_spawn) may carry \"projectile\": {\"visual\": \"<what it looks like>\", \"shape\": \"beam\"|\"sphere\"|\"cube\"|\"blob\"|\"bullet\", \"speed\": 1-200, \"damage\": 0-500 (-1 = use the weapon's damage), \"range\": 1-500, \"size\": 0.05-5, \"gravity\": -50-50, \"pierce\": true|false, \"explodes_on_impact\": true|false, \"explosion_radius\": 0-20, \"explosion_damage\": 0-500}. Any hook may carry \"effects\": [{\"kind\": \"heal\", \"amount\": 1-500} | {\"kind\": \"explosion\", \"radius\": 0.5-20, \"damage\": 0-500} | {\"kind\": \"smoke\", \"duration_sec\": 1-120} | {\"kind\": \"announce\", \"title\": \"...\", \"subtitle\": \"...\"} | {\"kind\": \"damage_mult\", \"value\": 0-5} | {\"kind\": \"slow\", \"factor\": 0.05-1.0, \"duration_sec\": 0.5-30} | {\"kind\": \"freeze\", \"duration_sec\": 0.5-10} | {\"kind\": \"burn\", \"damage_per_sec\": 1-500, \"duration_sec\": 0.5-30} | {\"kind\": \"knockback\", \"force\": 1-30} | {\"kind\": \"pull\", \"force\": 1-30} | {\"kind\": \"poison\", \"damage_per_sec\": 1-500, \"duration_sec\": 0.5-30} | {\"kind\": \"bleed\", \"damage_per_sec\": 1-500, \"duration_sec\": 0.5-30} | {\"kind\": \"regen\", \"heal_per_sec\": 1-500, \"duration_sec\": 0.5-30} | {\"kind\": \"haste\", \"factor\": 1.05-2.5, \"duration_sec\": 0.5-30} | {\"kind\": \"restrained\", \"duration_sec\": 0.5-10} | {\"kind\": \"prone\", \"force\": 1-30, \"duration_sec\": 0.5-10} | {\"kind\": \"sleep\", \"duration_sec\": 0.5-30} | {\"kind\": \"confusion\", \"force\": 1-10, \"duration_sec\": 0.5-30} | {\"kind\": \"blind\", \"factor\": 0.05-1.0, \"duration_sec\": 0.5-30} | {\"kind\": \"weaken\", \"factor\": 0.05-1.0, \"duration_sec\": 0.5-30} | {\"kind\": \"exhaustion\", \"duration_sec\": 0.5-60} | {\"kind\": \"typed_damage\", \"damage_type\": \"acid\"|\"cold\"|\"fire\"|\"lightning\"|\"necrotic\"|\"poison\"|\"psychic\"|\"radiant\"|\"thunder\", \"amount\": 1-500, \"duration_sec\": 0.5-30}]. STATUS EFFECTS (every status kind needs a target: put them on on_hit / on_kill (hit target) or on_damage_taken (player); NEVER on a fire point. slow multiplies movement speed by factor (0.5 = half speed); freeze pins: speed 0 AND knockback cannot move it; burn is pure damage over time; knockback shoves AWAY from the hit point, pull yanks TOWARD it; poison is damage over time PLUS a mild slow (x0.85); bleed is damage over time that ticks FASTER while the target moves; regen heals over time; haste multiplies movement speed only (not fire rate); restrained is speed 0 but can act and can be shoved; prone knocks down (impulse + speed 0) then stands back up; sleep is speed 0 + pinned and WAKES EARLY on any damage; confusion stumbles randomly; blind disrupts accuracy; weaken reduces damage dealt; exhaustion stacks +1 level per application (6 = death); typed_damage deals instant damage of one D&D type + a rider (fire burns, cold slows, lightning knocks back, thunder knocks back hard + prone, acid weakens, necrotic exhausts, poison poisons, psychic confuses, radiant blinds). Do NOT invent stunned / paralyzed / unconscious / petrified / grappled / frightened / charmed / silence / shield / vulnerable / thorns / lifesteal / curse — they are not kinds; use the real kinds above. A slowing bubble is an on_hit hook with effects [{\"kind\": \"slow\", \"factor\": 0.5, \"duration_sec\": 3.0}] — never express slowing as smoke or announce. HOOK SCRIPT (only when the table cannot express the behaviour, e.g. pulling the hit target toward the player): the hook dict carries \"code\": GDScript source starting with `extends ModHook` and implementing run(api: ModAPI, ctx: Dictionary) -> Dictionary with ONLY allowlisted calls (api.<ModAPI method>, ctx.get/has/..., pure value methods; NEVER node properties like .global_position/.position/.hp, NEVER api properties like api.last_spawned), bounded for loops (range <= 1000), no while/recursion/engine callbacks. A hook with \"code\" runs ONLY its code — \"effects\" on the same hook are ignored. Never put filesystem, network, OS, eval, or code-loading code in a hook.")
+	lines.append("HOOKS — PREFER THE EFFECT-KINDS TABLE (follow exactly): if the mod needs behaviour no existing block covers (a custom projectile, heal-on-kill, thorns, an on-hit explosion, ...), add a HOOK for it — prefer the table below whenever it covers the request; write a hook SCRIPT only when nothing in the table covers it. Block mod: add a top-level \"hooks\" array to the payload, next to the \"block\" object. Script mod: implement get_hooks() -> Array returning the hook dicts. Hook dict: {\"hook_id\": \"<lowercase [a-z0-9_]>\", \"hook_point\": \"on_fire\"|\"projectile_spawn\"|\"on_hit\"|\"on_kill\"|\"on_damage_taken\"|\"take_damage\", \"display_name\": \"<name>\", \"description\": \"<one line>\", ...}. A fire-point hook (on_fire / projectile_spawn) may carry \"projectile\": {\"visual\": \"<what it looks like>\", \"shape\": \"beam\"|\"sphere\"|\"cube\"|\"blob\"|\"bullet\", \"speed\": 1-200, \"damage\": 0-500 (-1 = use the weapon's damage), \"range\": 1-500, \"size\": 0.05-5, \"gravity\": -50-50, \"pierce\": true|false, \"explodes_on_impact\": true|false, \"explosion_radius\": 0-20, \"explosion_damage\": 0-500}. Any hook may carry \"effects\": [{\"kind\": \"heal\", \"amount\": 1-500} | {\"kind\": \"explosion\", \"radius\": 0.5-20, \"damage\": 0-500} | {\"kind\": \"smoke\", \"duration_sec\": 1-120} | {\"kind\": \"announce\", \"title\": \"...\", \"subtitle\": \"...\"} | {\"kind\": \"damage_mult\", \"value\": 0-5} | {\"kind\": \"slow\", \"factor\": 0.05-1.0, \"duration_sec\": 0.5-30} | {\"kind\": \"freeze\", \"duration_sec\": 0.5-10} | {\"kind\": \"burn\", \"damage_per_sec\": 1-500, \"duration_sec\": 0.5-30} | {\"kind\": \"knockback\", \"force\": 1-30} | {\"kind\": \"pull\", \"force\": 1-30} | {\"kind\": \"poison\", \"damage_per_sec\": 1-500, \"duration_sec\": 0.5-30} | {\"kind\": \"bleed\", \"damage_per_sec\": 1-500, \"duration_sec\": 0.5-30} | {\"kind\": \"regen\", \"heal_per_sec\": 1-500, \"duration_sec\": 0.5-30} | {\"kind\": \"haste\", \"factor\": 1.05-2.5, \"duration_sec\": 0.5-30} | {\"kind\": \"restrained\", \"duration_sec\": 0.5-10} | {\"kind\": \"prone\", \"force\": 1-30, \"duration_sec\": 0.5-10} | {\"kind\": \"sleep\", \"duration_sec\": 0.5-30} | {\"kind\": \"confusion\", \"force\": 1-10, \"duration_sec\": 0.5-30} | {\"kind\": \"blind\", \"factor\": 0.05-1.0, \"duration_sec\": 0.5-30} | {\"kind\": \"weaken\", \"factor\": 0.05-1.0, \"duration_sec\": 0.5-30} | {\"kind\": \"exhaustion\", \"duration_sec\": 0.5-60} | {\"kind\": \"typed_damage\", \"damage_type\": \"acid\"|\"cold\"|\"fire\"|\"lightning\"|\"necrotic\"|\"poison\"|\"psychic\"|\"radiant\"|\"thunder\", \"amount\": 1-500, \"duration_sec\": 0.5-30} | {\"kind\": \"shield\", \"amount\": 1-500, \"duration_sec\": 0.5-30} | {\"kind\": \"vulnerable\", \"factor\": 1.05-5.0, \"duration_sec\": 0.5-30} | {\"kind\": \"thorns\", \"reflect_mult\": 0.0-2.0, \"duration_sec\": 0.5-30} | {\"kind\": \"petrified\", \"duration_sec\": 0.5-30}]. STATUS EFFECTS (every status kind needs a target: put them on on_hit / on_kill (hit target), on_damage_taken (player), or take_damage (the character about to be hurt); NEVER on a fire point. slow multiplies movement speed by factor (0.5 = half speed); freeze pins: speed 0 AND knockback cannot move it; burn is pure damage over time; knockback shoves AWAY from the hit point, pull yanks TOWARD it; poison is damage over time PLUS a mild slow (x0.85); bleed is damage over time that ticks FASTER while the target moves; regen heals over time; haste multiplies movement speed only (not fire rate); restrained is speed 0 but can act and can be shoved; prone knocks down (impulse + speed 0) then stands back up; sleep is speed 0 + pinned and WAKES EARLY on any damage; confusion stumbles randomly; blind disrupts accuracy; weaken reduces damage dealt; exhaustion stacks +1 level per application (6 = death); typed_damage deals instant damage of one D&D type + a rider (fire burns, cold slows, lightning knocks back, thunder knocks back hard + prone, acid weakens, necrotic exhausts, poison poisons, psychic confuses, radiant blinds). DAMAGE-INTERCEPTION KINDS (real, via the take_damage hook point): shield is an absorbing pool (amount 1-500, re-applying ADDS to the pool); vulnerable multiplies incoming damage (factor 1.05-5.0 — mark an enemy so FOLLOW-UP hits deal more); thorns reflects reflect_mult (0.0-2.0) x the damage actually taken back to the attacker; petrified nullifies ALL incoming damage AND pins the target (damage does not break it; constructs + elementals are immune). TAKE_DAMAGE (pre-damage hook point): a take_damage hook fires when a character WOULD take damage, BEFORE it applies — its damage_mult scales THIS hit, and a shield/vulnerable/thorns/petrified effect on it applies to THIS hit and later hits. Do NOT invent stunned / paralyzed / unconscious / grappled / frightened / charmed / silence / lifesteal / curse — they are not kinds; use the real kinds above. A slowing bubble is an on_hit hook with effects [{\"kind\": \"slow\", \"factor\": 0.5, \"duration_sec\": 3.0}] — never express slowing as smoke or announce. HOOK SCRIPT (only when the table cannot express the behaviour, e.g. pulling the hit target toward the player): the hook dict carries \"code\": GDScript source starting with `extends ModHook` and implementing run(api: ModAPI, ctx: Dictionary) -> Dictionary with ONLY allowlisted calls (api.<ModAPI method>, ctx.get/has/..., pure value methods; NEVER node properties like .global_position/.position/.hp, NEVER api properties like api.last_spawned), bounded for loops (range <= 1000), no while/recursion/engine callbacks. A hook with \"code\" runs ONLY its code — \"effects\" on the same hook are ignored. Never put filesystem, network, OS, eval, or code-loading code in a hook.")
 	return "\n".join(lines)
 
 
@@ -192,6 +202,24 @@ func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	_build()
 	_refresh_mods()
+	_restore_edit_state()
+
+
+## Re-syncs EDIT state from the ChatSession (v0.5.9): an edit in
+## progress survives reopening the menu (the session persists the
+## context). A stale context (mod uninstalled since) is dropped.
+func _restore_edit_state() -> void:
+	if _chat_session == null or not _chat_session.is_editing():
+		return
+	var mod_id := _chat_session.get_edit_mod_id()
+	var loaded := ModCreator.load_installed(mod_id)
+	if str(loaded.get("error", "")) != "":
+		_chat_session.clear_edit()
+		return
+	_editing_mod_id = mod_id
+	_edit_original = loaded
+	_status.text = "Editing '%s' (v%s) — describe the change, then GENERATE. Discard abandons the edit." % [
+		str(loaded.get("name", mod_id)), str(loaded.get("version", ""))]
 
 
 func _build() -> void:
@@ -332,6 +360,14 @@ func _build_create_tab() -> void:
 	_approval_hooks.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	StencilStyle.apply_body(_approval_hooks, 18, StencilStyle.ORANGE, 2)
 	_approval_panel.add_child(_approval_hooks)
+	# v0.5.9 EDIT: diff vs the installed version — shown ONLY while
+	# editing, before Install, so an update is never a blind overwrite.
+	_approval_diff = Label.new()
+	_approval_diff.name = "ApprovalDiff"
+	_approval_diff.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	StencilStyle.apply_body(_approval_diff, 18, StencilStyle.TEXT, 2)
+	_approval_diff.visible = false
+	_approval_panel.add_child(_approval_diff)
 	_approval_code = TextEdit.new()
 	_approval_code.name = "ApprovalCode"
 	_approval_code.editable = false
@@ -468,7 +504,13 @@ func _start_chat_generation(conversation: Array, request: String) -> void:
 	if _generate_button != null:
 		_generate_button.disabled = true
 	_status.text = "Generating from chat…"
-	creator.call("generate_with_context", conversation, request)
+	# v0.5.9 EDIT: same preamble as the form path (the panel's own
+	# CREATE FROM CHAT call prepends it too — the stored request
+	# stays raw, so REGENERATE never double-prepends).
+	var effective := request
+	if _editing_mod_id != "" and _chat_session != null and _chat_session.is_editing():
+		effective = ChatSession.edit_preamble(_chat_session.get_edit_context()) + "\n\n" + request
+	creator.call("generate_with_context", conversation, effective)
 
 
 # --- MODS tab (same ModLoader list as the Forge menu) --------------------------
@@ -499,7 +541,7 @@ func _build_mods_tab() -> void:
 	_mods_rescan_button.pressed.connect(_on_mods_rescan_pressed)
 	row.add_child(_mods_rescan_button)
 	var hint := Label.new()
-	hint.text = "Same installed mods as the Forge menu — list / enable / disable / Rescan."
+	hint.text = "Same installed mods as the Forge menu — list / enable / disable / EDIT / Rescan."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	# EXPAND_FILL is REQUIRED: without it the HBox gives this autowrap
 	# label its minimum size (1px wide, ~1617px tall wrapped), rendering
@@ -631,6 +673,10 @@ func _start_generation(prompt: String) -> void:
 	_generate_button.disabled = true
 	_approval_panel.visible = false
 	_status.text = "Generating…"
+	# v0.5.9 EDIT: the original mod's payload rides along, so the
+	# model refines THAT mod instead of generating a fresh one.
+	if _editing_mod_id != "" and _chat_session != null and _chat_session.is_editing():
+		prompt = ChatSession.edit_preamble(_chat_session.get_edit_context()) + "\n\n" + prompt
 	creator.generate(prompt)
 
 
@@ -736,6 +782,17 @@ func _show_approval(candidate: Dictionary) -> void:
 	if bool(_pending_asset.get("cache_hit", false)):
 		_asset_info.text += " (reused from an earlier generation with the same description)"
 	_approval_status.text = ""
+	# v0.5.9 EDIT: the approval shows a DIFF vs the installed
+	# version (what changed), and Install becomes INSTALL UPDATE.
+	if _editing_mod_id != "" and not _edit_original.is_empty():
+		var diff_lines := ModCreator.diff_candidate_vs_installed(candidate, _edit_original)
+		_approval_diff.text = "UPDATE '%s' — what changes vs the installed version:\n%s" % [
+			str(_edit_original.get("name", _editing_mod_id)), "\n".join(diff_lines)]
+		_approval_diff.visible = true
+		_install_button.text = "INSTALL UPDATE"
+	else:
+		_approval_diff.visible = false
+		_install_button.text = "INSTALL"
 	# A fresh candidate re-enables Install (the sandbox may have
 	# disabled it for a previous candidate).
 	_install_button.disabled = false
@@ -764,15 +821,43 @@ func _on_install_pressed() -> void:
 	if _pending_candidate.is_empty():
 		return
 	var creator := _creator_instance()
-	var err := creator.install(_pending_candidate)
-	if err.is_empty():
+	# v0.5.9 EDIT: an edit installs as an UPDATE to the same mod
+	# (same id, version bumped, old version gone). A fresh candidate
+	# installs as a new mod.
+	if _editing_mod_id != "" and not _edit_original.is_empty():
+		var new_version := ModCreator.bump_version(str(_edit_original.get("version", "1.0")))
+		var err := creator.install_update(_pending_candidate, _editing_mod_id)
+		if err.is_empty():
+			_pending_candidate = {}
+			_pending_projectile_asset = {}
+			_approval_panel.visible = false
+			_status.text = "Updated to v%s." % new_version
+			_clear_edit_state()
+			_refresh_mods()
+		else:
+			_approval_status.text = "Update failed: " + err
+		return
+	var err2 := creator.install(_pending_candidate)
+	if err2.is_empty():
 		_pending_candidate = {}
 		_pending_projectile_asset = {}
 		_approval_panel.visible = false
 		_status.text = "Installed."
 		_refresh_mods()
 	else:
-		_approval_status.text = "Install failed: " + err
+		_approval_status.text = "Install failed: " + err2
+
+
+## Clears EDIT state (after a successful update, or on Discard).
+## The installed mod is untouched by Discard — this only drops the
+## in-progress edit (menu state + session context).
+func _clear_edit_state() -> void:
+	_editing_mod_id = ""
+	_edit_original = {}
+	_install_button.text = "INSTALL"
+	_approval_diff.visible = false
+	if _chat_session != null:
+		_chat_session.clear_edit()
 
 
 func _on_discard_pressed() -> void:
@@ -781,7 +866,12 @@ func _on_discard_pressed() -> void:
 	_pending_projectile_asset = {}
 	_approval_panel.visible = false
 	_install_button.disabled = false
-	_status.text = "Discarded — nothing installed."
+	# v0.5.9 EDIT: Discard abandons the edit — the installed mod is
+	# untouched (nothing was written). The form keeps the seeded
+	# values so the player can start over from them.
+	var was_editing := _editing_mod_id != ""
+	_clear_edit_state()
+	_status.text = "Edit discarded — installed mod untouched." if was_editing else "Discarded — nothing installed."
 
 
 func _on_sandbox_pressed() -> void:
@@ -883,6 +973,14 @@ func _add_mod_row(mod: Dictionary) -> void:
 	toggle.button_pressed = bool(mod.get("enabled", false))
 	toggle.toggled.connect(_on_mod_toggle.bind(mod_id))
 	row.add_child(toggle)
+	# v0.5.9 EDIT: refine this installed mod instead of rerolling a
+	# fresh one (seeds the creator with the mod's context).
+	var edit_btn := Button.new()
+	edit_btn.name = "ModEditButton"
+	edit_btn.text = "EDIT"
+	StencilStyle.style_button(edit_btn)
+	edit_btn.pressed.connect(_on_mod_edit_pressed.bind(mod_id))
+	row.add_child(edit_btn)
 	var err := str(mod.get("error", ""))
 	if not err.is_empty():
 		var err_lbl := Label.new()
@@ -896,6 +994,43 @@ func _add_mod_row(mod: Dictionary) -> void:
 func _on_mod_toggle(mod_id: String, enable: bool) -> void:
 	ModLoader.set_mod_enabled(mod_id, enable)
 	_refresh_mods()
+
+
+## EDIT (v0.5.9): seeds the creator with the installed mod's context
+## (form fields + chat session) and switches to the CREATE tab, so
+## "make the bubble bigger" refines THAT mod. The installed mod is
+## untouched until an update is approved + installed; Discard
+## abandons the edit. No-op while a generation is in flight.
+func _on_mod_edit_pressed(mod_id: String) -> void:
+	if _generating:
+		_status.text = "Wait for the current generation to finish, then EDIT."
+		return
+	var ctx := ModCreator.edit_context_for(mod_id)
+	if str(ctx.get("error", "")) != "":
+		_status.text = "Cannot edit: " + str(ctx.get("error", ""))
+		return
+	var loaded := ModCreator.load_installed(mod_id)
+	_editing_mod_id = mod_id
+	_edit_original = loaded
+	# Seed the form (categories / name / visual / logic).
+	for cat in CATEGORIES:
+		var cb: CheckButton = _category_checks.get(cat)
+		if cb != null:
+			cb.button_pressed = (cat in (ctx.get("categories", []) as Array))
+	_name_input.text = str(ctx.get("name", ""))
+	_visual_input.text = str(ctx.get("visual", ""))
+	_logic_input.text = str(ctx.get("logic", ""))
+	# Seed the chat session (announces the edit; the full context
+	# rides in the session for generation requests).
+	if _chat_session != null:
+		_chat_session.begin_edit(ctx)
+	if _chat_panel != null:
+		_chat_panel.refresh_messages()
+	_pending_candidate = {}
+	_approval_panel.visible = false
+	_status.text = "Editing '%s' (v%s) — describe the change, then GENERATE. Discard abandons the edit." % [
+		str(ctx.get("name", mod_id)), str(ctx.get("version", ""))]
+	_tabs.current_tab = 0
 
 
 func _on_mods_rescan_pressed() -> void:
