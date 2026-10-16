@@ -234,13 +234,13 @@ func _check_menu_static() -> void:
 	_check(tabs != null, "v07b: menu has TabContainer")
 	if tabs == null:
 		return
-	_check(tabs.get_tab_count() == 6,
-		"v07b: menu has 6 tabs (got %d)" % tabs.get_tab_count())
+	_check(tabs.get_tab_count() == 7,
+		"v07b: menu has 7 tabs (got %d)" % tabs.get_tab_count())
 	var names: Array[String] = []
 	for i in tabs.get_tab_count():
 		names.append(tabs.get_child(i).name)
-	_check(names == ["Build", "Weapons", "Events", "Killstreaks", "Loadouts", "Mods"],
-		"v07b: tab names incl. Mods 6th (got %s)" % str(names))
+	_check(names == ["Build", "Weapons", "Events", "Killstreaks", "Loadouts", "Mods", "Class"],
+		"v07b: tab names incl. Mods 6th + Class 7th (got %s)" % str(names))
 	var path_lbl := _find_named(_menu, "ModsPathLabel") as Label
 	var want_path := OS.get_user_data_dir() + "/mods"
 	_check(path_lbl != null and path_lbl.text.contains(want_path),
