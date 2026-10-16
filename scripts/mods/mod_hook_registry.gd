@@ -154,13 +154,14 @@ static func pending_mod_for_weapon(arsenal_id: String) -> Dictionary:
 ## interpreted (effects applied via `api`); code hooks run their
 ## run(api, ctx). Returns a MERGED result:
 ##   {"damage_mult": float (1.0 = unchanged; multiplied across hooks),
-##    "healed": float, "exploded": bool, "announced": bool}
+##    "healed": float, "exploded": bool, "announced": bool,
+##    "status_applied": bool (a slow/freeze/burn/knockback landed)}
 ## A code hook that errors at run time yields no result (its error is
 ## printed by the engine); the registry never lets one hook break the
 ## others or the shot. Projectile specs are NOT applied here — the
 ## firing path resolves them separately (resolve_projectile_spec).
 static func run_hooks(hooks: Array, point: String, api: ModAPI, ctx: Dictionary) -> Dictionary:
-	var out := {"damage_mult": 1.0, "healed": 0.0, "exploded": false, "announced": false}
+	var out := {"damage_mult": 1.0, "healed": 0.0, "exploded": false, "announced": false, "status_applied": false}
 	if api == null:
 		return out
 	for h in hooks:
@@ -178,7 +179,7 @@ static func run_hooks(hooks: Array, point: String, api: ModAPI, ctx: Dictionary)
 			continue
 		for eff in (d.get("effects", []) as Array):
 			if eff is Dictionary:
-				_apply_effect(out, eff as Dictionary, api, ctx)
+				_apply_effect(out, eff as Dictionary, api, ctx, point)
 	return out
 
 
@@ -186,10 +187,10 @@ static func run_hooks(hooks: Array, point: String, api: ModAPI, ctx: Dictionary)
 ## when the weapon carries no hooks for the point.
 static func run_point_for_weapon(weapon: Node, point: String, api: ModAPI, ctx: Dictionary) -> Dictionary:
 	if weapon == null:
-		return {"damage_mult": 1.0, "healed": 0.0, "exploded": false, "announced": false}
+		return {"damage_mult": 1.0, "healed": 0.0, "exploded": false, "announced": false, "status_applied": false}
 	var hooks: Variant = weapon.get("mod_hooks")
 	if not (hooks is Array):
-		return {"damage_mult": 1.0, "healed": 0.0, "exploded": false, "announced": false}
+		return {"damage_mult": 1.0, "healed": 0.0, "exploded": false, "announced": false, "status_applied": false}
 	return run_hooks(hooks as Array, point, api, ctx)
 
 
@@ -247,11 +248,15 @@ static func _merge_hook_result(out: Dictionary, res: Dictionary) -> void:
 		out["exploded"] = true
 	if res.has("announced") and bool(res.get("announced", false)):
 		out["announced"] = true
+	if res.has("status_applied") and bool(res.get("status_applied", false)):
+		out["status_applied"] = true
 
 
 ## Applies ONE data-hook effect via ModAPI. Position comes from ctx
 ## ("position" / "hit_position" / player position, in that order).
-static func _apply_effect(out: Dictionary, eff: Dictionary, api: ModAPI, ctx: Dictionary) -> void:
+## Status effects (slow / freeze / burn / knockback) hit the ctx
+## "target" (on_hit / on_kill) or the player (on_damage_taken).
+static func _apply_effect(out: Dictionary, eff: Dictionary, api: ModAPI, ctx: Dictionary, point: String = "") -> void:
 	var kind := str(eff.get("kind", ""))
 	var pos := _effect_position(api, ctx)
 	match kind:
@@ -269,6 +274,13 @@ static func _apply_effect(out: Dictionary, eff: Dictionary, api: ModAPI, ctx: Di
 			out["announced"] = true
 		"damage_mult":
 			out["damage_mult"] = float(out.get("damage_mult", 1.0)) * float(eff.get("value", 1.0))
+		"slow", "freeze", "burn", "knockback":
+			var tgt: Variant = ctx.get("target", null)
+			if tgt == null and point == "on_damage_taken":
+				tgt = api.get_player()
+			if tgt is Node:
+				if api.apply_status_effect(tgt as Node, kind, eff, pos):
+					out["status_applied"] = true
 
 
 static func _effect_position(api: ModAPI, ctx: Dictionary) -> Vector3:
