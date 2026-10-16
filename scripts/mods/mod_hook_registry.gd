@@ -276,6 +276,30 @@ static func run_point_for_weapon(weapon: Node, point: String, api: ModAPI, ctx: 
 	return run_hooks(stamped, point, api, ctx)
 
 
+## take_damage dispatch (v0.5.9): runs `hooks` at the "take_damage"
+## point — the pre-damage interception in Player / EnemyBase
+## take_damage. Same merged result as run_hooks; the caller multiplies
+## the incoming damage by the returned damage_mult BEFORE the
+## defensive states (shield / vulnerable / petrified / thorns) resolve.
+## REENTRANCY GUARD: a take_damage hook that itself deals damage (e.g.
+## a typed_damage effect, a thorns reflection) re-enters take_damage;
+## the nested dispatch returns defaults WITHOUT running hooks again
+## (the nested hit still passes through the defensive states — only
+## hook dispatch is suppressed). Without this, a take_damage hook that
+## deals damage on every hit would recurse forever.
+static var _take_damage_depth := 0
+
+
+static func run_take_damage(hooks: Array, api: ModAPI, ctx: Dictionary) -> Dictionary:
+	var defaults := {"damage_mult": 1.0, "healed": 0.0, "exploded": false, "announced": false, "status_applied": false, "budget_exceeded": false}
+	if _take_damage_depth > 0:
+		return defaults
+	_take_damage_depth += 1
+	var res := run_hooks(hooks, "take_damage", api, ctx)
+	_take_damage_depth = maxi(0, _take_damage_depth - 1)
+	return res
+
+
 ## The projectile spec a weapon actually fires: the attached spec
 ## merged with the attached hooks' projectile dicts (last hook wins on
 ## conflicting keys). {} when the weapon has no custom projectile.
@@ -359,7 +383,7 @@ static func _apply_effect(out: Dictionary, eff: Dictionary, api: ModAPI, ctx: Di
 		_:
 			if kind in ModHook.STATUS_KINDS:
 				var tgt: Variant = ctx.get("target", null)
-				if tgt == null and point == "on_damage_taken":
+				if tgt == null and point in ["on_damage_taken", "take_damage"]:
 					tgt = api.get_player()
 				if tgt is Node:
 					if api.apply_status_effect(tgt as Node, kind, eff, pos):
