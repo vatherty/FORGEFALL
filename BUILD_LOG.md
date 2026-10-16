@@ -24,6 +24,12 @@
 - Live verified: manifests 200 (0.5.10/code 36, Pages URLs, mod-sharing changelog); all three artifacts 206; v0.5.9 trio still 206; index.html 200 with the three v0.5.10 links; downloaded APK sha256 matches the local build hash.
 - Local `updates/` mirror synced (new index.html + version.json + version_pc.json + APK).
 
+## v0.5.10 source sync
+
+Synced local source tree to `vatherty/FORGEFALL` main via contents API (diff by git blob SHA). Uploaded 10 files, deleted 0.
+Changed set: v0.5.10 mod sharing — `mod_share.gd` + `.uid` (new), `mod_creator_menu.gd`, `verify_mod_sharing.gd` + `.uid` (new), `verify_forge_batch.gd`, `verify_updater_pc.gd` (manifest expectations 0.5.10 / code 36; re-run headless 65/0), `tuning.gd` (FALLBACK 36), `export_presets.cfg` (sanitized copy uploaded: keystore passwords blanked as `<redacted>` placeholders, version 0.5.10 / code 36, Windows export_path → v0.5.10), `BUILD_LOG.md` (this entry + publish details).
+Exclusions (never pushed): builds/, updates/, .godot/, staging dirs, *.apk/*.zip/*.pck/*.keystore/*.import, top-level android/ only (NOT scripts/android/ — top-level exclusions at depth 0 only), any credentials. Zero-diff verified after sync: 443 local files == 443 repo blobs, all blob SHAs match. No keystore/secrets/binaries landed (the one `.godot`-substring hit in the spot-check was `project.godot`, the legit project file — the `.godot/` dir itself stays excluded).
+
 ## v0.5.9 — Forge loops: base defense + Arsenal mods + edit mods + take_damage hook + MAKE parity (2026-10-16)
 
 Colin's priority order: (2) base-defense ESPECIALLY, (3) mods in Arsenal/Loadouts, (4) edit installed mods, (5) take_damage hook, (6) MAKE parity. Sharing/Import-Export explicitly LAST — not built here.
