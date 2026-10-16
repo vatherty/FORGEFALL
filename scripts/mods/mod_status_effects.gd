@@ -78,6 +78,27 @@
 #               poison   -> poison rider (dps = amount*0.2)
 #               psychic  -> confusion rider (force 4)
 #               radiant  -> blind rider (x0.5, searing flash)
+#   shield    {amount 1-500, duration_sec 0.5-30} — an absorbing
+#             pool: incoming damage eats the pool first. Re-applying
+#             ADDS to the remaining pool (shields stack) and refreshes
+#             to the longest duration. Read via get_shield_remaining().
+#   vulnerable {factor 1.05-5.0, duration_sec 0.5-30} — incoming
+#             damage is multiplied by factor while active. Re-applying
+#             keeps the STRONGEST factor, longest duration.
+#   thorns    {reflect_mult 0.0-2.0, duration_sec 0.5-30} — reflects
+#             reflect_mult x the damage ACTUALLY taken (after shield /
+#             vulnerable / petrified) back to the attacker. Reflected
+#             damage is real damage on the attacker (it passes through
+#             the attacker's own defensive states, but never reflects
+#             again). No reflection for internal damage (DOT ticks,
+#             typed_damage, exhaustion) — there is no attacker.
+#   petrified {duration_sec 0.5-30} — the target is stone: ALL
+#             incoming damage nullified, speed 0, velocity zeroed
+#             every tick (like freeze). Damage does NOT break it (unlike
+#             sleep). Constructs + elementals are immune (5e:
+#             condition_immunities include "petrified" for both —
+#             enforced here because DnDTypes.STATUS_CONDITION_MAP has
+#             no petrified row; see apply_status).
 #
 # DELIBERATE OMISSIONS (v0.5.7 — no lookalikes, no prose-only kinds):
 #   stunned / paralyzed / unconscious / incapacitated — "can't act"
@@ -85,8 +106,6 @@
 #     neither consults this file, so a "stunned" kind would be
 #     freeze renamed. Sleep covers timed incapacitation WITH a real
 #     wake rule; freeze covers timed immobility.
-#   petrified — freeze + damage resistance; resistance needs a
-#     take_damage hook that does not exist.
 #   grappled — speed 0 + can act + can be shoved = restrained
 #     exactly; a second name would be a lookalike.
 #   frightened — "can't move closer / flees" needs a steering hook
@@ -96,12 +115,37 @@
 #   deafened — no hearing system (perception is distance-only).
 #   silence — no ability-gating hook (grapple / portal /
 #     killstreaks never consult this file).
-#   shield / vulnerable / thorns — all need to intercept incoming
-#     damage; take_damage never consults this file. Per-hit
-#     damage_mult already covers one-shot vulnerability.
 #   lifesteal — timed version needs a damage-dealt hook (none);
 #     instant version is heal renamed.
 #   curse — no single mechanic; specific curses ARE specific kinds.
+#
+# v0.5.9 — NO LONGER OMITTED (take_damage interception exists now):
+#   shield / vulnerable / thorns / petrified — see KINDS below and
+#   resolve_incoming_damage(). They are REAL: Player.take_damage and
+#   EnemyBase.take_damage call resolve_incoming_damage() BEFORE damage
+#   lands, and take_damage hooks run before that (they may apply these
+#   states to the target, or return damage_mult, for THIS hit).
+#
+# TAKE_DAMAGE INTERCEPTION (v0.5.9):
+#   resolve_incoming_damage(target, amount, attacker) is THE choke
+#   point. Callers (Player / EnemyBase take_damage) pass the
+#   hook-adjusted amount; resolve applies the target's active
+#   defensive states in this order:
+#     1. petrified -> ALL damage nullified (final 0, no thorns).
+#     2. vulnerable -> amount *= factor.
+#     3. shield -> pool absorbs min(pool, amount); pool drains.
+#     4. thorns -> reflects reflect_mult x the damage ACTUALLY taken
+#        (post-absorption) back to the attacker. The caller performs
+#        the reflection (attacker.take_damage) wrapped in
+#        begin_reflection()/end_reflection(), so a reflected hit can
+#        never ping-pong through two thorns carriers.
+#   Attacker resolution: an explicit attacker wins. When the caller
+#   has no attacker handle (explosions, grenades, slams), resolve
+#   falls back to the player for enemy targets (single-player: all
+#   player-side damage originates from the player) and to the nearest
+#   live enemy for player targets. Internal damage (DOT ticks,
+#   typed_damage, exhaustion-6) never reflects: _damage_target /
+#   _damage_typed run inside begin_dot_damage()/end_dot_damage().
 #
 # STORAGE: effects live in the target's metadata ("mod_status_effects")
 # as an Array of {kind, factor, damage_per_sec, heal_per_sec, force,
@@ -142,6 +186,39 @@ const CONFUSION_STUMBLE_SEC := 0.5
 ## apply_status). No other damage type is a real kind.
 const TYPED_DAMAGE_TYPES := ["acid", "cold", "fire", "lightning", "necrotic", "poison", "psychic", "radiant", "thunder"]
 
+## Reentrancy guards for the take_damage interception (v0.5.9).
+## GDScript is single-threaded and all damage calls are synchronous,
+## so depth counters are exact: _dot_damage_depth > 0 while internal
+## damage (_damage_target / _damage_typed: DOT ticks, typed_damage,
+## exhaustion-6) is being delivered — thorns never reflects those.
+## _reflection_depth > 0 while a thorns reflection is being delivered
+## — the reflected hit passes through the attacker's defensive states
+## but never reflects again (no ping-pong).
+static var _dot_damage_depth := 0
+static var _reflection_depth := 0
+
+
+## Marks the start of internal (attacker-less) damage delivery.
+## Paired with end_dot_damage(); callers use try/finally discipline
+## (GDScript has no try/finally — the increment/decrement bracket a
+## single synchronous take_damage call, so they cannot leak).
+static func begin_dot_damage() -> void:
+	_dot_damage_depth += 1
+
+
+static func end_dot_damage() -> void:
+	_dot_damage_depth = maxi(0, _dot_damage_depth - 1)
+
+
+## Marks the start of a thorns reflection delivery. Paired with
+## end_reflection().
+static func begin_reflection() -> void:
+	_reflection_depth += 1
+
+
+static func end_reflection() -> void:
+	_reflection_depth = maxi(0, _reflection_depth - 1)
+
 
 ## Ticker node: one per affected target, child of the target.
 class StatusTicker extends Node:
@@ -169,6 +246,14 @@ static func apply_status(target: Node, kind: String, params: Dictionary, origin:
 	# fire through this path on an immune target.
 	var ctype_v: Variant = target.get("creature_type")
 	if ctype_v is String and DnDTypes.is_status_immune(str(ctype_v), kind):
+		return false
+	# v0.5.9 petrified: 5e construct + elemental condition_immunities
+	# include "petrified" (DnDTypes.CREATURE_TYPES), but
+	# DnDTypes.STATUS_CONDITION_MAP has no petrified row, so
+	# is_status_immune() above cannot see it. Enforced here against
+	# the table, not invented: a construct/elemental can never be
+	# petrified, via any path that calls apply_status.
+	if kind == "petrified" and ctype_v is String and str(ctype_v) in ["construct", "elemental"]:
 		return false
 	match kind:
 		"slow":
@@ -295,7 +380,160 @@ static func apply_status(target: Node, kind: String, params: Dictionary, origin:
 				return true
 			_apply_typed_rider(target, dtype, amount, tdur, origin)
 			return true
+		"shield":
+			var pool := clampf(float(params.get("amount", 0.0)), 1.0, 500.0)
+			var shdur := clampf(float(params.get("duration_sec", 0.0)), 0.5, 30.0)
+			# Shields STACK: re-applying adds to the remaining pool
+			# (the generic _upsert keeps max, which would LOSE pool).
+			var existing_sh := _find_effect(target, "shield")
+			if not existing_sh.is_empty():
+				existing_sh["amount"] = float(existing_sh.get("amount", 0.0)) + pool
+				existing_sh["remaining"] = maxf(float(existing_sh.get("remaining", 0.0)), shdur)
+				_ensure_ticker(target)
+				return true
+			_upsert(target, {"kind": "shield", "amount": pool, "remaining": shdur})
+			return true
+		"vulnerable":
+			var vfactor := clampf(float(params.get("factor", 1.0)), 1.05, 5.0)
+			var vdur := clampf(float(params.get("duration_sec", 0.0)), 0.5, 30.0)
+			_upsert(target, {"kind": "vulnerable", "factor": vfactor, "remaining": vdur})
+			return true
+		"thorns":
+			var rmult := clampf(float(params.get("reflect_mult", 0.0)), 0.0, 2.0)
+			var thdur := clampf(float(params.get("duration_sec", 0.0)), 0.5, 30.0)
+			_upsert(target, {"kind": "thorns", "reflect_mult": rmult, "remaining": thdur})
+			return true
+		"petrified":
+			var pdur := clampf(float(params.get("duration_sec", 0.0)), 0.5, 30.0)
+			_upsert(target, {"kind": "petrified", "factor": 0.0, "remaining": pdur})
+			return true
 	return false
+
+
+## Resolves ONE incoming hit against the target's active defensive
+## states (v0.5.9 take_damage interception). Called by
+## Player.take_damage / EnemyBase.take_damage with the HOOK-ADJUSTED
+## amount (take_damage hooks already ran) and the attacker when known
+## (null when the damage source has no handle). Returns:
+##   {"final_damage": float (what actually lands on HP),
+##    "absorbed": float (eaten by shield),
+##    "reflected": float (thorns damage for the attacker, 0 when none),
+##    "reflected_target": Node-or-null (the attacker to reflect to),
+##    "nullified": bool (petrified ate everything),
+##    "vulnerable_mult": float (the vulnerable factor applied, 1.0 none)}
+## SIDE EFFECT: a shield pool is DRAINED by what it absorbs (an
+## emptied pool removes the shield effect). Call EXACTLY once per hit.
+## Order: petrified nullifies -> vulnerable multiplies -> shield
+## absorbs -> thorns reflects a share of what was ACTUALLY taken.
+## Thorns never fires for internal damage (DOT/typed/exhaustion —
+## _dot_damage_depth > 0) or for a hit that is itself a reflection
+## (_reflection_depth > 0). A nullified hit reflects nothing.
+static func resolve_incoming_damage(target: Node, amount: float, attacker: Node = null) -> Dictionary:
+	var out := {"final_damage": maxf(amount, 0.0), "absorbed": 0.0,
+		"reflected": 0.0, "reflected_target": null,
+		"nullified": false, "vulnerable_mult": 1.0}
+	if target == null or not is_instance_valid(target):
+		return out
+	if amount <= 0.0:
+		out["final_damage"] = 0.0
+		return out
+	var petr := _find_effect(target, "petrified")
+	if not petr.is_empty() and float(petr.get("remaining", 0.0)) > 0.0:
+		out["final_damage"] = 0.0
+		out["nullified"] = true
+		out["vulnerable_mult"] = 0.0
+		return out
+	var scaled := amount
+	var vuln := _find_effect(target, "vulnerable")
+	if not vuln.is_empty() and float(vuln.get("remaining", 0.0)) > 0.0:
+		var factor := float(vuln.get("factor", 1.0))
+		scaled = amount * factor
+		out["vulnerable_mult"] = factor
+	var absorbed := 0.0
+	var shield := _find_effect(target, "shield")
+	if not shield.is_empty() and float(shield.get("remaining", 0.0)) > 0.0:
+		var pool := float(shield.get("amount", 0.0))
+		absorbed = minf(pool, scaled)
+		pool -= absorbed
+		if pool <= 0.0:
+			clear_status_effect(target, "shield")
+		else:
+			shield["amount"] = pool
+	var final := maxf(scaled - absorbed, 0.0)
+	out["final_damage"] = final
+	out["absorbed"] = absorbed
+	if final > 0.0 and _dot_damage_depth <= 0 and _reflection_depth <= 0:
+		var th := _find_effect(target, "thorns")
+		if not th.is_empty() and float(th.get("remaining", 0.0)) > 0.0:
+			var rmult := float(th.get("reflect_mult", 0.0))
+			if rmult > 0.0:
+				var resolved := _resolve_attacker(target, attacker)
+				if resolved != null and is_instance_valid(resolved) and resolved != target:
+					out["reflected"] = final * rmult
+					out["reflected_target"] = resolved
+	return out
+
+
+## Remaining shield pool on the target (0.0 when no shield). Hook
+## scripts read this via ModAPI.get_shield_remaining().
+static func get_shield_remaining(target: Node) -> float:
+	var sh := _find_effect(target, "shield")
+	if sh.is_empty() or float(sh.get("remaining", 0.0)) <= 0.0:
+		return 0.0
+	return maxf(float(sh.get("amount", 0.0)), 0.0)
+
+
+## Damage-taken multiplier from defensive states: 0.0 while petrified
+## (nullified), else the vulnerable factor (1.0 when not vulnerable).
+## Hook scripts read this via ModAPI.get_damage_taken_multiplier().
+## NOTE: shield is NOT a multiplier (it is a pool) — it does not
+## appear here; use get_shield_remaining() for it.
+static func get_damage_taken_multiplier(target: Node) -> float:
+	var petr := _find_effect(target, "petrified")
+	if not petr.is_empty() and float(petr.get("remaining", 0.0)) > 0.0:
+		return 0.0
+	var vuln := _find_effect(target, "vulnerable")
+	if not vuln.is_empty() and float(vuln.get("remaining", 0.0)) > 0.0:
+		return float(vuln.get("factor", 1.0))
+	return 1.0
+
+
+## The attacker a thorns reflection goes to. An explicit, live
+## attacker wins. Fallbacks (damage sources with no attacker handle):
+## enemy target -> the player (single-player: all player-side damage
+## originates from the player); player target -> the nearest live
+## enemy (grenades / slams / explosions have no attacker handle).
+## Null when no attacker can be resolved (out-of-tree target, no
+## player/enemies around) — thorns then reflects nothing.
+static func _resolve_attacker(target: Node, attacker: Node) -> Node:
+	if attacker != null and is_instance_valid(attacker):
+		return attacker
+	if target == null or not is_instance_valid(target) or not target.is_inside_tree():
+		return null
+	if target.is_in_group("enemy"):
+		var tree := target.get_tree()
+		if tree != null:
+			var players := tree.get_nodes_in_group("player")
+			if not players.is_empty() and is_instance_valid(players[0]):
+				return players[0] as Node
+		return null
+	if target.is_in_group("player"):
+		var best: Node = null
+		var best_d := INF
+		var tpos := (target as Node3D).global_position if target is Node3D else Vector3.ZERO
+		for e in EnemyBase.all:
+			if e == null or not is_instance_valid(e):
+				continue
+			if not bool(e.get("active")) or bool(e.get("dead")):
+				continue
+			if not (e is Node3D):
+				continue
+			var d := (e as Node3D).global_position.distance_squared_to(tpos)
+			if d < best_d:
+				best_d = d
+				best = e
+		return best
+	return null
 
 
 ## Applies a typed-damage rider (see KINDS). Failures are silent by
@@ -341,7 +579,7 @@ static func speed_multiplier(target: Node) -> float:
 		if float(d.get("remaining", 0.0)) <= 0.0:
 			continue
 		match str(d.get("kind", "")):
-			"slow", "freeze", "restrained", "prone", "sleep":
+			"slow", "freeze", "restrained", "prone", "sleep", "petrified":
 				mult *= float(d.get("factor", 1.0))
 			"poison":
 				mult *= POISON_SLOW_FACTOR
@@ -483,11 +721,12 @@ static func tick_target(target: Node, delta: float) -> void:
 	if kept.is_empty():
 		_clear_all(target)
 		return
-	# Freeze / sleep pin the target in place (horizontal velocity
-	# zeroed every tick — knockback cannot move a frozen target).
+	# Freeze / sleep / petrified pin the target in place (horizontal
+	# velocity zeroed every tick — knockback cannot move a frozen,
+	# sleeping, or petrified target).
 	var pinned := false
 	for eff in kept:
-		if str((eff as Dictionary).get("kind", "")) in ["freeze", "sleep"]:
+		if str((eff as Dictionary).get("kind", "")) in ["freeze", "sleep", "petrified"]:
 			pinned = true
 			break
 	if pinned and target is CharacterBody3D:
@@ -514,6 +753,8 @@ static func _upsert(target: Node, eff: Dictionary) -> void:
 		match str(eff.get("kind", "")):
 			"slow", "freeze", "restrained", "prone", "sleep":
 				d["factor"] = minf(float(d.get("factor", 1.0)), float(eff.get("factor", 1.0)))
+			"petrified":
+				d["factor"] = minf(float(d.get("factor", 1.0)), float(eff.get("factor", 0.0)))
 			"burn", "poison", "bleed":
 				d["damage_per_sec"] = maxf(float(d.get("damage_per_sec", 0.0)), float(eff.get("damage_per_sec", 0.0)))
 				# accum / last_pos survive: a refresh never resets
@@ -522,6 +763,10 @@ static func _upsert(target: Node, eff: Dictionary) -> void:
 				d["heal_per_sec"] = maxf(float(d.get("heal_per_sec", 0.0)), float(eff.get("heal_per_sec", 0.0)))
 			"haste":
 				d["factor"] = maxf(float(d.get("factor", 1.0)), float(eff.get("factor", 1.0)))
+			"vulnerable":
+				d["factor"] = maxf(float(d.get("factor", 1.0)), float(eff.get("factor", 1.0)))
+			"thorns":
+				d["reflect_mult"] = maxf(float(d.get("reflect_mult", 0.0)), float(eff.get("reflect_mult", 0.0)))
 			"confusion":
 				d["force"] = maxf(float(d.get("force", 0.0)), float(eff.get("force", 0.0)))
 			"exhaustion":
@@ -728,6 +973,8 @@ static func _can_heal(target: Node) -> bool:
 
 
 ## Deals damage through the target's take_damage (no-op without it).
+## Internal damage: bracketed by the dot guard, so a thorns carrier
+## never reflects DOT / exhaustion damage (there is no attacker).
 static func _damage_target(target: Node, amount: float) -> void:
 	if target == null or not is_instance_valid(target):
 		return
@@ -735,13 +982,16 @@ static func _damage_target(target: Node, amount: float) -> void:
 		var pos := Vector3.ZERO
 		if target is Node3D:
 			pos = (target as Node3D).global_position
+		begin_dot_damage()
 		target.call("take_damage", amount, pos, false)
+		end_dot_damage()
 
 
 ## Typed damage: prefers the target's take_typed_damage (EnemyBase
 ## applies the creature-type resistance table); falls back to untyped
 ## take_damage for targets without it (dummies, players, structures).
 ## "" damage_type == untyped (used for true damage, e.g. exhaustion-6).
+## Internal damage (dot guard): never reflects via thorns.
 static func _damage_typed(target: Node, amount: float, damage_type: String) -> void:
 	if damage_type.is_empty():
 		_damage_target(target, amount)
@@ -752,7 +1002,9 @@ static func _damage_typed(target: Node, amount: float, damage_type: String) -> v
 		var pos := Vector3.ZERO
 		if target is Node3D:
 			pos = (target as Node3D).global_position
+		begin_dot_damage()
 		target.call("take_typed_damage", amount, damage_type, pos, false)
+		end_dot_damage()
 		return
 	_damage_target(target, amount)
 
