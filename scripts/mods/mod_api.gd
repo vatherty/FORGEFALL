@@ -44,7 +44,8 @@ const TURRET_SCRIPT := preload("res://scripts/forge/forge_turret.gd")
 const HOOK_ALLOWED_API_METHODS := ["get_player", "get_root",
 	"get_player_position", "get_aim_point", "spawn_voxel_box", "spawn_cover",
 	"spawn_pickup", "spawn_turret", "give_weapon", "fire_effect", "announce",
-	"get_player_health", "heal_player", "apply_status_effect", "spawn_projectile"]
+	"get_player_health", "heal_player", "apply_status_effect", "spawn_projectile",
+	"has_status_effect", "clear_status_effect"]
 
 ## Read-only Dictionary methods a hook may call on `ctx`. `ctx` is input:
 ## a hook must never mutate it (no erase / clear / assignment).
@@ -412,14 +413,35 @@ func heal_player(amount: float) -> float:
 	return get_player_health()
 
 
-## Applies a status effect (slow / freeze / burn / knockback) to a
-## target node — see ModStatusEffects. `origin` is the hit point
-## (knockback direction is away from it). No-op (false) for a null /
-## freed / out-of-tree target or an unknown kind.
+## Applies a status effect to a target node — see ModStatusEffects.
+## Kinds: slow / freeze / burn / knockback / pull / poison / bleed /
+## regen / haste / restrained / prone / sleep / confusion / blind /
+## weaken / exhaustion / typed_damage. `origin` is the hit point
+## (knockback direction is away from it, pull toward it). No-op
+## (false) for a null / freed / out-of-tree target, an unknown kind,
+## or a kind with no handle on this target (e.g. blind on a target
+## with no accuracy stat and no weapons).
 func apply_status_effect(target: Node, kind: String, params: Dictionary, origin: Vector3) -> bool:
 	if not _charge_step():
 		return false
 	return ModStatusEffects.apply_status(target, kind, params, origin)
+
+
+## True when `target` currently has an active effect of `kind`.
+func has_status_effect(target: Node, kind: String) -> bool:
+	if not _charge_step():
+		return false
+	return ModStatusEffects.has_status_effect(target, kind)
+
+
+## Removes one status kind from `target` (restoring blind/weaken
+## stat scaling), or every effect when kind == "all". The "cure"
+## primitive: a hook can end poison early. True when something was
+## removed.
+func clear_status_effect(target: Node, kind: String) -> bool:
+	if not _charge_step():
+		return false
+	return ModStatusEffects.clear_status_effect(target, kind)
 
 
 ## Spawns a flying mod projectile (see ModProjectile) at `origin`,
