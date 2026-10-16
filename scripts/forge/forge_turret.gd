@@ -232,7 +232,18 @@ func _fire() -> void:
 	var aim: Vector3 = _target.global_position + Vector3(0, 0.9, 0)
 	if not _has_los(from, aim, _target):
 		return
-	_target.take_damage(get_damage(), aim, false)
+	# v0.5.8 elemental emitters: a turret built with an "element" meta
+	# ("a lightning emitter turret") deals its FULL shot damage AS that
+	# element — typed_damage + rider, or force/water handling — instead
+	# of plain damage, plus an element-colored voxel burst at impact.
+	var element := str(get_meta("element", "")) if has_meta("element") else ""
+	if ElementalEmitter.is_element(element):
+		ElementalEmitter.apply_to_target(_target, element, get_damage(), from)
+		var tree := Engine.get_main_loop() as SceneTree
+		if tree != null and tree.current_scene != null:
+			ElementalEmitter.spawn_visual_burst(tree.current_scene, element, aim, 1.2)
+	else:
+		_target.take_damage(get_damage(), aim, false)
 	_flash.visible = true
 	_flash_timer = FLASH_TIME
 	_show_beam(from, aim)
