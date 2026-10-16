@@ -43,7 +43,7 @@ const STATE_PATH := "user://mods_enabled.json"
 
 ## Per-target fields a JSON/script block may declare, on top of the common
 ## block_id/target/cost/display_name/description.
-const WEAPON_BLOCK_FIELDS := ["base_weapon_id", "damage_mult", "mag_mult", "range_mult", "ammo_type"]
+const WEAPON_BLOCK_FIELDS := ["base_weapon_id", "damage_mult", "mag_mult", "range_mult", "ammo_type", "fire_mode", "burst_size"]
 const COVER_BLOCK_FIELDS := ["shape", "size_voxels", "hp", "property", "color"]
 const STRUCTURE_BLOCK_FIELDS := ["shape", "property"]
 const TURRET_BLOCK_FIELDS := ["duration_sec", "damage_mult", "range_mult", "ammo_type"]
@@ -51,6 +51,7 @@ const PICKUP_BLOCK_FIELDS := ["kind", "amount"]
 
 const BASE_WEAPON_IDS := ["manticore", "longeye", "breacher", "hornet", "p9", "raptor", "lmg", "trident", "judge"]
 const AMMO_TYPES := ["standard", "sniper", "armor_piercing", "buckshot"]
+const FIRE_MODES := ["auto", "semi", "burst", "bolt", "pump"]
 const BLOCK_PROPERTIES := ["standard", "reinforced"]
 
 ## Forbidden substrings in mod SCRIPT source. Checked BEFORE load; any hit
@@ -471,8 +472,10 @@ static func _finish_json_block(rec: Dictionary, data: Variant, manifest_hooks: A
 
 
 ## Splits a JSON block payload into its block dict + its hooks array.
-## Accepts {"block": {...}, "hooks": [...]} and a pure block dict with
-## a top-level "hooks" key. Returns {"block", "hooks", "error"}.
+## Accepts {"block": {...}, "hooks": [...]}, a pure block dict with a
+## top-level "hooks" key, AND a wrapper whose inner block ALSO carries
+## "hooks" (merged + deduped — see the wrapper branch). Returns
+## {"block", "hooks", "error"}.
 static func _split_block_and_hooks(data: Variant) -> Dictionary:
 	if not (data is Dictionary):
 		return {"block": null, "hooks": [], "error": "block payload is not a JSON object"}
@@ -481,8 +484,32 @@ static func _split_block_and_hooks(data: Variant) -> Dictionary:
 		var hooks: Variant = d.get("hooks", null)
 		if hooks != null and not (hooks is Array):
 			return {"block": null, "hooks": [], "error": "payload 'hooks' must be an array"}
-		return {"block": (d["block"] as Dictionary).duplicate(true),
-			"hooks": (hooks as Array).duplicate(true) if hooks is Array else [], "error": ""}
+		var inner := (d["block"] as Dictionary).duplicate(true)
+		var merged: Array = (hooks as Array).duplicate(true) if hooks is Array else []
+		# The block may ALSO carry "hooks" inside it (the LLM nests
+		# hooks there when the prompt's two shape descriptions
+		# collide — BLOCK SCHEMA says the payload is a flat block,
+		# the hooks addendum says hooks go next to the block). A
+		# nested "hooks" key is NOT a block field: strip it and merge
+		# with the top-level hooks (deduped by hook_id, top-level
+		# first), so the same mod validates identically in every
+		# payload shape. A "hooks" key nested inside a block is a
+		# shape variant, never a reason to reject the mod.
+		var inner_hooks: Variant = inner.get("hooks", null)
+		if inner_hooks != null:
+			if not (inner_hooks is Array):
+				return {"block": null, "hooks": [], "error": "block 'hooks' must be an array"}
+			var seen := {}
+			for h in merged:
+				if h is Dictionary:
+					seen[str((h as Dictionary).get("hook_id", ""))] = true
+			for h in (inner_hooks as Array):
+				var hid := str((h as Dictionary).get("hook_id", "")) if h is Dictionary else ""
+				if not seen.has(hid):
+					seen[hid] = true
+					merged.append(h)
+			inner.erase("hooks")
+		return {"block": inner, "hooks": merged, "error": ""}
 	var block := d.duplicate(true)
 	var hooks2: Variant = block.get("hooks", null)
 	if hooks2 != null:
@@ -613,6 +640,10 @@ static func _validate_block(block: Dictionary, require_data: bool = true) -> Str
 					return "weapon block '%s' out of range 0.1-5" % field
 			if block.has("mag_mult") and not _is_num_in(block["mag_mult"], 0.25, 4.0):
 				return "weapon block 'mag_mult' out of range 0.25-4"
+			if block.has("fire_mode") and not (block["fire_mode"] is String and str(block["fire_mode"]).to_lower() in FIRE_MODES):
+				return "weapon block 'fire_mode' must be auto|semi|burst|bolt|pump"
+			if block.has("burst_size") and not _is_int_in(block["burst_size"], 2, 10):
+				return "weapon block 'burst_size' out of range 2-10"
 		"cover":
 			if block.has("shape") or require_data:
 				if not (str(block.get("shape", "")) in ["wall", "tower", "barricade"]):
