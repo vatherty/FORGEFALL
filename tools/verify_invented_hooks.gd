@@ -836,14 +836,18 @@ func _phase6() -> void:
 		return
 	if _sub == 2:
 		_sub = 3
-		# Script candidates are REFUSED in-session, naming Create-a-Mod.
+		# v0.5.9: script candidates BUILD in-session (session code
+		# loading) — the old "MAKE refuses script mods" refusal is gone.
+		# A bare "extends ModBlock" candidate still fails, but for a
+		# CONTENT reason (validation/compile), never a blanket refusal
+		# to run scripts.
 		var script_cand := {"mod_id": "verify_script_hooks", "name": "Verify Script Hooks",
 			"kind": "script", "manifest": {}, "payload": "extends ModBlock",
 			"summary": "script", "error": ""}
 		var result: Dictionary = _session_make_script.call("apply_candidate", script_cand, _player, root)
-		_check(not bool(result.get("ok", false))
-			and str(result.get("message", "")).to_lower().contains("create-a-mod"),
-			"make(6): MAKE refuses script mods with a visible Create-a-Mod message ('%s')" % str(result.get("message", "")))
+		_check(not str(result.get("message", "")).to_lower().contains("can't run script mods")
+			and not str(result.get("message", "")).to_lower().contains("refuses script"),
+			"make(6): no blanket script refusal remains ('%s')" % str(result.get("message", "")))
 		# An error candidate is reported, never silently replaced.
 		var err_cand := {"mod_id": "", "name": "", "kind": "block", "manifest": {},
 			"payload": "", "summary": "", "error": "generation exploded"}
@@ -859,13 +863,13 @@ func _phase6() -> void:
 		var result3: Dictionary = _session_make_script.call("apply_candidate", bad_cand, _player, root)
 		_check(not bool(result3.get("ok", false)),
 			"make(6): MAKE rejects an unknown target ('%s')" % str(result3.get("message", "")))
-		# Menu-level: the MAKE path never calls install(), and its
-		# script refusal names CREATE A MOD.
+		# Menu-level: the MAKE path never calls install(), and no
+		# script refusal text remains (v0.5.9 session loading).
 		var menu_src := FileAccess.get_file_as_string("res://scripts/ui/forge_menu.gd")
 		_check(not menu_src.contains(".install("),
 			"make(6): forge_menu.gd contains no .install() call (MAKE never installs)")
-		_check(menu_src.contains("MAKE can't run script mods") and menu_src.contains("CREATE A MOD"),
-			"make(6): forge_menu MAKE refusal names CREATE A MOD")
+		_check(not menu_src.contains("MAKE can't run script mods"),
+			"make(6): forge_menu.gd carries no script-refusal text")
 		_check(menu_src.contains("MAKE (this match only"),
 			"make(6): MAKE UI is labeled 'MAKE (this match only — not saved)'")
 		_sub = 4
