@@ -8,6 +8,13 @@
 # recycle), perception (cached LOS raycast), nav-or-steer locomotion,
 # separation, hitscan firing with pooled tracers.
 #
+# v0.5.9 take_damage INTERCEPTION: take_damage() runs this enemy's
+# take_damage hooks (mod_hooks, [] by default) then resolves the
+# defensive states (shield / vulnerable / thorns / petrified) via
+# ModStatusEffects.resolve_incoming_damage() BEFORE damage lands —
+# same choke point as the player. fire_hitscan passes self as the
+# attacker so the player's thorns reflects to the shooter.
+#
 # Collision-layer contract (coordinate with worker 1 project.godot):
 #   layer 1 = world geometry, layer 2 = enemies, layer 3 = player.
 # Enemies collide physically ONLY with the world (mask 1). Enemy-enemy
@@ -126,6 +133,13 @@ var gun_burst_t := 0.0
 var soldier: VoxelSoldier
 var rig: Dictionary = {}
 var nav_agent: NavigationAgent3D
+## take_damage hooks attached to THIS enemy (v0.5.9). [] by default —
+## enemies carry no mod weapons, so no hooks run unless a flow sets
+## this (tests, future Forge enemy-mod attach). The take_damage hook
+## point runs in take_damage() below; defensive STATES
+## (shield/vulnerable/thorns/petrified) apply regardless of hooks —
+## they are resolved from ModStatusEffects for every hit.
+var mod_hooks: Array = []
 
 var _player: Node3D = null
 var _can_see := false
@@ -375,12 +389,48 @@ static func flash_time_for(effective_damage: float) -> float:
 	return clampf(FLASH_BASE + effective_damage * FLASH_PER_DAMAGE, FLASH_BASE, FLASH_MAX)
 
 
-func take_damage(amount: float, hit_position: Vector3, is_headshot: bool) -> void:
+func take_damage(amount: float, hit_position: Vector3, is_headshot: bool, attacker: Node = null) -> void:
 	if dead or not active:
 		return
 	var mult := HEADSHOT_MULT if is_headshot else 1.0
 	mult *= float(director_mods.get("taken_mult", 1.0))
 	var effective := amount * mult
+	# v0.5.9 take_damage INTERCEPTION (ONE hook point, no refactor):
+	#   1. take_damage hooks on this enemy run first (they may apply
+	#      shield/vulnerable/thorns/petrified to this enemy, or return
+	#      damage_mult for THIS hit).
+	#   2. ModStatusEffects.resolve_incoming_damage() applies the
+	#      active defensive states (petrified nullifies, vulnerable
+	#      multiplies, shield absorbs, thorns reflects).
+	#   3. Only the final damage lands. A fully absorbed / nullified
+	#      hit deals no damage: no HP loss, no flash, no flinch, no
+	#      knockback.
+	#   4. Thorns reflection (if any) is delivered to the attacker as
+	#      a plain hit — it passes through the attacker's own
+	#      defensive states but never reflects again (reflection guard).
+	var reflected := 0.0
+	var reflected_target: Node = null
+	if effective > 0.0:
+		if not mod_hooks.is_empty():
+			var root: Node = null
+			if is_inside_tree():
+				var tree := get_tree()
+				if tree != null:
+					root = tree.current_scene
+			var api := ModAPI.new(_player_node() as Node3D, root)
+			var ctx := {"damage": effective, "target": self, "attacker": attacker,
+				"hit_position": hit_position, "position": global_position,
+				"headshot": is_headshot}
+			var res := ModHookRegistry.run_take_damage(mod_hooks, api, ctx)
+			effective *= float(res.get("damage_mult", 1.0))
+		var resolved := ModStatusEffects.resolve_incoming_damage(self, effective, attacker)
+		effective = float(resolved.get("final_damage", effective))
+		reflected = float(resolved.get("reflected", 0.0))
+		var rt: Variant = resolved.get("reflected_target", null)
+		if rt is Node:
+			reflected_target = rt as Node
+	if effective <= 0.0:
+		return
 	hp -= effective
 	headshot_last = is_headshot
 	last_hit_damage = effective
@@ -389,6 +439,13 @@ func take_damage(amount: float, hit_position: Vector3, is_headshot: bool) -> voi
 	for m in _meshes:
 		m.material_override = _flash_mat
 	if hp <= 0.0:
+		# Thorns still reflects the killing blow's damage (it WAS
+		# taken — hp went to/below 0), so reflect before dying.
+		if reflected > 0.0 and reflected_target != null and is_instance_valid(reflected_target) \
+				and reflected_target.has_method("take_damage"):
+			ModStatusEffects.begin_reflection()
+			reflected_target.call("take_damage", reflected, global_position, false)
+			ModStatusEffects.end_reflection()
 		die()
 		return
 	if not flinch_immune:
@@ -403,6 +460,11 @@ func take_damage(amount: float, hit_position: Vector3, is_headshot: bool) -> voi
 		kb.y = 0.0
 		if kb.length_squared() > 0.001:
 			velocity += kb.normalized() * kb_mag
+	if reflected > 0.0 and reflected_target != null and is_instance_valid(reflected_target) \
+			and reflected_target.has_method("take_damage"):
+		ModStatusEffects.begin_reflection()
+		reflected_target.call("take_damage", reflected, global_position, false)
+		ModStatusEffects.end_reflection()
 	_on_damaged()
 
 
@@ -424,7 +486,8 @@ func set_creature_type(t: String) -> bool:
 ## take_damage() stays UNTYPED — existing hitscan/explosion callers
 ## are unchanged. Callers with a known type (typed_damage hooks,
 ## future elemental weapons) MUST use this entry point.
-func take_typed_damage(amount: float, damage_type: String, hit_position: Vector3, is_headshot: bool) -> void:
+## `attacker` forwards to take_damage (thorns reflection target).
+func take_typed_damage(amount: float, damage_type: String, hit_position: Vector3, is_headshot: bool, attacker: Node = null) -> void:
 	if dead or not active:
 		return
 	last_damage_type = str(damage_type).to_lower()
@@ -435,7 +498,7 @@ func take_typed_damage(amount: float, damage_type: String, hit_position: Vector3
 		# last_damage_multiplier == 0.0 and hp unchanged.
 		last_hit_damage = 0.0
 		return
-	take_damage(amount * last_damage_multiplier, hit_position, is_headshot)
+	take_damage(amount * last_damage_multiplier, hit_position, is_headshot, attacker)
 
 
 ## Game-code status-effect entry point, gated by creature-type
@@ -713,7 +776,9 @@ func fire_hitscan(dmg: float, spread_deg: float, sound_id: String, tracer_color:
 		if col is Node and (col as Node).is_in_group("player"):
 			var pdmg := dmg * float(director_mods.get("dmg_mult", 1.0))
 			if p.has_method("take_damage"):
-				p.take_damage(pdmg, hit_pos, false)
+				# Attacker = self: the player's thorns reflects to
+				# THIS enemy, and take_damage hooks see the attacker.
+				p.take_damage(pdmg, hit_pos, false, self)
 	EnemyTracerPool.spawn(muzzle, hit_pos, tracer_color)
 	Sfx.play_3d(sound_id, muzzle)
 
