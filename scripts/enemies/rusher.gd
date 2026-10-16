@@ -31,6 +31,8 @@ var _grenade_t := 0.0
 func _configure() -> void:
 	type_id = "rusher"
 	display_name = "Militia Rusher"
+	creature_type = "humanoid"
+	ability_scores = DnDTypes.ability_scores(11, 15, 11, 9, 10, 9)
 	base_hp = 60.0      # was 70: glass cannon — dies fast if you aim
 	base_speed = 7.0    # was 6.2: fastest type, closes distance hard
 	base_damage = 6.0   # per pellet; 6 pellets = 36 max, never instant-kill
