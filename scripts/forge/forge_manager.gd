@@ -39,9 +39,10 @@ signal forge_result(success: bool, message: String)
 signal budget_changed(amount: int)
 
 const DirectorScript := preload("res://scripts/forge/forge_director.gd")
+const PlayerClasses := preload("res://scripts/progression/classes.gd")
 
 const VALID_ACTIONS := ["spawn", "modify", "event"]
-const VALID_TARGETS := ["weapon", "cover", "turret", "pickup", "enemy_mod", "killstreak", "arena_event", "structure", "enemy_spawn"]
+const VALID_TARGETS := ["weapon", "cover", "turret", "pickup", "enemy_mod", "killstreak", "arena_event", "structure", "enemy_spawn", "class", "emitter"]
 const VALID_SHAPES := ["wall", "tower", "barricade"]
 const VALID_STRUCTURES := ["bridge", "bunker", "watchtower", "ammo_depot", "stairs", "ramp", "wall", "jump_pad", "cover_piece", "sniper_nest"]
 const VALID_STREAKS := ["uav", "airstrike", "chopper"]
@@ -110,7 +111,18 @@ func is_busy() -> bool:
 
 func cooldown_remaining() -> float:
 	var elapsed := float(Time.get_ticks_msec() - _last_build_msec) / 1000.0
-	return maxf(0.0, BUILD_COOLDOWN_SEC - elapsed)
+	return maxf(0.0, _effective_cooldown_sec() - elapsed)
+
+
+## v0.5.8 CLASSES: wizards halve the Forge cooldown (Forge affinity).
+func _effective_cooldown_sec() -> float:
+	var tree := get_tree()
+	if tree == null:
+		return BUILD_COOLDOWN_SEC
+	var player_node := tree.get_first_node_in_group("player")
+	if player_node != null and player_node.has_method("class_forge_cooldown_mult"):
+		return BUILD_COOLDOWN_SEC * float(player_node.call("class_forge_cooldown_mult"))
+	return BUILD_COOLDOWN_SEC
 
 
 func get_budget() -> int:
@@ -311,6 +323,29 @@ func _execute_spec(spec: Dictionary, approximation_note: String = "") -> void:
 		Sfx.play_2d("forge_fail")
 		forge_result.emit(false, "Forge rejected the spec: %s." % str(_legacy[1]))
 		return
+	# v0.5.8 CLASSES: a class-swap spec never reaches ForgeBuilder —
+	# the player's kit is swapped in place, mid-match, no restart.
+	if str(spec.get("target", "")) == "class":
+		var class_id := str((spec.get("params", {}) as Dictionary).get("class_id", ""))
+		var player_node: Node = (_build_ctx().get("player") as Node)
+		if player_node == null or not player_node.has_method("set_player_class"):
+			_busy = false
+			Sfx.play_2d("forge_fail")
+			forge_result.emit(false, "No player to reclass — class swap needs a live match.")
+			return
+		_last_build_msec = Time.get_ticks_msec()
+		var switched: bool = bool(player_node.call("set_player_class", class_id))
+		_last_spec = spec.duplicate(true)
+		_last_build_code = ForgeLLM.encode_build_code(spec)
+		_undo = {"cost": 0, "node": null, "label": "Class swap", "structural": false}
+		_undo_valid = true
+		_busy = false
+		Sfx.play_2d("forge_success")
+		if switched:
+			forge_result.emit(true, "You are now a %s — %s" % [PlayerClasses.display_name(class_id), PlayerClasses.summary(class_id)])
+		else:
+			forge_result.emit(true, "Already a %s — kit unchanged." % PlayerClasses.display_name(class_id))
+		return
 	var cost := int(spec.get("cost", 0))
 	# Directive A: with BUDGET_ENABLED = false this gate is skipped
 	# entirely — a build is never blocked for cost. With it true, the
@@ -350,7 +385,7 @@ func _execute_spec(spec: Dictionary, approximation_note: String = "") -> void:
 	# pickup) carry their node for removal; everything else refunds only
 	# (when budget is ON — with it OFF there is nothing to refund).
 	var target := str(spec.get("target", ""))
-	var structural := target in ["cover", "structure", "turret", "pickup"]
+	var structural := target in ["cover", "structure", "turret", "pickup", "emitter"]
 	_undo = {
 		"cost": cost,
 		"node": ForgeBuilder.last_built_node if structural else null,
@@ -402,12 +437,25 @@ func _validate_spec(spec: Dictionary) -> Array:
 			params["count"] = clampi(int(params.get("count", 3)), 1, 6)
 		"turret":
 			params["duration_sec"] = clampf(float(params.get("duration_sec", 45.0)), 5.0, MAX_TTL_SEC)
+		"emitter":
+			# v0.5.8: element must be a known emitter element (never
+			# silently corrected to fire); numbers clamped to the
+			# ForgeLLM gate's ranges.
+			if not ElementalEmitter.is_element(str(params.get("element", ""))):
+				return [false, "bad element '%s'" % str(params.get("element", ""))]
+			params["radius"] = clampf(float(params.get("radius", 4.0)), 1.0, 10.0)
+			params["duration_sec"] = clampf(float(params.get("duration_sec", 10.0)), 3.0, 60.0)
+			params["damage_per_sec"] = clampf(float(params.get("damage_per_sec", 10.0)), 1.0, 100.0)
 		"pickup":
 			if not (str(params.get("kind", "")) in ["ammo", "health"]):
 				params["kind"] = "ammo"
 		"weapon":
 			if str(params.get("weapon_id", "")).is_empty():
 				return [false, "weapon_id missing"]
+		"class":
+			if not PlayerClasses.is_valid_class(str(params.get("class_id", ""))):
+				return [false, "unknown class_id '%s'" % str(params.get("class_id", ""))]
+			spec["cost"] = 0
 		"enemy_mod":
 			# Director-grade mods are off-limits to player requisitions.
 			if str(params.get("mod", "")) != "weaken":
