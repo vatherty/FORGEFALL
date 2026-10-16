@@ -46,6 +46,8 @@ var _grenade_t := 0.0
 func _configure() -> void:
 	type_id = "grunt"
 	display_name = "Militia Grunt"
+	creature_type = "humanoid"  # v0.5.8 D&D: militia are humanoid (default)
+	ability_scores = DnDTypes.ability_scores(12, 12, 12, 10, 11, 10)
 	base_hp = 100.0
 	base_speed = 4.2
 	base_damage = 9.0
