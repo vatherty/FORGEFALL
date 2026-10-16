@@ -38,6 +38,8 @@ var _lost_t := 0.0
 func _configure() -> void:
 	type_id = "bulwark"
 	display_name = "Bulwark"
+	creature_type = "humanoid"
+	ability_scores = DnDTypes.ability_scores(16, 10, 17, 10, 11, 10)
 	base_hp = 260.0      # tanky from the front (~1040 effective), soft from behind
 	base_speed = 3.6     # slow advance — flankable, kiteable
 	base_damage = 9.0
