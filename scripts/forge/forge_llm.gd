@@ -1166,6 +1166,10 @@ MODAPI — the ONLY functions a script mod may call (via the `api` argument). Ne
 - give_weapon(weapon_id: String, damage_mult: float, range_mult: float, mag_mult: float) -> bool — give a base weapon (manticore|longeye|breacher|hornet|p9|raptor|lmg), tuned by multipliers (1.0 = stock).
 - fire_effect(kind: String, position: Vector3, radius: float, damage: float, duration_sec: float = 20.0) -> void — "explosion" (radius + damage) or "smoke" (duration_sec).
 - announce(title: String, subtitle: String) -> void — HUD banner.
+- get_player_health() -> float — current player HP, or -1 when there is no player / no HP to read.
+- heal_player(amount: float) -> float — heals the player, returns the player's HP afterwards, or -1 when there is no player.
+- apply_status_effect(target: Node, kind: String, params: Dictionary, origin: Vector3) -> bool — status effect (slow|freeze|burn|knockback) on a target; origin is the hit point.
+- spawn_projectile(spec: Dictionary, origin: Vector3, direction: Vector3, hooks: Array = []) -> Node — flying mod projectile travelling along direction; spec carries visual / speed / damage / explodes_on_impact.
 MODBLOCK CONTRACT — every script mod MUST follow this exactly:
 - First line: `extends ModBlock` (exactly, nothing else on that line).
 - Implement `get_block_info() -> Dictionary` returning {"block_id": "<lowercase [a-z0-9_]>", "target": "weapon"|"cover"|"structure"|"turret"|"pickup", "cost": 0-2000, "display_name": "<name>", "description": "<one line>", ...per-target fields...}.
