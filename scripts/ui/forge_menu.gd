@@ -940,6 +940,14 @@ func _try_ghost_prompt(prompt: String) -> bool:
 	var spec: Dictionary = ForgeLLM.parse_offline(prompt)
 	if spec.is_empty() or str(spec.get("target", "")) != "structure":
 		return false
+	# v0.5.7 Part B: a LABELED approximation ("Closest I can build:
+	# ...") is stripped before the ghost path — the strict gate rejects
+	# unknown top-level keys — and shown as a toast NOW, so the ghost
+	# preview of the substitute shape is explicitly labeled.
+	var approx_note := ""
+	if spec.has("_approximation"):
+		approx_note = str(spec["_approximation"])
+		spec.erase("_approximation")
 	var params: Dictionary = spec.get("params", {})
 	var shape := str(params.get("shape", ""))
 	if shape.is_empty():
@@ -952,6 +960,8 @@ func _try_ghost_prompt(prompt: String) -> bool:
 	if placement == null or not placement.start_preview(shape, params, player, root):
 		return false
 	_pending_ghost_spec = spec.duplicate(true)
+	if not approx_note.is_empty():
+		_show_toast(approx_note + " Place it with INTERACT.")
 	if not placement.is_connected("preview_confirm_requested", _on_ghost_confirm_requested):
 		placement.connect("preview_confirm_requested", _on_ghost_confirm_requested)
 	if not placement.is_connected("preview_cancelled", _on_ghost_cancelled):
@@ -1186,6 +1196,13 @@ func _update_preview() -> void:
 	if bool(d.get("ok", false)):
 		# Directive A: cost computed + shown, but building is free.
 		_preview_label.text = "COST: %d (free)" % int(d.get("cost", 0))
+		# v0.5.7 Part B: a LABELED approximation ("Closest I can
+		# build: ...") shows in the preview BEFORE the player confirms,
+		# so an approximation is never a surprise at build time.
+		var approx := str(d.get("approximation", ""))
+		if not approx.is_empty():
+			_preview_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			_preview_label.text += " — " + approx
 	else:
 		var err := str(d.get("error", ""))
 		_preview_label.text = "COST: —  %s" % err if not err.is_empty() else "COST: —"
