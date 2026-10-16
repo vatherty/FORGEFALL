@@ -61,6 +61,8 @@ var _slam_cooldown := 0.0
 func _configure() -> void:
 	type_id = "warlord"
 	display_name = "Warlord"
+	creature_type = "humanoid"
+	ability_scores = DnDTypes.ability_scores(20, 14, 20, 14, 15, 16)
 	base_hp = 3000.0   # 2.5x the Juggernaut: a real boss fight, not a bullet sponge vs one player
 	base_speed = 3.2   # slow — always kiteable, even in phase 3 (3.2 x 1.3 = 4.2 < 11 sprint)
 	base_damage = BURST_DAMAGE
