@@ -26,9 +26,14 @@
 # the cache HIT/MISS + voxel count on the approval screen.
 #
 # SANDBOX: TEST IN SANDBOX opens SandboxTestRoom with the candidate +
-# asset. The sandbox simulates the mod's declared behaviour and writes
-# NOTHING to the real mod list or progression. Install stays available
-# on the approval screen whether or not the sandbox was used.
+# asset. The sandbox simulates the mod's declared behaviour and RUNS its
+# validated hook scripts (code hooks only — the candidate's ModBlock
+# script is still never executed) in the throwaway test room, then
+# reports what each hook script did. A hook script that fails in the
+# sandbox disables the candidate visibly (Install goes dead with the
+# reason). The sandbox writes NOTHING to the real mod list or
+# progression. Install stays available on the approval screen whether
+# or not the sandbox was used (unless the sandbox disabled the candidate).
 #
 # NOTHING installs except the Install tap (ModCreator.install is the only
 # write path, same as the old in-Forge flow). Closing the menu drops the
@@ -52,6 +57,13 @@ var _approval_panel: VBoxContainer
 var _approval_summary: Label
 var _approval_hooks: Label
 var _approval_code: TextEdit
+# v0.5.6: LLM-authored HOOK SCRIPT display — shown ONLY when the
+# candidate carries hook scripts ("code" hooks). Hidden for pure
+# table-effects mods.
+var _approval_script_label: Label
+var _approval_script_toggle: Button
+var _approval_script: TextEdit
+var _approval_script_collapsed := false
 var _asset_info: Label
 var _approval_status: Label
 var _install_button: Button
@@ -101,7 +113,7 @@ static func compose_prompt(categories: Array, mod_name: String, visual: String, 
 	lines.append("Visual description: " + visual.strip_edges())
 	lines.append("Logic: " + logic.strip_edges())
 	lines.append("Technical notes (follow exactly): represent any custom projectile or visual with api.spawn_voxel_box calls using voxel-sized cubes in the visual description's colours; trigger impact explosions with api.fire_effect(\"explosion\", position, radius, damage); build only through the ModAPI methods; never emit filesystem, network, OS, eval, or code-loading code.")
-	lines.append("INVENTED HOOKS (follow exactly): if the mod needs behaviour no existing block covers (a custom projectile, heal-on-kill, thorns, an on-hit explosion, ...), INVENT A HOOK for it — prefer existing blocks/hooks when they fit; invent a hook only when nothing existing covers the request. Block mod: add a top-level \"hooks\" array to the payload, next to the \"block\" object. Script mod: implement get_hooks() -> Array returning the hook dicts. Hook dict: {\"hook_id\": \"<lowercase [a-z0-9_}>\", \"hook_point\": \"on_fire\"|\"projectile_spawn\"|\"on_hit\"|\"on_kill\"|\"on_damage_taken\", \"display_name\": \"<name>\", \"description\": \"<one line>\", ...}. A fire-point hook (on_fire / projectile_spawn) may carry \"projectile\": {\"visual\": \"<what it looks like>\", \"shape\": \"beam\"|\"sphere\"|\"cube\"|\"blob\"|\"bullet\", \"speed\": 1-200, \"damage\": 0-500 (-1 = use the weapon's damage), \"range\": 1-500, \"size\": 0.05-5, \"gravity\": -50-50, \"pierce\": true|false, \"explodes_on_impact\": true|false, \"explosion_radius\": 0-20, \"explosion_damage\": 0-500}. Any hook may carry \"effects\": [{\"kind\": \"heal\", \"amount\": 1-500} | {\"kind\": \"explosion\", \"radius\": 0.5-20, \"damage\": 0-500} | {\"kind\": \"smoke\", \"duration_sec\": 1-120} | {\"kind\": \"announce\", \"title\": \"...\", \"subtitle\": \"...\"} | {\"kind\": \"damage_mult\", \"value\": 0-5} | {\"kind\": \"slow\", \"factor\": 0.05-1.0, \"duration_sec\": 0.5-30} | {\"kind\": \"freeze\", \"duration_sec\": 0.5-10} | {\"kind\": \"burn\", \"damage_per_sec\": 1-500, \"duration_sec\": 0.5-30} | {\"kind\": \"knockback\", \"force\": 1-30}]. STATUS EFFECTS (slow/freeze/burn/knockback) need a target: put them on on_hit / on_kill (hit target) or on_damage_taken (player); NEVER on a fire point. slow's factor is the speed multiplier (0.5 = half speed). A slowing bubble is an on_hit hook with effects [{\"kind\": \"slow\", \"factor\": 0.5, \"duration_sec\": 3.0}] — never express slowing as smoke or announce. A hook may instead carry \"code\": GDScript source starting with `extends ModHook` and implementing run(api, ctx) with ONLY ModAPI methods — data hooks are preferred. Never put filesystem, network, OS, eval, or code-loading code in a hook.")
+	lines.append("HOOKS — PREFER THE EFFECT-KINDS TABLE (follow exactly): if the mod needs behaviour no existing block covers (a custom projectile, heal-on-kill, thorns, an on-hit explosion, ...), add a HOOK for it — prefer the table below whenever it covers the request; write a hook SCRIPT only when nothing in the table covers it. Block mod: add a top-level \"hooks\" array to the payload, next to the \"block\" object. Script mod: implement get_hooks() -> Array returning the hook dicts. Hook dict: {\"hook_id\": \"<lowercase [a-z0-9_]>\", \"hook_point\": \"on_fire\"|\"projectile_spawn\"|\"on_hit\"|\"on_kill\"|\"on_damage_taken\", \"display_name\": \"<name>\", \"description\": \"<one line>\", ...}. A fire-point hook (on_fire / projectile_spawn) may carry \"projectile\": {\"visual\": \"<what it looks like>\", \"shape\": \"beam\"|\"sphere\"|\"cube\"|\"blob\"|\"bullet\", \"speed\": 1-200, \"damage\": 0-500 (-1 = use the weapon's damage), \"range\": 1-500, \"size\": 0.05-5, \"gravity\": -50-50, \"pierce\": true|false, \"explodes_on_impact\": true|false, \"explosion_radius\": 0-20, \"explosion_damage\": 0-500}. Any hook may carry \"effects\": [{\"kind\": \"heal\", \"amount\": 1-500} | {\"kind\": \"explosion\", \"radius\": 0.5-20, \"damage\": 0-500} | {\"kind\": \"smoke\", \"duration_sec\": 1-120} | {\"kind\": \"announce\", \"title\": \"...\", \"subtitle\": \"...\"} | {\"kind\": \"damage_mult\", \"value\": 0-5} | {\"kind\": \"slow\", \"factor\": 0.05-1.0, \"duration_sec\": 0.5-30} | {\"kind\": \"freeze\", \"duration_sec\": 0.5-10} | {\"kind\": \"burn\", \"damage_per_sec\": 1-500, \"duration_sec\": 0.5-30} | {\"kind\": \"knockback\", \"force\": 1-30}]. STATUS EFFECTS (slow/freeze/burn/knockback) need a target: put them on on_hit / on_kill (hit target) or on_damage_taken (player); NEVER on a fire point. slow's factor is the speed multiplier (0.5 = half speed). A slowing bubble is an on_hit hook with effects [{\"kind\": \"slow\", \"factor\": 0.5, \"duration_sec\": 3.0}] — never express slowing as smoke or announce. HOOK SCRIPT (only when the table cannot express the behaviour, e.g. pulling the hit target toward the player): the hook dict carries \"code\": GDScript source starting with `extends ModHook` and implementing run(api: ModAPI, ctx: Dictionary) -> Dictionary with ONLY allowlisted calls (api.<ModAPI method>, ctx.get/has/..., pure value methods; NEVER node properties like .global_position/.position/.hp, NEVER api properties like api.last_spawned), bounded for loops (range <= 1000), no while/recursion/engine callbacks. A hook with \"code\" runs ONLY its code — \"effects\" on the same hook are ignored. Never put filesystem, network, OS, eval, or code-loading code in a hook.")
 	return "\n".join(lines)
 
 
@@ -326,6 +338,33 @@ func _build_create_tab() -> void:
 	_approval_code.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
 	_approval_code.custom_minimum_size = Vector2(0, 240)
 	_approval_panel.add_child(_approval_code)
+	# v0.5.6: LLM-authored HOOK SCRIPT display — shown ONLY when the
+	# candidate carries hook scripts ("code" hooks). The label names
+	# the script as LLM-authored (vs table effects, which are data);
+	# the scrollable TextEdit shows the full DECODED source on demand
+	# (toggle collapses/expands it). Pure table-effects mods never
+	# see this section.
+	_approval_script_label = Label.new()
+	_approval_script_label.name = "ApprovalScriptLabel"
+	_approval_script_label.text = "LLM-AUTHORED HOOK SCRIPT — this mod contains a hook script written by the LLM (not a table effect). Read the full source below before installing."
+	_approval_script_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	StencilStyle.apply_body(_approval_script_label, 18, StencilStyle.RED, 2)
+	_approval_script_label.visible = false
+	_approval_panel.add_child(_approval_script_label)
+	_approval_script_toggle = Button.new()
+	_approval_script_toggle.name = "ApprovalScriptToggle"
+	_approval_script_toggle.text = "HIDE HOOK SCRIPT"
+	StencilStyle.style_button(_approval_script_toggle)
+	_approval_script_toggle.pressed.connect(_on_script_toggle_pressed)
+	_approval_script_toggle.visible = false
+	_approval_panel.add_child(_approval_script_toggle)
+	_approval_script = TextEdit.new()
+	_approval_script.name = "ApprovalScript"
+	_approval_script.editable = false
+	_approval_script.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	_approval_script.custom_minimum_size = Vector2(0, 240)
+	_approval_script.visible = false
+	_approval_panel.add_child(_approval_script)
 	_asset_info = Label.new()
 	_asset_info.name = "AssetInfo"
 	_asset_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -659,10 +698,37 @@ func _show_approval(candidate: Dictionary) -> void:
 	_approval_code.text = str(candidate.get("payload", ""))
 	_approval_code.scroll_vertical = 0
 	_approval_code.scroll_horizontal = 0
+	# v0.5.6: hook scripts (code hooks) get their own labelled,
+	# readable section — decoded source, not JSON-escaped. Pure
+	# table-effects mods show nothing here.
+	var script_parts: Array[String] = []
+	for h in hooks:
+		if not (h is Dictionary):
+			continue
+		var hd := h as Dictionary
+		var code := str(hd.get("code", ""))
+		if code.strip_edges().is_empty():
+			continue
+		script_parts.append("--- Hook script: %s (%s) — %s ---\n%s" % [
+			str(hd.get("hook_id", "?")), str(hd.get("hook_point", "?")),
+			str(hd.get("display_name", "")), code])
+	var has_script := not script_parts.is_empty()
+	_approval_script_label.visible = has_script
+	_approval_script_toggle.visible = has_script
+	_approval_script_collapsed = false
+	_approval_script_toggle.text = "HIDE HOOK SCRIPT"
+	if has_script:
+		_approval_script.text = "\n\n".join(script_parts)
+		_approval_script.scroll_vertical = 0
+		_approval_script.scroll_horizontal = 0
+	_approval_script.visible = has_script
 	_asset_info.text = "Voxel asset: " + VoxelAssetGenerator.summarize(_pending_asset) + " — visual: " + _visual_input.text.strip_edges().left(120)
 	if bool(_pending_asset.get("cache_hit", false)):
 		_asset_info.text += " (reused from an earlier generation with the same description)"
 	_approval_status.text = ""
+	# A fresh candidate re-enables Install (the sandbox may have
+	# disabled it for a previous candidate).
+	_install_button.disabled = false
 	_approval_panel.visible = true
 
 
@@ -676,6 +742,13 @@ func _creator_instance() -> ModCreator:
 
 
 # --- Approval actions -------------------------------------------------------------
+
+## v0.5.6: collapses/expands the hook-script source view.
+func _on_script_toggle_pressed() -> void:
+	_approval_script_collapsed = not _approval_script_collapsed
+	_approval_script.visible = not _approval_script_collapsed
+	_approval_script_toggle.text = "SHOW HOOK SCRIPT" if _approval_script_collapsed else "HIDE HOOK SCRIPT"
+
 
 func _on_install_pressed() -> void:
 	if _pending_candidate.is_empty():
@@ -697,6 +770,7 @@ func _on_discard_pressed() -> void:
 	_pending_asset = {}
 	_pending_projectile_asset = {}
 	_approval_panel.visible = false
+	_install_button.disabled = false
 	_status.text = "Discarded — nothing installed."
 
 
@@ -727,6 +801,15 @@ func _on_sandbox_pressed() -> void:
 
 func _on_sandbox_closed(result: Dictionary) -> void:
 	_last_sandbox_result = result
+	# v0.5.6: a hook script that failed in the sandbox disables the
+	# candidate visibly — Install goes dead with the reason. Discard
+	# or Regenerate to move on; a fresh candidate re-enables Install.
+	if bool(result.get("candidate_disabled", false)):
+		var herr := str(result.get("hook_error", "hook script failed in the sandbox"))
+		_status.text = "Sandbox: candidate DISABLED — " + herr
+		_approval_status.text = "Sandbox disabled this candidate: " + herr + " — discard it or regenerate."
+		_install_button.disabled = true
+		return
 	if bool(result.get("hit", false)) and bool(result.get("explosion_fired", false)):
 		_status.text = "Sandbox: HIT — projectile exploded on impact. Install still available."
 	elif bool(result.get("hit", false)):
