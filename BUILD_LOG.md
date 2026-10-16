@@ -1,5 +1,43 @@
 # FORGEFALL — Build Log
 
+## v0.5.4 — Chat in Create-a-Mod (2026-10-15)
+
+### Shipped
+- **CHAT tab in Create-a-Mod:** the creator menu now has four tabs — CREATE / CHAT / MODS / IMPORT-EXPORT. The CHAT tab has a message list with user/model/error bubbles, an input + SEND, suggested chips including "What can you do?", CLEAR / NEW CHAT, and CREATE FROM CHAT.
+- **ONE SHARED SESSION:** the Chat tab and the Create tab share one ChatSession (`scripts/mods/chat_session.gd`, persisted to `user://chat_session.json`, capped at the last 20 messages, trimming on every request). Chat-then-create sends the history as context; CREATE FROM CHAT goes to the existing approval screen.
+- **Capability answers grounded:** the chat system prompt carries the true capability list (ModAPI hooks including custom projectiles, categories, invented hooks, Forge MAKE session-only vs Creator permanent, sandbox test, approval flow). The greeting lists capabilities + example prompts.
+- **Same DeepSeek key** (`forge_config.json`). No key → visible error. LLM failure → visible error. No silent offline fallback. Chat never installs anything — mods only via generation → validation → approval → Install.
+
+### Version bump (publish mechanics only — no game-source changes in this entry)
+- `export_presets.cfg`: `version/code=30`, `version/name="0.5.4"`; Windows preset export_path → `windows_staging/forgefall-v0.5.4-windows/`.
+- `scripts/core/tuning.gd`: `FALLBACK_VERSION_CODE := 30`.
+- `tools/verify_updater_pc.gd`: manifest expectations 0.5.3/code 29 → 0.5.4/code 30.
+
+### Verification (all headless, 2026-10-15 — prior workers, GREEN before publish)
+- `verify_forge_batch`: **143/143 ALL PASS**.
+- `verify_creator_fix`: **48/48 ALL PASS**.
+- `verify_creator_chat`: **43 passed + 2 skipped**.
+- Earlier suites still green: `verify_invented_hooks` 85/85, `verify_forge_mods_layout` 29/29, `verify_v08_create` 74/74, `verify_menu_layout` 1060/0, `verify_fixes` ALL PASS, 900-frame smoke clean.
+- The two stale old-suite assertions (3-tab layout, Mods tab index) were already fixed by the coordinator.
+
+### Builds (all from the same current source)
+- **Android** `updates/forgefall-v0.5.4-debug.apk` (30,951,665 bytes, SHA-256 `4450dfeb89fe57eebeb4bd00f9f04fa448c3e2f5536d43c9585b1524dd906093`) + `.idsig`. Godot 4.7.2 headless `--export-debug "Android"`, unchanged custom template (Godot signs + emits the .idsig).
+- **Linux** `linux_staging/forgefall-v0.5.4-linux.zip` (30,040,069 bytes, SHA-256 `e5c96d4f6d9119352229fe5b684b6e88bd86d552a28eb601f826c49d83f83cca`): binary + forgefall.pck + forgefall.sh + README-LINUX.txt (0.5.3 → 0.5.4, + CHAT IN CREATE-A-MOD section).
+- **Windows** `windows_staging/forgefall-v0.5.4-windows.zip` (36,967,342 bytes, SHA-256 `f73d4e383fb70107468b9da542c6bc995cde42a5f11bcb00fd696e431bb06a2d`): forgefall.exe + forgefall.console.exe + forgefall.pck + README-WINDOWS.txt (0.5.3 → 0.5.4, + CHAT IN CREATE-A-MOD section).
+- Shipped-artifact probe (Godot `--main-pack` against the built Linux PCK): `verify_creator_chat` **43 passed + 2 skipped** — the CHAT tab, shared session, and chat-then-create flow are IN the built artifact, not just in source.
+- Linux binary headless `--quit-after 120`, exit 0 (known TLS-handshake Updater chatter only).
+- Android APK: apksigner OK (v2+v3 true), aapt `com.sparky.forgefall` versionCode 30 / 0.5.4, manifest UpdateStatusReceiver + ForgeUpdater + ForgeSpeech meta-data + REQUEST_INSTALL_PACKAGES + RECORD_AUDIO + INTERNET, classes2.dex = stock XRMode (1960 B), classes14.dex = ForgeUpdaterPlugin + UpdateStatusReceiver, classes15.dex = ForgeSpeechPlugin.
+
+### Publish
+- **GitHub Release** [v0.5.4](https://github.com/vatherty/FORGEFALL/releases/tag/v0.5.4) in `vatherty/FORGEFALL` — all 3 artifacts attached, all `uploaded`, sizes match local builds.
+- **Pages** (`vatherty/Forgefall-updates`): binaries uploaded first, then `version.json` + `version_pc.json` (0.5.4 / code 30) + `index.html` (0.5.4 links). Changelog: "Chat in Create-a-Mod: new CHAT tab (CREATE / CHAT / MODS / IMPORT-EXPORT) with message bubbles, suggested prompts, CLEAR / NEW CHAT, and CREATE FROM CHAT. Chat and Create share one session (last 20 messages, saved across restarts). Answers grounded in the true capability list. Same DeepSeek key; no key or LLM failure shows a visible error — no silent fallback. Chat never installs anything." `.nojekyll` untouched (still present, empty). Old v0.5.3 files stay as unlisted archive.
+- **Pages build `errored` + recovered (known transient pattern):** right after the uploads, Pages status was `errored`. `pages-enable` re-apply (409 = already enabled) + ~5 min total wait flipped status to `built` and the live site to code 30.
+- Live verified: manifests 200 (0.5.4/code 30, Pages URLs, CHAT changelog); all three artifacts 206; v0.5.3 trio still 206; index.html 200 with the three v0.5.4 links; downloaded APK sha256 matches the local build hash.
+- Local `updates/` mirror synced (new index.html + version.json + version_pc.json + APK).
+
+### Deferred / follow-ups (not in this release's scope)
+- None surfaced during publish. Source push is a separate step (not done by this worker).
+
 ## v0.5.3 — Forge MAKE + invented hooks (2026-10-15)
 
 ### Shipped
@@ -2544,3 +2582,14 @@ fixes during this session are documented in the suite's own comments).
 - Changed set: creator fix (mod_creator_menu.gd, sandbox_test_room.gd, voxel_asset_generator.gd, verify_creator_fix.gd), Forge Mods-tab mirror fix (forge_menu.gd, verify_forge_mods_layout.gd), tuning.gd, verify_updater_pc.gd, export_presets.cfg, BUILD_LOG.md.
 - Exclusions (never pushed): builds/, updates/, .godot/, staging dirs, *.apk/*.zip/*.pck/*.keystore/*.import, top-level android/ template, any credentials (export_presets.cfg keystore passwords stay blanked/redacted placeholders).
 - Tag v0.5.2 points at the post-fix source.
+
+## v0.5.4 chat — Worker A: Chat UI + session (ChatSession / ChatPanel / creator-menu CHAT tab)
+- NEW scripts/mods/chat_session.gd — the ONE conversation object, owned by the creator menu and shared by the CREATE + CHAT tabs. Ordered {role: "user"|"assistant", text} list, persisted to user://chat_session.json on every change (reopening keeps the chat), CLEAR deletes the file, cap = last 20 enforced on add + load, get_messages()/get_conversation()/get_history() return deep copies for the model. No network here. Error bubbles are display-only in the panel and are NEVER stored, so errors can't pollute model context or the file.
+- NEW scripts/ui/chat_panel.gd — CHAT tab UI: scrollable message list (full-width wrapping bubbles: YOU = orange edge, FORGE = gunmetal, ERROR = red; roles told apart by edge colour + role label, not left/right, so text stays readable at phone + Deck 1280x800), input + SEND (Enter sends), suggested-prompt chips that INSERT text (never send) incl. REQUIRED "What can you do?", CLEAR / NEW CHAT, CREATE FROM CHAT. Empty chat shows a display-only greeting bubble from ModCreator.get_greeting() (Worker B's opening message) — never persisted, never sent to the model. SEND -> ModCreator.chat(session.get_messages()); CREATE FROM CHAT -> ModCreator.generate_with_context(session.get_messages(), session.last_user_request()) -> existing approval screen. Calls go through has_method/has_signal-guarded Object.call(), so the panel compiles/runs even before B's methods land (missing backend -> visible red error bubble, never a silent reply, never a crash).
+- scripts/ui/mod_creator_menu.gd — tabs now CREATE / CHAT / MODS / IMPORT-EXPORT (MODS 1->2, IMPORT/EXPORT 2->3, tab_changed refresh 1->2). _build_chat_tab() creates ONE ChatSession + ChatPanel wired to the same ModCreator instance the CREATE tab uses (get_chat_session()/get_chat_panel() accessors). CREATE FROM CHAT marks a pending chat generation: success switches to the CREATE tab's approval screen; failure shows a red bubble in the chat and stays on CHAT. REGENERATE retries a chat-driven generation WITH its conversation context; a form GENERATE clears the chat-pending state and owns regenerate from then on. Create tab generation logic / approval flow / Install path untouched — chat never installs anything.
+- VERIFY (headless scratch check, /tmp/check_chat_a.gd — NOT in repo; Worker C owns the formal suite): 51/51 PASS against B's REAL landed backend with mock_chat_reply/mock_generation seams (no network): session cap/persistence/clear/copy/validation; chips insert text; send -> user + assistant bubbles persisted; create signal carries conversation + last user request; clear leaves only the greeting bubble + deletes the file; menu tabs correct; chat + create share the SAME session object; chat -> create -> approval visible on CREATE tab; regenerate retries with context; generation error -> chat error bubble + stays on CHAT; empty form still refuses. check_scripts: this worker's 3 files compile (5 failures are pre-existing: 4 android instrumented BaseTest files + Worker C's in-flight tools/verify_creator_chat.gd, untouched).
+- HARNESS NOTES for Worker C: (1) --script entry scripts compile before autoloads (Sfx) register — reference the ModCreator chain ONLY via runtime load(), never static class names, or compilation cascades (see verify_creator_redesign pattern). (2) MainLoop._process returning true QUITS — return false. (3) Worker B's side is already landed (chat/generate_with_context/chat_reply/chat_error/mock_chat_reply/get_greeting) — the A+B integration above was verified against it live.
+- DEFERRED: live DeepSeek chat/generation on device (Colin is QA); on-device readability at phone + Deck sizes (headless only); no greeting-toggle flag — if the formal suite wants zero bubbles on an empty chat, the greeting is one block at the tail of ChatPanel._rebuild_messages.
+
+## v0.5.4 source sync
+Synced local source tree to vatherty/FORGEFALL main via contents API (diff by git blob SHA). No secrets/binaries.
