@@ -433,6 +433,8 @@ func _update_horizontal(delta: float, wish: Vector3) -> void:
 		speed = SPRINT_SPEED
 	elif _crouching:
 		speed = CROUCH_SPEED
+	# v0.5.5: mod status effects (slow / freeze) on the player.
+	speed *= ModStatusEffects.speed_multiplier(self)
 	if not is_on_floor() or _just_jumped:
 		# AIRBORNE (momentum fix): accelerate ALONG the wish direction,
 		# never drag toward a lower speed. No input = no change, so a
