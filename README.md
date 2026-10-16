@@ -4,7 +4,7 @@ Voxel-styled tactical FPS for Android, Linux, and Windows, built in **Godot 4.7.
 
 Full design doc: [`DESIGN.md`](DESIGN.md). Living build log: [`BUILD_LOG.md`](BUILD_LOG.md). License: **MIT** (see [`LICENSE`](LICENSE)) — Colin's default; use it, fork it, mod it.
 
-**Version note:** the current release is **v0.5.0** with **version code 26**. The display name (0.5.0) and the updater's version code (26) are different numbers on purpose: the in-game updater compares the code, so the code never goes backwards. Do not "reset" the code to match the display name — that would brick updates for existing installs.
+**Version note:** the current release is **v0.5.4** with **version code 30**. The display name (0.5.4) and the updater's version code (30) are different numbers on purpose: the in-game updater compares the code, so the code never goes backwards. Do not "reset" the code to match the display name — that would brick updates for existing installs.
 
 ---
 
@@ -14,9 +14,9 @@ Prebuilt builds live on the updates site: **https://vatherty.github.io/Forgefall
 
 | Platform | File | Install |
 |----------|------|---------|
-| Android | `forgefall-v0.5.0-debug.apk` | Download on the phone, open it, allow install from that source once, confirm the single native system "Install update?" dialog. |
-| Windows | `forgefall-v0.5.0-windows.zip` | Unzip anywhere, run `forgefall.exe` (`forgefall.console.exe` shows a console for logs). |
-| Linux | `forgefall-v0.5.0-linux.zip` | Unzip, run `./forgefall.sh` (or `chmod +x forgefall` and run the binary). |
+| Android | `forgefall-v0.5.4-debug.apk` | Download on the phone, open it, allow install from that source once, confirm the single native system "Install update?" dialog. |
+| Windows | `forgefall-v0.5.4-windows.zip` | Unzip anywhere, run `forgefall.exe` (`forgefall.console.exe` shows a console for logs). |
+| Linux | `forgefall-v0.5.4-linux.zip` | Unzip, run `./forgefall.sh` (or `chmod +x forgefall` and run the binary). |
 
 After the first install, the game checks for updates on launch and offers Download → Install from inside the game (Android: one native system dialog; PC: a helper script swaps the files and relaunches). No account, no launcher.
 
@@ -44,6 +44,39 @@ Full input map lives in `project.godot` (`[input]`, deadzone 0.2).
 | Weapon slots 1 / 2 / 3 | 1 / 2 / 3 | — | D-pad Up / Right / Down |
 
 Movement kit: sprint, slide, wall-run, grapple with pendulum swing, wrist portals (momentum-conserving teleport), physics gun. Forge console: type a prompt ("build a tower near me", "LMG with sniper bullets") and the Forge builds it from validated blocks — or hold MIC and say it. Optional DeepSeek key is entered **in-game** (Forge → key entry) and stored only in the device's `user://forge_config.json`; it is never in this repo.
+
+## The AI Forge (LLM) — the biggest feature
+
+FORGEFALL has a real LLM inside the game — not a scripted command parser. It runs on **DeepSeek** (`deepseek-flash`, thinking disabled, stable-prefix prompt caching), and it powers three ways of making things: the in-match **Forge console**, **Forge MAKE**, and **Create-a-Mod**. The Forge menu is where you build during a match; Create-a-Mod is where you make permanent things to keep.
+
+### Forge console (in-match, typed or voice)
+
+Press **T** / **/** (desktop), the **FORGE** button (touch), or hold **MIC** and talk. Type or say what you want — "build a tower near me", "LMG with sniper bullets", "give me a burst rifle" — and the Forge builds it from validated blocks. The LLM composes known blocks (a sniper-barreled LMG gets sniper damage, a smaller mag, and a recomputed cost — the game always recomputes cost itself, never trusts the model's numbers), and the result goes through cost preview → confirm. Ghost preview shows a translucent structure before you commit; placed structures can be moved, rotated, repaired, and deleted, and enemies can damage and destroy them. Forge builds sync to every player in LAN multiplayer. Without a key, the Forge falls back to an offline keyword parser (it knows the base weapons, the new Trident/Judge aliases, and installed mod names) — but the LLM path is the real one.
+
+### Forge MAKE (one box, this match only)
+
+The Forge menu also has a **MAKE** section: one prompt box, on the fly. Type an idea — "a wall that explodes when enemies touch it" is the canonical example — and it creates the thing **now, for this match**. MAKE is session-scoped: zero file writes, nothing saved, it dies with the match. Block-shaped requests (walls, weapons, turrets, pickups, structures with stats) build in-session; script-shaped requests (custom behaviors) are refused in MAKE with a message pointing to Create-a-Mod, where the same idea works as a permanent mod.
+
+### Create-a-Mod (permanent mods you keep)
+
+From the main menu: **CREATE A MOD** → a dedicated menu with **Create / Chat / Mods / Import-Export** tabs (Import-Export is a placeholder for later). Create-a-Mod is where you make permanent weapons, blocks, enemies, and effects that stay in your game across matches.
+
+- **Create tab — structured form, not one text box.** Multi-choice categories (Weapon, Block/Structure, Enemy, Effect, Gameplay — a mod can be several at once), then **Name**, **Visual description**, and **Logic**. Example: an LMG that shoots watermelons, and the watermelons explode on impact.
+- **Voxel assets, generated + cached.** From the visual description, the game procedurally generates the voxel model (a watermelon: striped green rind, red interior, seeds) and uses it. If an asset for that description already exists, it is reused — the cache is keyed by a hash of the normalized description, stored in `user://mods/assets/`. No downloads.
+- **The LLM may invent hooks.** Create-a-Mod is *not* held to the building-blocks-only standard. If a request needs a hook or script that does not exist in the mod API, the LLM tries to create it — that is what Create-a-Mod is for. The Forge build path stays blocks-only; only the creator path may invent.
+- **Custom projectiles fire in the real game.** The mod API has a projectile/fire-mode hook (`on_fire` / `projectile_spawn`, `on_hit`, `on_kill`, `on_damage_taken`): a generated weapon spawns a real projectile carrying the mod's voxel visual, speed, damage, and on-impact behavior. A Long Laser Pistol fires a beam; a watermelon LMG fires exploding watermelons. The sandbox simulates behavior the game can express, and the game expresses it.
+- **Sandbox test before install.** Try a generated mod in a test room with dummies (and the candidate's projectile) before it touches your real game.
+- **Approval before anything installs.** Every generated mod goes through generation → strict validation → an approval screen (plain-language summary + full payload, with invented hooks listed explicitly — "this mod adds a new hook: X") → **Install / Discard / Regenerate**. Nothing installs silently.
+
+### Chat (talk to the creator)
+
+The **Chat** tab sits next to Create, and it is the **same session** as the one you create a mod in. Ask it what it can do, brainstorm a weapon, argue about stats — then hit **Create** or **Create from Chat** and the model has the whole conversation as context when it generates. Its system prompt carries the true capability list (hooks, custom projectiles, invented hooks, Forge MAKE vs. Creator, sandbox, approval), so "What can you do?" gets a grounded answer, not a hallucinated one. History persists across restarts (last 20 messages, trimmed per request to keep costs bounded). Chat itself never installs anything.
+
+### Safety model
+
+- Generated code goes through a **strict validator** (schema + forbidden-API scan: no file/network/eval/process access, no dynamic code loading) and **human approval** before Install. A mod that errors at load or run disables itself visibly — it never crashes the game.
+- **No silent fallback.** If the LLM call fails, or no key is configured, you get a visible error — never a quietly substituted template mod. (The Forge console's offline keyword parser is the one explicit exception, and it is labeled as offline.)
+- **Your key stays on your device.** Enter it in-game (Forge → key entry); it is stored only in the device's `user://forge_config.json` and is never in this repo, never in a screenshot-safe place, never transmitted anywhere except the DeepSeek API call itself.
 
 ## Build / run from source
 
