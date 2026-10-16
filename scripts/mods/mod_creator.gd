@@ -42,12 +42,26 @@ class_name ModCreator
 
 signal generation_ready(candidate: Dictionary)
 
+## Chat (v0.5.4 chat, Worker B): plain-text assistant reply.
+signal chat_reply(text: String)
+## Chat failure. NEVER a silent template/offline reply — the UI shows
+## this message. No key -> NO_KEY_CHAT_ERROR below.
+signal chat_error(message: String)
+
 ## Test seam (Worker C): see header. Raw generation shape, NOT a
 ## candidate — generate() parses it through _candidate_for() exactly
 ## like a real generation result.
 static var mock_generation: Dictionary = {}
 
+## Test seam for chat(): when non-empty, chat() emits chat_reply with
+## this text instead of calling the network. Never set in production.
+static var mock_chat_reply: String = ""
+
 const NO_KEY_ERROR := "DeepSeek key required — add it in the Forge menu"
+## User-facing no-key message for chat (v0.5.4 contract: names where to
+## add the key). Differs from NO_KEY_ERROR on purpose — chat_error is
+## shown verbatim in the chat UI.
+const NO_KEY_CHAT_ERROR := "No DeepSeek key — add one in Options/Forge settings"
 const MAX_SUMMARY_CHARS := 300
 const _MAX_ID_ATTEMPTS := 100
 
@@ -74,6 +88,12 @@ INVENTED HOOKS — when the mod needs behaviour no existing block covers (a cust
 var _llm: ForgeLLM = null
 var _generating := false
 var _pending_candidates: Array = []
+# Chat state (v0.5.4 chat): separate from generation — chat and
+# generation never share in-flight state, so a chat reply can never
+# disturb an in-flight generation and vice versa.
+var _chatting := false
+var _chat_http_outstanding := false
+var _pending_chat: Array = []
 
 
 ## Starts an async generation for `idea`. Exactly one candidate is
@@ -103,6 +123,65 @@ func generate(idea: String) -> void:
 	_generating = true
 	_ensure_llm()
 	_llm.request_generation(clean + "\n\n" + HOOK_PROMPT_ADDENDUM)
+
+
+## Chat (v0.5.4 chat, Worker B). Sends `messages` (Array of
+## {role, text}) to DeepSeek with ChatPrompt.CHAT_SYSTEM_PROMPT and
+## emits exactly one chat_reply(text) on success or chat_error(message)
+## on failure. No key -> chat_error(NO_KEY_CHAT_ERROR). LLM/network
+## failure -> chat_error. NEVER a silent template/offline reply.
+## History is trimmed by ChatPrompt.trim_conversation() on every call,
+## so costs stay bounded. One chat at a time — a concurrent call gets
+## a chat_error instead of disturbing the in-flight request. Mock
+## (mock_chat_reply non-empty) takes precedence over the network AND
+## over the empty-messages check, so tests are fully deterministic.
+func chat(messages: Array) -> void:
+	if _chatting:
+		_queue_chat_error("chat already in progress")
+		return
+	if not mock_chat_reply.is_empty():
+		_queue_chat_reply(mock_chat_reply)
+		return
+	var trimmed := ChatPrompt.trim_conversation(messages)
+	if trimmed.is_empty():
+		_queue_chat_error("Type a message first.")
+		return
+	if ForgeConfig.load_key().is_empty():
+		_queue_chat_error(NO_KEY_CHAT_ERROR)
+		return
+	if not is_inside_tree():
+		_queue_chat_error("ModCreator must be added to the scene tree before chatting (the network request needs the tree)")
+		return
+	_chatting = true
+	_request_chat_remote(trimmed, ForgeConfig.load_key())
+
+
+## Generation with chat context (v0.5.4 chat, Worker B). Used by BOTH
+## the Create tab and the Chat tab's CREATE FROM CHAT button.
+## Empty conversation -> calls generate(request) directly, so behavior
+## is IDENTICAL to the existing generate() path (Create tab keeps
+## working unchanged, byte for byte). Non-empty conversation -> the
+## trimmed history is embedded as context in the generation request
+## (ChatPrompt.build_generation_context), so previous discussion is
+## usable by the model. Outcome is the same as generate(): generation
+## -> validation (forbidden-API scan, invented hooks allowed per
+## v0.5.3) -> generation_ready(candidate) for the approval screen.
+## Generation never installs anything.
+func generate_with_context(conversation: Array, request: String) -> void:
+	var trimmed := ChatPrompt.trim_conversation(conversation)
+	if trimmed.is_empty():
+		generate(request)
+		return
+	if request.strip_edges().is_empty():
+		generate(request)
+		return
+	generate(ChatPrompt.build_generation_context(trimmed, request))
+
+
+## Opening message for the chat tab (v0.5.4 chat): what chat can do +
+## example prompts. The UI shows this when the chat tab first opens.
+func get_greeting() -> String:
+	return ChatPrompt.get_greeting()
 
 
 ## "" = candidate is installable, else an error string. A candidate
@@ -395,3 +474,107 @@ func _emit_candidate() -> void:
 	generation_ready.emit(cand)
 	if not _pending_candidates.is_empty():
 		call_deferred("_emit_candidate")
+
+
+# --- Chat plumbing (v0.5.4 chat) ---------------------------------------------
+# Own HTTPRequest path (ForgeLLM has no chat entry point and is NOT
+# modified): same call shape as ForgeLLM's generation path — model
+# deepseek-flash, thinking disabled, same timeout — but NO
+# response_format (chat replies are plain text, not JSON) and the
+# messages are [stable CHAT_SYSTEM_PROMPT, ...trimmed history].
+
+func _request_chat_remote(trimmed: Array, key: String) -> void:
+	var messages: Array = [{"role": "system", "content": ChatPrompt.CHAT_SYSTEM_PROMPT}]
+	for m in trimmed:
+		var d := m as Dictionary
+		messages.append({"role": str(d.get("role", "user")), "content": str(d.get("text", ""))})
+	var body := {
+		"model": ForgeLLM.MODEL,
+		"messages": messages,
+		"temperature": ChatPrompt.CHAT_TEMPERATURE,
+		"max_tokens": ChatPrompt.CHAT_MAX_TOKENS,
+		# Thinking mode is ON by default on deepseek-flash and bills
+		# reasoning tokens as output. Same call shape as the build /
+		# generation paths.
+		"thinking": {"type": "disabled"},
+	}
+	var http := HTTPRequest.new()
+	http.timeout = ForgeLLM.HTTP_TIMEOUT_SEC
+	add_child(http)
+	_chat_http_outstanding = true
+	http.request_completed.connect(_on_chat_http_completed.bind(http))
+	var headers := PackedStringArray([
+		"Content-Type: application/json",
+		"Authorization: Bearer " + key,
+	])
+	var err := http.request(ForgeLLM.API_URL, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
+	if err != OK:
+		push_warning("ModCreator: chat HTTPRequest failed to start (%s)." % error_string(err))
+		http.queue_free()
+		_chat_http_outstanding = false
+		_queue_chat_error("chat request failed to start")
+
+
+func _on_chat_http_completed(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+	var text := ""
+	if result == HTTPRequest.RESULT_SUCCESS and code == 200:
+		text = body.get_string_from_utf8()
+	http.queue_free()
+	_chat_http_outstanding = false
+	if result != HTTPRequest.RESULT_SUCCESS:
+		push_warning("ModCreator: chat request failed (result=%d, http=%d)." % [result, code])
+		_queue_chat_error("chat request failed — check your connection and try again")
+		return
+	if code != 200:
+		push_warning("ModCreator: chat returned HTTP %d." % code)
+		_queue_chat_error("chat failed (server returned %d) — try again" % code)
+		return
+	var reply := _extract_chat_reply(text)
+	if reply.is_empty():
+		push_warning("ModCreator: chat returned no usable reply.")
+		_queue_chat_error("chat returned an empty reply — try again")
+		return
+	_queue_chat_reply(reply)
+
+
+## Pulls the assistant's plain-text reply out of a chat-completions
+## response envelope. "" when there is no usable message content.
+static func _extract_chat_reply(text: String) -> String:
+	if text.strip_edges().is_empty():
+		return ""
+	var data: Variant = JSON.parse_string(text)
+	if not (data is Dictionary):
+		return ""
+	var choices: Array = (data as Dictionary).get("choices", [])
+	if choices.is_empty() or not (choices[0] is Dictionary):
+		return ""
+	var msg: Dictionary = (choices[0] as Dictionary).get("message", {})
+	return str(msg.get("content", "")).strip_edges()
+
+
+func _queue_chat_reply(text: String) -> void:
+	_pending_chat.append({"kind": "reply", "text": text})
+	call_deferred("_emit_chat")
+
+
+func _queue_chat_error(message: String) -> void:
+	_pending_chat.append({"kind": "error", "text": message})
+	call_deferred("_emit_chat")
+
+
+func _emit_chat() -> void:
+	if _pending_chat.is_empty():
+		return
+	var item: Dictionary = _pending_chat.pop_front()
+	# Clear _chatting BEFORE emitting the final item, so a signal
+	# handler may immediately start the next chat. While HTTP is still
+	# outstanding (a rejected concurrent call's error), the flag stays
+	# set so no second request sneaks in mid-flight.
+	if _pending_chat.is_empty() and not _chat_http_outstanding:
+		_chatting = false
+	if str(item.get("kind", "")) == "reply":
+		chat_reply.emit(str(item.get("text", "")))
+	else:
+		chat_error.emit(str(item.get("text", "")))
+	if not _pending_chat.is_empty():
+		call_deferred("_emit_chat")
