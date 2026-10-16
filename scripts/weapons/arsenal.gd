@@ -481,6 +481,12 @@ static func _mod_stats(weapon_id: String) -> Dictionary:
 	if info.has("mag_mult"):
 		var mag_size := maxi(1, int(round(float(stats.get("mag_size", 1)) * float(info.get("mag_mult", 1.0)))))
 		stats["mag_size"] = mag_size
+	# v0.5.11 BURST: fire_mode + burst_size ride in stats so
+	# WeaponBase.setup() picks them up (same as the Forge grant path).
+	if info.has("fire_mode"):
+		stats["fire_mode"] = WeaponBase.fire_mode_from_string(str(info.get("fire_mode", "")))
+	if info.has("burst_size"):
+		stats["burst_size"] = maxi(2, int(info.get("burst_size", 3)))
 	var hooks: Array = (rec.get("hooks", []) as Array).duplicate(true) if rec.get("hooks") is Array else []
 	# Belt-and-braces: scan stamps _mod_id, but stamp any unstamped
 	# hook so the registry's live-record gate applies to it.
