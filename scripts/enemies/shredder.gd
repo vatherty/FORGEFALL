@@ -31,6 +31,8 @@ var _lost_t := 0.0
 func _configure() -> void:
 	type_id = "shredder"
 	display_name = "Shredder"
+	creature_type = "humanoid"
+	ability_scores = DnDTypes.ability_scores(13, 17, 11, 8, 10, 8)
 	base_hp = 50.0       # glass: one clean burst kills it
 	base_speed = 8.2     # fastest enemy — but player sprint (11.0) still wins
 	base_damage = MELEE_DAMAGE
