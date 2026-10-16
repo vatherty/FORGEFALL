@@ -198,6 +198,14 @@ func heal_player(amount: float) -> float:
 	return get_player_health()
 
 
+## Applies a status effect (slow / freeze / burn / knockback) to a
+## target node — see ModStatusEffects. `origin` is the hit point
+## (knockback direction is away from it). No-op (false) for a null /
+## freed / out-of-tree target or an unknown kind.
+func apply_status_effect(target: Node, kind: String, params: Dictionary, origin: Vector3) -> bool:
+	return ModStatusEffects.apply_status(target, kind, params, origin)
+
+
 ## Spawns a flying mod projectile (see ModProjectile) at `origin`,
 ## travelling along `direction`. `spec` is a ModHook projectile dict
 ## (visual / speed / damage / explodes_on_impact / ...); `hooks` are
