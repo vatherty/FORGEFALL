@@ -61,8 +61,24 @@
 #     > 1 (vulnerability) is ignored by that poll (it would re-trigger
 #     on its own extra damage); vulnerability needs the player-side
 #     pre-damage call.
+#   "take_damage" (v0.5.9) — a character WOULD take damage, BEFORE it
+#     applies. The interception point in Player.take_damage /
+#     EnemyBase.take_damage: hooks run first (they may apply
+#     shield/vulnerable/thorns/petrified to the target via effects, or
+#     return damage_mult), then ModStatusEffects.resolve_incoming_damage
+#     applies the target's active defensive states (shield absorbs,
+#     vulnerable multiplies, petrified nullifies, thorns reflects), and
+#     only the final damage lands. A damage_mult effect/return at this
+#     point multiplies THIS hit's damage before it lands (no retroactive
+#     heal hack). The target is ctx["target"]; the attacker is
+#     ctx["attacker"] (may be null when the damage source has no handle,
+#     e.g. an explosion — thorns then reflects to the resolved attacker,
+#     see ModStatusEffects). Nested dispatch is guarded: a take_damage
+#     hook that itself deals damage (e.g. a typed_damage effect) does
+#     NOT re-enter hook dispatch for the nested hit (the nested hit
+#     still passes through the defensive states).
 # Aliases: "on_projectile_spawn" -> "projectile_spawn",
-# "on_damage" -> "on_damage_taken".
+# "on_damage" -> "on_damage_taken", "on_take_damage" -> "take_damage".
 #
 # SCOPING: hooks belong to their mod's weapon. They attach to the weapon
 # when the mod weapon is granted (ModHookRegistry.try_attach_pending /
@@ -102,6 +118,21 @@
 # Status kinds need a target: on_hit / on_kill (the hit target) or
 # on_damage_taken (the player). They are REJECTED on fire points
 # (no target exists yet).
+# v0.5.9 — DAMAGE-INTERCEPTION kinds (take_damage hook): shield,
+# vulnerable, thorns, petrified. They are STATUS_KINDS (need a target,
+# rejected on fire points) and they ONLY matter through the
+# take_damage interception (ModStatusEffects.resolve_incoming_damage,
+# called by Player/EnemyBase.take_damage BEFORE damage lands):
+# shield {amount 1-500, duration_sec 0.5-30} — an absorbing pool;
+# vulnerable {factor 1.05-5.0, duration_sec 0.5-30} — incoming damage
+#   multiplied by factor while active;
+# thorns {reflect_mult 0.0-2.0, duration_sec 0.5-30} — reflects
+#   reflect_mult x the damage ACTUALLY taken back to the attacker;
+# petrified {duration_sec 0.5-30} — nullifies ALL incoming damage and
+#   pins the target (speed 0, velocity zeroed) while active.
+# These four are REAL now — the v0.5.7 omission list no longer applies
+# to them (stunned/paralyzed/unconscious/grappled/frightened/charmed/
+# deafened/silence/lifesteal/curse remain omitted).
 # NOTE (v0.5.7 integration gap — coordinator): ModHookRegistry.
 # _apply_effect's data-hook dispatch still matches only
 # slow/freeze/burn/knockback by name. Data hooks carrying any other
@@ -117,29 +148,39 @@
 #    "exploded": bool}. Anything else is ignored. Effects the hook
 # applies directly through `api` (heal_player, fire_effect, ...) need
 # not be reported; the return value is for damage_mult + accounting.
+# At "take_damage", damage_mult multiplies the hit BEFORE it lands.
 extends RefCounted
 class_name ModHook
 
-const HOOK_POINTS := ["on_fire", "projectile_spawn", "on_hit", "on_kill", "on_damage_taken"]
+const HOOK_POINTS := ["on_fire", "projectile_spawn", "on_hit", "on_kill", "on_damage_taken", "take_damage"]
 
 const HOOK_POINT_ALIASES := {
 	"on_projectile_spawn": "projectile_spawn",
 	"on_damage": "on_damage_taken",
+	"on_take_damage": "take_damage",
 }
 
 const EFFECT_KINDS := ["heal", "explosion", "smoke", "announce", "damage_mult",
 	"slow", "freeze", "burn", "knockback", "pull", "poison", "bleed", "regen",
 	"haste", "restrained", "prone", "sleep", "confusion", "blind", "weaken",
-	"exhaustion", "typed_damage"]
+	"exhaustion", "typed_damage",
+	"shield", "vulnerable", "thorns", "petrified"]
 
 ## Status kinds: need a target, so they are rejected on fire points.
+## shield / vulnerable / thorns / petrified are damage-interception
+## states: they matter ONLY through the take_damage interception
+## (ModStatusEffects.resolve_incoming_damage), but they may be
+## APPLIED from any target-bearing point (on_hit / on_kill /
+## on_damage_taken / take_damage) — e.g. an on_hit hook marks the hit
+## target vulnerable, and the NEXT hits deal more.
 const STATUS_KINDS := ["slow", "freeze", "burn", "knockback", "pull", "poison",
 	"bleed", "regen", "haste", "restrained", "prone", "sleep", "confusion",
-	"blind", "weaken", "exhaustion", "typed_damage"]
+	"blind", "weaken", "exhaustion", "typed_damage",
+	"shield", "vulnerable", "thorns", "petrified"]
 
 const HOOK_KEYS := ["hook_id", "hook_point", "display_name", "description", "projectile", "effects", "code"]
 
-const EFFECT_KEYS := ["kind", "amount", "radius", "damage", "duration_sec", "title", "subtitle", "value", "factor", "damage_per_sec", "force", "heal_per_sec", "damage_type"]
+const EFFECT_KEYS := ["kind", "amount", "radius", "damage", "duration_sec", "title", "subtitle", "value", "factor", "damage_per_sec", "force", "heal_per_sec", "damage_type", "reflect_mult"]
 
 const MAX_HOOK_CODE_CHARS := 20000
 
@@ -298,7 +339,7 @@ static func validate_effect(eff: Dictionary) -> String:
 			return "unknown effect field '%s'" % str(k)
 	var kind: Variant = eff.get("kind", null)
 	if not (kind is String) or str(kind) not in EFFECT_KINDS:
-		return "effect 'kind' must be heal|explosion|smoke|announce|damage_mult|slow|freeze|burn|knockback|pull|poison|bleed|regen|haste|restrained|prone|sleep|confusion|blind|weaken|exhaustion|typed_damage"
+		return "effect 'kind' must be heal|explosion|smoke|announce|damage_mult|slow|freeze|burn|knockback|pull|poison|bleed|regen|haste|restrained|prone|sleep|confusion|blind|weaken|exhaustion|typed_damage|shield|vulnerable|thorns|petrified"
 	match str(kind):
 		"heal":
 			if not _is_num_in(eff.get("amount", null), 1.0, 500.0):
@@ -394,6 +435,24 @@ static func validate_effect(eff: Dictionary) -> String:
 				return "typed_damage effect 'amount' out of range 1-500"
 			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
 				return "typed_damage effect 'duration_sec' out of range 0.5-30"
+		"shield":
+			if not _is_num_in(eff.get("amount", null), 1.0, 500.0):
+				return "shield effect 'amount' out of range 1-500"
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
+				return "shield effect 'duration_sec' out of range 0.5-30"
+		"vulnerable":
+			if not _is_num_in(eff.get("factor", null), 1.05, 5.0):
+				return "vulnerable effect 'factor' out of range 1.05-5"
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
+				return "vulnerable effect 'duration_sec' out of range 0.5-30"
+		"thorns":
+			if not _is_num_in(eff.get("reflect_mult", null), 0.0, 2.0):
+				return "thorns effect 'reflect_mult' out of range 0-2"
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
+				return "thorns effect 'duration_sec' out of range 0.5-30"
+		"petrified":
+			if not _is_num_in(eff.get("duration_sec", null), 0.5, 30.0):
+				return "petrified effect 'duration_sec' out of range 0.5-30"
 	return ""
 
 
@@ -950,6 +1009,14 @@ static func _describe_effect(eff: Dictionary) -> String:
 			return "exhaustion +1 level for %.1fs (6 = death)" % float(eff.get("duration_sec", 0.0))
 		"typed_damage":
 			return "%s damage %.0f + rider" % [str(eff.get("damage_type", "?")), float(eff.get("amount", 0.0))]
+		"shield":
+			return "shield absorbs %.0f damage for %.1fs" % [float(eff.get("amount", 0.0)), float(eff.get("duration_sec", 0.0))]
+		"vulnerable":
+			return "vulnerable takes x%.2f damage for %.1fs" % [float(eff.get("factor", 1.0)), float(eff.get("duration_sec", 0.0))]
+		"thorns":
+			return "thorns reflects x%.2f of damage taken for %.1fs" % [float(eff.get("reflect_mult", 0.0)), float(eff.get("duration_sec", 0.0))]
+		"petrified":
+			return "petrified (takes NO damage, cannot move) %.1fs" % float(eff.get("duration_sec", 0.0))
 	return str(eff.get("kind", "?"))
 
 
