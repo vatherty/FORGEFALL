@@ -170,9 +170,77 @@ func _impact(hit: Dictionary) -> bool:
 		ForgeBuilder.fx_detonate(pos, float(spec.get("explosion_radius", 4.0)), float(spec.get("explosion_damage", 60.0)))
 	else:
 		ImpactFX.spawn(pos, hit.get("normal", Vector3.UP))
+	# v0.5.11 CHAIN: after the primary hit, arc to nearby enemies.
+	# Only when the primary hit struck a damageable target (a wall
+	# hit chains nowhere — the arc starts FROM the hit target).
+	if collider != null and (collider as Object).has_method("take_damage"):
+		_chain_from(pos, collider, dmg)
 	if not pierce:
 		queue_free()
 	return pierce
+
+
+## Chain: arc from the primary hit to up to chain_targets further
+## enemies within chain_radius of each previous hit. Each jump deals
+## the primary damage * chain_falloff^jump. With "element", chain
+## hits apply through ElementalEmitter.apply_to_target (the
+## element's rider — e.g. lightning knockback + wet conductivity);
+## without it they are plain damage. Chain hits NEVER run on_hit /
+## on_kill hooks and never chain again (one flat loop — no
+## recursion, no feedback loops through kill effects).
+func _chain_from(from_pos: Vector3, first_target: Node, primary_dmg: float) -> void:
+	var jumps := int(spec.get("chain_targets", 0))
+	if jumps <= 0:
+		return
+	var radius := float(spec.get("chain_radius", 3.0))
+	var falloff := float(spec.get("chain_falloff", 0.5))
+	var element := str(spec.get("element", ""))
+	var hit_targets: Array = [first_target]
+	var at := from_pos
+	for jump in range(1, jumps + 1):
+		var nxt := _nearest_other_foe(hit_targets, at, radius)
+		if nxt == null:
+			return
+		hit_targets.append(nxt)
+		var cdmg := primary_dmg * pow(falloff, jump)
+		var npos := (nxt as Node3D).global_position if nxt is Node3D else at
+		if not element.is_empty():
+			ElementalEmitter.apply_to_target(nxt, element, cdmg, at)
+		elif (nxt as Object).has_method("take_damage"):
+			(nxt as Object).call("take_damage", cdmg, npos, false)
+		ImpactFX.spawn(npos, Vector3.UP)
+		at = npos
+
+
+## Nearest enemy within max_dist of `from`, excluding every node in
+## `exclude` and dead targets. Scans the "enemy"/"enemies" groups
+## (same scan as ElementalEmitter._all_foes).
+func _nearest_other_foe(exclude: Array, from: Vector3, max_dist: float) -> Node:
+	var tree := Engine.get_main_loop() as SceneTree
+	if tree == null:
+		return null
+	var best: Node = null
+	var best_d := max_dist
+	var seen := {}
+	for group in ["enemy", "enemies"]:
+		for e in tree.get_nodes_in_group(group):
+			if e == null or not is_instance_valid(e):
+				continue
+			var id := (e as Node).get_instance_id()
+			if seen.has(id):
+				continue
+			seen[id] = true
+			if e in exclude:
+				continue
+			if not (e is Node3D):
+				continue
+			if (e as Object).has_method("is_dead") and bool((e as Object).call("is_dead")):
+				continue
+			var d := (e as Node3D).global_position.distance_to(from)
+			if d <= best_d:
+				best_d = d
+				best = e
+	return best
 
 
 func _make_api() -> ModAPI:
