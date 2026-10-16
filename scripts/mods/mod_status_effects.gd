@@ -163,6 +163,13 @@ static func apply_status(target: Node, kind: String, params: Dictionary, origin:
 		return false
 	if not target.is_inside_tree():
 		return false
+	# v0.5.8 D&D: refuse kinds the target's creature type is immune to
+	# (e.g. poison on a construct/undead, sleep on an elemental) BEFORE
+	# any effect is upserted — so exhaustion level-6 death can never
+	# fire through this path on an immune target.
+	var ctype_v: Variant = target.get("creature_type")
+	if ctype_v is String and DnDTypes.is_status_immune(str(ctype_v), kind):
+		return false
 	match kind:
 		"slow":
 			var factor := clampf(float(params.get("factor", 1.0)), 0.05, 1.0)
@@ -283,7 +290,7 @@ static func apply_status(target: Node, kind: String, params: Dictionary, origin:
 				return false
 			var amount := clampf(float(params.get("amount", 0.0)), 1.0, 500.0)
 			var tdur := clampf(float(params.get("duration_sec", 0.0)), 0.5, 30.0)
-			_damage_target(target, amount)
+			_damage_typed(target, amount, dtype)
 			if _is_dead(target):
 				return true
 			_apply_typed_rider(target, dtype, amount, tdur, origin)
@@ -427,9 +434,12 @@ static func tick_target(target: Node, delta: float) -> void:
 						d["last_pos"] = (target as Node3D).global_position
 				var accum := float(d.get("accum", 0.0)) + rate * active_delta
 				var threshold := float(d.get("damage_per_sec", 0.0))
+				# v0.5.8 D&D: DOT ticks are TYPED (burn=fire, poison=poison,
+				# bleed=slashing) so creature-type resistances apply.
+				var dot_type: String = str({"burn": "fire", "poison": "poison", "bleed": "slashing"}.get(kind, ""))
 				while accum >= threshold and threshold > 0.0 and not _is_dead(target):
 					accum -= threshold
-					_damage_target(target, threshold)
+					_damage_typed(target, threshold, dot_type)
 				d["accum"] = accum
 			"regen":
 				var hps := float(d.get("heal_per_sec", 0.0))
@@ -459,7 +469,7 @@ static func tick_target(target: Node, delta: float) -> void:
 			if kind in ["burn", "poison", "bleed"]:
 				var rest := float(d.get("accum", 0.0))
 				if rest > 0.0 and not _is_dead(target):
-					_damage_target(target, rest)
+					_damage_typed(target, rest, {"burn": "fire", "poison": "poison", "bleed": "slashing"}.get(kind, ""))
 			elif kind == "regen":
 				var rrest := float(d.get("accum", 0.0))
 				if rrest > 0.0 and not _is_dead(target):
@@ -726,6 +736,25 @@ static func _damage_target(target: Node, amount: float) -> void:
 		if target is Node3D:
 			pos = (target as Node3D).global_position
 		target.call("take_damage", amount, pos, false)
+
+
+## Typed damage: prefers the target's take_typed_damage (EnemyBase
+## applies the creature-type resistance table); falls back to untyped
+## take_damage for targets without it (dummies, players, structures).
+## "" damage_type == untyped (used for true damage, e.g. exhaustion-6).
+static func _damage_typed(target: Node, amount: float, damage_type: String) -> void:
+	if damage_type.is_empty():
+		_damage_target(target, amount)
+		return
+	if target == null or not is_instance_valid(target):
+		return
+	if target.has_method("take_typed_damage") and not _is_dead(target):
+		var pos := Vector3.ZERO
+		if target is Node3D:
+			pos = (target as Node3D).global_position
+		target.call("take_typed_damage", amount, damage_type, pos, false)
+		return
+	_damage_target(target, amount)
 
 
 ## Heals through heal() when present, else clamps hp to max_hp.
