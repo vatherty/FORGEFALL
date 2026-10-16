@@ -1,5 +1,54 @@
 # FORGEFALL — Build Log
 
+## v0.5.5 — Status effects for invented hooks (Bubble Blaster fix, 2026-10-15)
+
+### The bug (Colin's report, 3 screenshots)
+- Colin made a **Bubble Blaster** via Chat (pastel-pink blaster, slow sticky bubbles that splat and SLOW enemies), created it from chat, approved it (p9-based, invented hooks Bubble Shot + Bubble Splat, 81-voxel asset), ran TEST IN SANDBOX, got: "HIT — projectile struck dummy 0 (no explosion in this mod). Nothing installed. Hooks run: bubble_projectile, bubble_splat." Then asked: "Why didn't it work?"
+- **Root cause #1 — the SLOW GAP (proven):** the v0.5.3 hook effect catalog was heal / explosion / smoke / announce / damage_mult — NO slow. The generated bubble_splat hook's machine-readable effects were smoke + announce only; "slow" existed in prose ("briefly slowing enemies") but NOT in the effects list. The LLM could not put slow in the mod, so the blaster literally could not slow anything.
+- **Root cause #2 — the SANDBOX GAP (proven):** the sandbox only parsed explosion (on_hit) and heal (on_kill). It never applied or reported status effects, and its dummy had no speed stat — so even a slow mod would have reported only "HIT + Hooks run".
+- **"Nothing installed" is by-design, NOT a bug:** the sandbox never installs; INSTALL on the approval screen is still required. Deliberately left unchanged.
+
+### Fix
+- **New status-effect kinds** (`scripts/mods/mod_hook.gd`): `slow {factor 0.05-1.0, duration_sec 0.5-30}`, `freeze {duration_sec 0.5-10}`, `burn {damage_per_sec 1-500, duration_sec 0.5-30}`, `knockback {force 1-30}`. Status kinds are REJECTED on fire points (no target exists yet) — they go on on_hit / on_kill (hit target) or on_damage_taken (player). `stun` deliberately NOT added: it has no game-side implementation distinct from freeze.
+- **Game-side system** (`scripts/mods/mod_status_effects.gd`, new): per-target metadata + a self-cleaning `StatusTicker` child. Slow/freeze multiply movement speed; burn deals damage in 1.0s ticks plus a final partial tick (a 2.5s burn at 10 dps deals exactly 25); knockback is an instant impulse away from the hit point. Re-application keeps the strongest value + longest duration. A mod slow/freeze/knockback applies to ANY CharacterBody3D, including the brute (a mod is an explicit player-built exception to the brute's own flinch/knockback immunity). Burn kills do NOT run on_kill hooks.
+- **Locomotion integration (one line each):** `EnemyBase._apply_locomotion` and Player ground movement multiply speed by `ModStatusEffects.speed_multiplier(self)` — the choke points where wish speed becomes velocity. Player wall-run/slide/grapple speeds intentionally untouched.
+- **Registry + ModAPI:** `ModHookRegistry._apply_effect` applies status kinds to the ctx target (on_hit/on_kill) or the player (on_damage_taken); merged result gains `status_applied`. `ModAPI.apply_status_effect(target, kind, params, origin)` is the hook-facing entry (also usable from code hooks).
+- **Generation prompt:** `HOOK_PROMPT_ADDENDUM` (`mod_creator.gd`) + creator-menu technical notes now document all four kinds + the bubble example (on_hit slow, "do NOT express slowing as smoke or announce") + the target rule.
+- **Approval:** `ModHook.summarize_hooks` now lists effects per hook ("Effects: slow x0.50 for 3.0s") so status effects are visible without reading the raw payload.
+- **Sandbox** (`sandbox_test_room.gd`): `simulate_test` parses on_hit status effects; dummy has a 4.0 m/s base speed; result reports `status_effects` + `dummy_speed_before/after`; the result label prints e.g. "SLOWED: dummy speed 4.0 → 2.0 m/s for 3.0s." / "BURNING: 10 damage/s for 5.0s." / "KNOCKBACK: force 12."
+
+### Verification (all headless, 2026-10-15 — GREEN)
+- New `tools/verify_status_effects.gd`: **35/35 ALL PASS** — validation (slow validates; slow on fire point rejected; bad factor rejected; freeze/burn/knockback validate), prompt catalog, approval summary, registry apply (on_hit slow → status_applied + 0.5 multiplier; on_damage_taken → player fallback), status system (refresh strongest, freeze 0, expiry recovery, ticker self-free, burn exact 25, knockback impulse, null/unknown-kind no-ops), sandbox (bubble slow → SLOWED 4.0→2.0, 3.0s), REAL enemy locomotion (baseline 4.00 → slowed 2.00 → recovered 4.00), player/enemy integration contract lines.
+- Regressions: `verify_forge_batch` **143/143**, `verify_creator_fix` **48/48**, `verify_invented_hooks` **85/85** (incl. forbidden-API rejection), `verify_creator_chat` **43 passed + 2 skipped**, `verify_fixes` **ALL PASS**, 900-frame smoke clean (only the known pre-existing UpdateManager TLS-handshake chatter).
+- `check_scripts`: no failures outside the generated `android/build/` template (pre-existing BaseTest issue, unrelated).
+- Harness notes (for future suites): tests must run in `_process`, not `_init` (nodes added in `_init` report `is_inside_tree() == false`); game scripts must be `load()`ed at runtime, not referenced as globals (parse-time references compile before autoloads exist → Sfx errors). This suite follows the `verify_invented_hooks` pattern on both counts.
+
+### Version bump (publish mechanics only — no game-source changes in this entry)
+- `export_presets.cfg`: `version/code=31`, `version/name="0.5.5"`; Windows preset export_path → `windows_staging/forgefall-v0.5.5-windows/`.
+- `scripts/core/tuning.gd`: `FALLBACK_VERSION_CODE := 31`.
+- `CONTRIBUTING.md` added at repo root (doc only — NOT in the game build; the PCKs were probed and contain no CONTRIBUTING text).
+
+### Builds (all from the same current source)
+- **Android** `updates/forgefall-v0.5.5-debug.apk` (30,972,499 bytes, SHA-256 `038618357226566b04c40070e1d6ffe5db6c795665d417741950584bc56ff7c8`) + `.idsig`. Godot 4.7.2 headless `--export-debug "Android"`, unchanged custom template (Godot signs + emits the .idsig).
+- **Linux** `linux_staging/forgefall-v0.5.5-linux.zip` (30,058,385 bytes, SHA-256 `5118b6338450a11ff513530b45b7c186314203fd4d8cfcab49002246c72ba7ae`): binary + forgefall.pck + forgefall.sh + README-LINUX.txt (0.5.4 → 0.5.5, + STATUS EFFECTS section).
+- **Windows** `windows_staging/forgefall-v0.5.5-windows.zip` (36,985,827 bytes, SHA-256 `b9ca9381074d133fb719ee9f9f8171e2d78d11119f611192b8609fb3a9f58fc9`): forgefall.exe + forgefall.console.exe + forgefall.pck + README-WINDOWS.txt (0.5.4 → 0.5.5, + STATUS EFFECTS section).
+- Shipped-artifact probe (Godot `--main-pack` against the built Linux PCK): `verify_status_effects` **35/35** — the status-effect code is IN the built artifact, not just in source. All three PCKs contain `res://scripts/mods/mod_status_effects.gd` and no CONTRIBUTING text.
+- Linux binary headless `--quit-after 120`, exit 0.
+- Android APK: apksigner OK (v2+v3 true), aapt `com.sparky.forgefall` versionCode 31 / 0.5.5, manifest UpdateStatusReceiver + ForgeUpdater + ForgeSpeech meta-data + REQUEST_INSTALL_PACKAGES + RECORD_AUDIO + INTERNET, classes2.dex = stock XRMode (1960 B), classes14.dex = ForgeUpdaterPlugin + UpdateStatusReceiver (9228 B), classes15.dex = ForgeSpeechPlugin (6148 B).
+- Publish-time re-verification: `verify_status_effects` **35/35**, `verify_forge_batch` **143/143 ALL PASS**, 900-frame smoke clean (only the known pre-existing UpdateManager TLS-handshake chatter).
+- Note: the Windows export first failed with "The given export path doesn't exist" because `windows_staging/forgefall-v0.5.5-windows/` didn't exist yet; creating the directory and retrying succeeded. Future publish runs should `mkdir -p` the new versioned staging dir before exporting.
+
+### Publish
+- **GitHub Release** [v0.5.5](https://github.com/vatherty/FORGEFALL/releases/tag/v0.5.5) in `vatherty/FORGEFALL` — all 3 artifacts attached, all `uploaded`, sizes + sha256 digests match local builds.
+- **Pages** (`vatherty/Forgefall-updates`): binaries uploaded first, then `version.json` + `version_pc.json` (0.5.5 / code 31) + `index.html` (0.5.5 links). Changelog: "Status effects for invented hooks: slow, freeze, burn, and knockback are now real in-game (they apply on on_hit / on_kill or on_damage_taken). The sandbox reports them, e.g. 'SLOWED: dummy speed 4.0 -> 2.0 m/s for 3.0s.' The generation prompt no longer substitutes smoke/announce for slowing. CONTRIBUTING.md documents how to add a new effect kind." `.nojekyll` untouched (still present, empty). Old v0.5.4 files stay as unlisted archive.
+- **Pages build `errored` + recovered (known transient pattern):** right after the uploads, Pages status was `errored`. `pages-enable` re-apply (409 = already enabled) + ~5 min total wait flipped status to `built` and the live site to code 31.
+- Live verified: manifests 200 (0.5.5/code 31, Pages URLs, status-effects changelog); all three artifacts 206; v0.5.4 trio still 206; index.html 200 with the three v0.5.5 links; downloaded APK sha256 matches the local build hash.
+- Local `updates/` mirror synced (new index.html + version.json + version_pc.json + APK).
+
+### Deferred / follow-ups (not in this release's scope)
+- Source push is a separate step (not done by this worker). **CONTRIBUTING.md needs syncing to the repo** — it exists at the repo root locally but was not pushed (no source push in this task) and is deliberately NOT in the game PCKs.
+- `tools/verify_updater_pc.gd` still expects the v0.5.4 manifest (code 30) — it was NOT updated because this worker's allowed code edits were limited to `tuning.gd` + `export_presets.cfg`. The follow-up source-sync should bump its manifest expectations to 0.5.5 / code 31.
+
 ## v0.5.4 — Chat in Create-a-Mod (2026-10-15)
 
 ### Shipped
@@ -2593,3 +2642,6 @@ fixes during this session are documented in the suite's own comments).
 
 ## v0.5.4 source sync
 Synced local source tree to vatherty/FORGEFALL main via contents API (diff by git blob SHA). No secrets/binaries.
+
+## v0.5.5 source sync
+Synced local source tree to vatherty/FORGEFALL main via contents API (diff by git blob SHA). Includes CONTRIBUTING.md (new), status-effects files, and verify_updater_pc.gd bumped to 0.5.5 / code 31. No secrets/binaries.
