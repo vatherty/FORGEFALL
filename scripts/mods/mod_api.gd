@@ -46,7 +46,8 @@ const HOOK_ALLOWED_API_METHODS := ["get_player", "get_root",
 	"spawn_pickup", "spawn_turret", "give_weapon", "fire_effect", "announce",
 	"get_player_health", "heal_player", "apply_status_effect", "spawn_projectile",
 	"has_status_effect", "clear_status_effect", "spawn_elemental_emitter",
-	"get_creature_type", "is_creature_immune_to_status", "get_ability_modifier"]
+	"get_creature_type", "is_creature_immune_to_status", "get_ability_modifier",
+	"get_shield_remaining", "get_damage_taken_multiplier"]
 
 ## Read-only Dictionary methods a hook may call on `ctx`. `ctx` is input:
 ## a hook must never mutate it (no erase / clear / assignment).
@@ -441,11 +442,15 @@ func heal_player(amount: float) -> float:
 ## Applies a status effect to a target node — see ModStatusEffects.
 ## Kinds: slow / freeze / burn / knockback / pull / poison / bleed /
 ## regen / haste / restrained / prone / sleep / confusion / blind /
-## weaken / exhaustion / typed_damage. `origin` is the hit point
+## weaken / exhaustion / typed_damage / shield / vulnerable / thorns /
+## petrified. `origin` is the hit point
 ## (knockback direction is away from it, pull toward it). No-op
 ## (false) for a null / freed / out-of-tree target, an unknown kind,
 ## or a kind with no handle on this target (e.g. blind on a target
-## with no accuracy stat and no weapons).
+## with no accuracy stat and no weapons). The four damage-interception
+## kinds (shield / vulnerable / thorns / petrified) take effect
+## through the take_damage interception the next time the target
+## would take damage (ModStatusEffects.resolve_incoming_damage).
 func apply_status_effect(target: Node, kind: String, params: Dictionary, origin: Vector3) -> bool:
 	if not _charge_step():
 		return false
@@ -502,6 +507,30 @@ func get_ability_modifier(target: Node, ability: String) -> int:
 	if not (scores is Dictionary):
 		return 0
 	return DnDTypes.get_ability_modifier(scores as Dictionary, ability)
+
+
+## v0.5.9 take_damage: remaining shield pool on `target` (0.0 when no
+## shield). Hook scripts branch on this (e.g. re-shield only when the
+## pool is empty). Read-only — the pool itself drains only when the
+## target actually takes damage (ModStatusEffects.resolve_...).
+func get_shield_remaining(target: Node) -> float:
+	if not _charge_step():
+		return 0.0
+	if target == null or not is_instance_valid(target):
+		return 0.0
+	return ModStatusEffects.get_shield_remaining(target)
+
+
+## v0.5.9 take_damage: damage-taken multiplier from defensive states —
+## 0.0 while the target is petrified (all damage nullified), else the
+## vulnerable factor (1.0 when not vulnerable). Shield is NOT a
+## multiplier (it is a pool) — read it with get_shield_remaining().
+func get_damage_taken_multiplier(target: Node) -> float:
+	if not _charge_step():
+		return 1.0
+	if target == null or not is_instance_valid(target):
+		return 1.0
+	return ModStatusEffects.get_damage_taken_multiplier(target)
 
 
 ## Spawns a flying mod projectile (see ModProjectile) at `origin`,
