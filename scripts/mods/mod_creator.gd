@@ -51,6 +51,26 @@ const NO_KEY_ERROR := "DeepSeek key required — add it in the Forge menu"
 const MAX_SUMMARY_CHARS := 300
 const _MAX_ID_ATTEMPTS := 100
 
+## HOOK ADDENDUM (v0.5.3: invented hooks). Appended to EVERY generation
+## idea before the LLM call (ForgeLLM's own generation template lives in
+## scripts/forge/* and is untouched). Colin's new rule: when a request
+## needs behaviour no existing block covers, the LLM must TRY TO CREATE
+## the hook for it — prefer existing blocks/hooks when they fit, invent
+## a hook only when nothing existing covers the request. Hooks run
+## through ModAPI only (ModHook schema) and are validated like the rest
+## of the mod: a hook with a forbidden API is rejected, never repaired.
+## The approval screen lists every invented hook before Install.
+const HOOK_PROMPT_ADDENDUM := """
+INVENTED HOOKS — when the mod needs behaviour no existing block covers (a custom projectile, heal-on-kill, thorns, an on-hit explosion, ...), INVENT A HOOK for it. Prefer existing blocks/hooks when they fit; invent a hook only when nothing existing covers the request.
+- Block mod: add a top-level "hooks" array to the payload, next to the "block" object.
+- Script mod: implement get_hooks() -> Array returning the hook dicts.
+- Hook dict: {"hook_id": "<lowercase [a-z0-9_]>", "hook_point": "on_fire"|"projectile_spawn"|"on_hit"|"on_kill"|"on_damage_taken", "display_name": "<name>", "description": "<one line>", ...}.
+- A fire-point hook (on_fire / projectile_spawn) may carry "projectile": {"visual": "<what it looks like, e.g. 'watermelon' or 'glowing laser beam'>", "shape": "beam"|"sphere"|"cube"|"blob"|"bullet", "speed": 1-200, "damage": 0-500 (-1 = use the weapon's damage), "range": 1-500, "size": 0.05-5, "gravity": -50-50, "pierce": true|false, "explodes_on_impact": true|false, "explosion_radius": 0-20, "explosion_damage": 0-500}. The weapon fires THIS projectile instead of hitscan. Example: a Long Laser Pistol is a p9-based weapon mod with a projectile_spawn hook whose projectile is {"visual": "glowing laser beam", "shape": "beam", "speed": 60, "damage": 45, "range": 120, "explodes_on_impact": false}. Example: a Watermelon LMG is an lmg-based weapon mod with a projectile_spawn hook whose projectile is {"visual": "watermelon", "shape": "sphere", "speed": 28, "damage": 40, "range": 90, "explodes_on_impact": true, "explosion_radius": 4, "explosion_damage": 60}.
+- Any hook may carry "effects": [{"kind": "heal", "amount": 1-500} | {"kind": "explosion", "radius": 0.5-20, "damage": 0-500} | {"kind": "smoke", "duration_sec": 1-120} | {"kind": "announce", "title": "...", "subtitle": "..."} | {"kind": "damage_mult", "value": 0-5}]. Example: heal-on-kill is an on_kill hook with effects [{"kind": "heal", "amount": 15}]. A damage_mult effect on on_hit multiplies that hit's damage; on on_damage_taken it reduces the damage taken.
+- A hook may instead carry "code": GDScript source that MUST start with `extends ModHook` and implement `run(api: ModAPI, ctx: Dictionary) -> Dictionary`, using ONLY ModAPI methods (api.heal_player, api.fire_effect, api.announce, api.spawn_projectile, api.get_player_position, ...). Data hooks are preferred — use "code" only when effects cannot express the behaviour.
+- NEVER emit filesystem, network, OS, eval, or code-loading code in a hook (no FileAccess, DirAccess, OS, Engine, load(), preload(), ResourceLoader, Expression, GDScript.new, ClassDB, HTTPRequest, sockets, Thread, .new(), call(), call_deferred(), @tool). A hook containing any of them is REJECTED.
+- The approval screen lists every invented hook, so describe each hook plainly in the summary."""
+
 var _llm: ForgeLLM = null
 var _generating := false
 var _pending_candidates: Array = []
@@ -59,6 +79,11 @@ var _pending_candidates: Array = []
 ## Starts an async generation for `idea`. Exactly one candidate is
 ## emitted per call via generation_ready(candidate) — a failed
 ## generation emits a candidate with "error" set, never nothing.
+## ENTRY-POINT CONTRACT (v0.5.3, binding — Forge MAKE mode calls this
+## read-only): generate(idea: String) -> void + signal
+## generation_ready(candidate: Dictionary) keep this exact signature.
+## The idea is augmented with HOOK_PROMPT_ADDENDUM before the LLM call
+## (the hook-invention instructions); the mock path is unaffected.
 ## Mock (mock_generation non-empty) takes precedence over the network
 ## AND over the empty-idea check, so tests are fully deterministic.
 func generate(idea: String) -> void:
@@ -77,7 +102,7 @@ func generate(idea: String) -> void:
 		return
 	_generating = true
 	_ensure_llm()
-	_llm.request_generation(clean)
+	_llm.request_generation(clean + "\n\n" + HOOK_PROMPT_ADDENDUM)
 
 
 ## "" = candidate is installable, else an error string. A candidate
