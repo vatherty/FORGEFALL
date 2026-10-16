@@ -173,6 +173,46 @@ func announce(title: String, subtitle: String) -> void:
 		hud.announce(title, subtitle)
 
 
+# --- Hook support (v0.5.3: invented hooks) ---------------------------------
+# The surface ModHook code + the hook registry may use. Same deal as the
+# rest of ModAPI: these are the ONLY game operations a hook gets.
+
+## Current player HP, or -1 when there is no player / no HP to read.
+func get_player_health() -> float:
+	if _player == null or not is_instance_valid(_player):
+		return -1.0
+	var v: Variant = _player.get("_hp")
+	if v is int or v is float:
+		return float(v)
+	return -1.0
+
+
+## Heals the player (clamped by the player's own heal()). Returns the
+## player's HP afterwards, or -1 when there is no player / heal().
+func heal_player(amount: float) -> float:
+	if _player == null or not is_instance_valid(_player):
+		return -1.0
+	if not _player.has_method("heal"):
+		return -1.0
+	_player.heal(amount)
+	return get_player_health()
+
+
+## Spawns a flying mod projectile (see ModProjectile) at `origin`,
+## travelling along `direction`. `spec` is a ModHook projectile dict
+## (visual / speed / damage / explodes_on_impact / ...); `hooks` are
+## the firing weapon's attached hooks (on_hit / on_kill run on impact).
+## Returns the ModProjectile node, or null without a root.
+func spawn_projectile(spec: Dictionary, origin: Vector3, direction: Vector3, hooks: Array = []) -> Node:
+	if _root == null:
+		return null
+	var p := ModProjectile.new()
+	p.setup(spec, hooks, _player)
+	_root.add_child(p)
+	p.launch(origin, direction)
+	return p
+
+
 func _track(node: Node, pos: Vector3) -> void:
 	last_spawned = node
 	last_spawned_position = pos
