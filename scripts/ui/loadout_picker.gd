@@ -10,6 +10,9 @@
 # the ACTIVE one used on Deploy. All data goes through /root/Loadouts
 # (scripts/progression/loadouts.gd, the ONE shared store in
 # user://loadouts.json) — this picker keeps no loadout state of its own.
+# Mod weapons ("mod:<mod_id>") are offered like base weapons: the store
+# lists them, validates them, and persists them in a loadout exactly like
+# a base weapon id; a stale one shows as (MOD UNAVAILABLE) in the list.
 # When the Loadouts autoload is absent (standalone probe), it instantiates
 # the script directly as a fallback child; either way the same file is
 # read/written, so the Forge tab and the picker can never diverge.
@@ -23,6 +26,8 @@ extends Control
 signal picker_closed
 
 const LOADOUTS_SCRIPT := "res://scripts/progression/loadouts.gd"
+# Must match Arsenal.MOD_PREFIX: mod-weapon ids are "mod:<mod_id>".
+const MOD_PREFIX := "mod:"
 
 var _loadouts_node: Node = null
 var _fallback_owned: bool = false
@@ -416,9 +421,20 @@ func _add_row(entry: Dictionary, active_name: String, store: Node, only_one: boo
 	var primary_txt: String = str(store.call("get_weapon_display_name", primary_id))
 	if primary_txt.is_empty():
 		primary_txt = primary_id
+		# A stale mod id (disabled/removed since the loadout was saved)
+		# shows as unavailable instead of a dangling entry; the store
+		# sanitizes it to the fallback on the next load.
+		if primary_id.begins_with(MOD_PREFIX):
+			primary_txt += " (MOD UNAVAILABLE)"
+	elif primary_id.begins_with(MOD_PREFIX):
+		primary_txt += " (MOD)"
 	var secondary_txt: String = str(store.call("get_weapon_display_name", secondary_id))
 	if secondary_txt.is_empty():
 		secondary_txt = secondary_id
+		if secondary_id.begins_with(MOD_PREFIX):
+			secondary_txt += " (MOD UNAVAILABLE)"
+	elif secondary_id.begins_with(MOD_PREFIX):
+		secondary_txt += " (MOD)"
 	var forge_txt: String = str(store.call("get_forge_preset_label", str(entry.get("forge_preset", ""))))
 	detail.text = "%s  /  %s   ·   Forge: %s" % [primary_txt, secondary_txt, forge_txt]
 	detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -444,6 +460,10 @@ func _refresh_editor_options() -> void:
 				var got: String = str(store_ids.call("get_weapon_display_name", wid))
 				if not got.is_empty():
 					disp = got
+			# Mod weapons are first-class picks — marked so they are
+			# distinguishable from base weapons in the dropdown.
+			if wid.begins_with(MOD_PREFIX):
+				disp += " (MOD)"
 			sel.add_item(disp)
 	_editor_forge_prompts = [""]
 	if _forge_select != null:
