@@ -508,6 +508,19 @@ func _fire_hitscan() -> void:
 			var head := _is_headshot(collider)
 			if head:
 				dmg *= headshot_mult
+			# v0.5.8 CLASSES: the shooter's class kit (damage + crit) —
+			# one hook. Duck-typed: stock player exposes class_*(); a
+			# missing method means no class kit (damage unchanged).
+			if _player != null and _player.has_method("class_damage_mult"):
+				dmg *= float(_player.call("class_damage_mult"))
+				var crit_chance := 0.0
+				if _player.has_method("class_crit_chance"):
+					crit_chance = float(_player.call("class_crit_chance"))
+				if crit_chance > 0.0 and randf() < crit_chance:
+					var crit_mult := 2.0
+					if _player.has_method("class_crit_mult"):
+						crit_mult = float(_player.call("class_crit_mult"))
+					dmg *= crit_mult
 			if not mod_hooks.is_empty():
 				var hit_api := _mod_api()
 				var hit_ctx := {"position": hit_pos, "hit_position": hit_pos,
@@ -516,7 +529,20 @@ func _fire_hitscan() -> void:
 				var hres := ModHookRegistry.run_hooks(mod_hooks, "on_hit", hit_api, hit_ctx)
 				dmg *= float(hres.get("damage_mult", 1.0))
 			if collider != null and collider.has_method("take_damage"):
-				collider.take_damage(dmg, hit_pos, head)
+				# v0.5.8 elemental emitters: a weapon built with an
+				# "element" meta (Forge weapon + element composition)
+				# deals its FULL hit damage AS that element — typed
+				# damage + rider, or force/water handling — instead of
+				# plain damage, plus an element-colored voxel burst
+				# at the impact point.
+				var element := str(get_meta("elemental_ammo", "")) if has_meta("elemental_ammo") else ""
+				if ElementalEmitter.is_element(element):
+					ElementalEmitter.apply_to_target(collider, element, dmg, hit_pos)
+					var scene := get_tree().current_scene if get_tree() != null else null
+					if scene != null:
+						ElementalEmitter.spawn_visual_burst(scene, element, hit_pos, 1.2)
+				else:
+					collider.take_damage(dmg, hit_pos, head)
 				hit_enemy_this_round = true
 				_notify_hit(collider, head)
 				if ModHookRegistry.target_is_dead(collider) and not mod_hooks.is_empty():
