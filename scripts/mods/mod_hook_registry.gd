@@ -186,7 +186,7 @@ static func pending_mod_for_weapon(arsenal_id: String) -> Dictionary:
 ## run(api, ctx) under the step/time budget. Returns a MERGED result:
 ##   {"damage_mult": float (1.0 = unchanged; multiplied across hooks),
 ##    "healed": float, "exploded": bool, "announced": bool,
-##    "status_applied": bool (a slow/freeze/burn/knockback landed),
+##    "status_applied": bool (a status kind from ModHook.STATUS_KINDS landed),
 ##    "budget_exceeded": bool (a hook blew the step/time budget)}
 ## A code hook that errors at run time yields no result AND disables
 ## its mod visibly (ModLoader.note_hook_runtime_failure) — the registry
@@ -336,7 +336,7 @@ static func _merge_hook_result(out: Dictionary, res: Dictionary) -> void:
 
 ## Applies ONE data-hook effect via ModAPI. Position comes from ctx
 ## ("position" / "hit_position" / player position, in that order).
-## Status effects (slow / freeze / burn / knockback) hit the ctx
+## Status effects (see ModHook.STATUS_KINDS) hit the ctx
 ## "target" (on_hit / on_kill) or the player (on_damage_taken).
 static func _apply_effect(out: Dictionary, eff: Dictionary, api: ModAPI, ctx: Dictionary, point: String = "") -> void:
 	var kind := str(eff.get("kind", ""))
@@ -356,13 +356,14 @@ static func _apply_effect(out: Dictionary, eff: Dictionary, api: ModAPI, ctx: Di
 			out["announced"] = true
 		"damage_mult":
 			out["damage_mult"] = float(out.get("damage_mult", 1.0)) * float(eff.get("value", 1.0))
-		"slow", "freeze", "burn", "knockback":
-			var tgt: Variant = ctx.get("target", null)
-			if tgt == null and point == "on_damage_taken":
-				tgt = api.get_player()
-			if tgt is Node:
-				if api.apply_status_effect(tgt as Node, kind, eff, pos):
-					out["status_applied"] = true
+		_:
+			if kind in ModHook.STATUS_KINDS:
+				var tgt: Variant = ctx.get("target", null)
+				if tgt == null and point == "on_damage_taken":
+					tgt = api.get_player()
+				if tgt is Node:
+					if api.apply_status_effect(tgt as Node, kind, eff, pos):
+						out["status_applied"] = true
 
 
 static func _effect_position(api: ModAPI, ctx: Dictionary) -> Vector3:
