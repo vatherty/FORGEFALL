@@ -10,6 +10,12 @@
 #    "cost": 0-2000, "display_name": "My Gun", "description": "optional",
 #    ...per-target fields (base_weapon_id/damage_mult, shape/size_voxels/hp,
 #    duration_sec, kind/amount, ...)}. Invalid info -> mod disabled.
+# - get_hooks() -> Array (v0.5.3, OPTIONAL — base returns []): the mod's
+#   INVENTED hooks, one data-hook Dictionary per hook (see ModHook for
+#   the schema: hook_id, hook_point, projectile and/or effects, or a
+#   "code" string for a ModHook script). A hook that fails validation
+#   disables the whole mod with a visible error. Hooks attach to the
+#   mod's weapon when granted and run while it is equipped.
 # - apply(api: ModAPI, params: Dictionary) -> String: build the thing using
 #   ONLY the ModAPI surface (never raw nodes, never the filesystem, never
 #   the network). Return a non-empty human-readable success message, or ""
@@ -32,6 +38,14 @@ class_name ModBlock
 ## Catalog entry for this mod. Override in the mod script.
 func get_block_info() -> Dictionary:
 	return {}
+
+
+## Invented hooks this mod adds (v0.5.3). Override to return an Array
+## of data-hook Dictionaries (see ModHook for the schema). Default: no
+## hooks. The game validates every hook at scan time; a bad hook
+## disables the whole mod with a visible error.
+func get_hooks() -> Array:
+	return []
 
 
 ## Build the mod's thing via `api`. Return "" on failure.
