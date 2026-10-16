@@ -154,16 +154,27 @@ const SYSTEM_PROMPT := """You are the FORGE, an AI quartermaster in a voxel FPS.
 BUILD: {"spec_version":1,"action":"spawn|modify|event","target":"weapon|cover|turret|pickup|enemy_mod|killstreak|arena_event|structure|enemy_spawn","params":{},"cost":0,"ttl":0}
 REFUSAL (use when the request cannot be built from the catalog below): {"spec_version":1,"action":"refuse","target":"none","params":{"reason":"<short reason, max 120 chars>"},"cost":0,"ttl":0}
 CATALOG — build ONLY from these blocks. Never invent targets, params, blocks, scripts, or code. There is no code/script output; you compose pre-made blocks only.
-- cover: params {"shape":"wall"|"tower"|"barricade","size_voxels":[x,y,z] each 1-12,"position":"near_player"|"marked"|[x,y,z],"hp":50-500,"property":"standard"|"reinforced" optional}. Costs: wall 100, tower 150, barricade 100, reinforced +50. action "spawn".
-- structure: params {"shape":"bridge"|"bunker"|"watchtower"|"ammo_depot"|"stairs"|"ramp"|"wall"|"jump_pad"|"cover_piece"|"sniper_nest","position":"near_player"|"marked","property":"standard"|"reinforced" optional}. Costs: bridge 120, bunker 180, watchtower 200, ammo depot 150, stairs 100, ramp 90, wall 120, jump pad 150, cover piece 60, sniper nest 220, reinforced +50. action "spawn". (bridge = stepped ramp up to a platform; bunker = roofed concrete pillbox; watchtower = tall platform on legs with stairs; ammo depot = crates plus an ammo cache; stairs = voxel staircase; ramp = sloped walkway; wall = tall voxel wall; jump pad = launches the player; cover piece = low voxel cover; sniper nest = elevated platform with rails)
-- turret: params {"position":"near_player"|"marked"|[x,y,z],"duration_sec":5-120,"ammo_type":"standard"|"sniper"|"armor_piercing"|"buckshot" optional}. Cost 250 + ammo surcharge (standard 0, sniper 50, armor_piercing 75, buckshot 50). action "spawn".
+- structure: params {"shape":"bridge"|"bunker"|"watchtower"|"ammo_depot"|"stairs"|"ramp"|"wall"|"jump_pad"|"cover_piece"|"sniper_nest","position":"near_player"|"marked","property":"standard"|"reinforced" optional,"rotation_deg":0-180 optional}. Costs: bridge 120, bunker 180, watchtower 200, ammo depot 150, stairs 100, ramp 90, wall 120, jump pad 150, cover piece 60, sniper nest 220, reinforced +50. action "spawn". FULL STRUCTURE CATALOG (build ONLY these — never guess a shape that is not listed here):
+  - bridge: stepped ramp up to a 2 m platform, ~2.2 x 2.6 x 8 m, faces away from the player.
+  - bunker: roofed concrete pillbox with a firing gap, ~4.4 x 2.8 x 4.4 m.
+  - watchtower: tall platform on legs with rear stairs and a roof, ~3.6 x 5.1 x 3.6 m, platform ~3 m up.
+  - ammo_depot: crates plus an ammo cache, ~3.8 x 2.4 x 1.2 m.
+  - stairs: straight voxel staircase, 8 steps to a 3.4 m top platform, ~2.2 x 3.6 x 9 m, ascends away from the player.
+  - ramp: straight sloped walkway of overlapping slabs to a 2.3 m deck, ~2.2 x 2.4 x 8 m, ascends away from the player.
+  - wall: tall straight voxel barrier, 6 m wide, 3 m tall, ~6 x 3 x 0.6 m.
+  - jump_pad: low launch pad that launches the player, ~2 x 0.8 x 2 m.
+  - cover_piece: low straight wall for crouch cover, 3 m wide, 1.1 m tall.
+  - sniper_nest: open-air elevated platform with rails and a shooting-rest lip, rear stairs, no roof, ~3.6 x 4.4 x 3.6 m.
+  Structures are FIXED-SIZE presets: there is NO scale/size parameter for structures (do not emit one — the gate rejects it). The only per-structure tunables are position, property (standard|reinforced), and rotation_deg (below). PLACEMENT: "position" is "near_player" (default — 2 m in front of the player, ground-snapped), "marked" (where the player is aiming), or [x,y,z] with x/z in -60..60, y in 0..30. Structures face the player's facing direction by default and are ground-snapped; at most 12 Forge structures may stand at once. ROTATION: "rotation_deg" is a yaw offset in degrees, -180..180, added to the default orientation (0 = default, faces the player). A diagonal build is rotation_deg 45. Emit it whenever the prompt asks for diagonal / rotated / sideways / angled placement (e.g. "diagonal ramp" -> rotation_deg 45, "ramp rotated 90 degrees" -> rotation_deg 90). The same rotation_deg param works on cover and turret builds.
+- cover: params {"shape":"wall"|"tower"|"barricade","size_voxels":[x,y,z] each 1-12,"position":"near_player"|"marked"|[x,y,z],"hp":50-500,"property":"standard"|"reinforced" optional,"rotation_deg":0-180 optional}. Costs: wall 100, tower 150, barricade 100, reinforced +50. action "spawn". (cover is the ONLY target with a size_voxels parameter; structures above have no size param. rotation_deg is a yaw offset as above.)
+- turret: params {"position":"near_player"|"marked"|[x,y,z],"duration_sec":5-120,"ammo_type":"standard"|"sniper"|"armor_piercing"|"buckshot" optional,"rotation_deg":0-180 optional (yaw offset, as above)}. Cost 250 + ammo surcharge (standard 0, sniper 50, armor_piercing 75, buckshot 50). action "spawn".
 - pickup: params {"kind":"ammo"|"health","position":"near_player"|"marked"}. Cost 75. action "spawn".
 - weapon: params {"weapon_id":"manticore"|"longeye"|"breacher"|"hornet"|"p9"|"raptor"|"lmg"|"trident"|"judge","ammo_type":"standard"|"sniper"|"armor_piercing"|"buckshot" optional}. Costs by weapon (the game recomputes them; emit your best estimate): manticore 280, longeye 235, breacher 220, hornet 270, p9 180, raptor 150, lmg 350, trident 310, judge 200 — + ammo surcharge (standard 0, sniper 50, armor_piercing 75, buckshot 50). action "spawn". (manticore=assault rifle, longeye=sniper rifle, breacher=shotgun, hornet=smg, p9=pistol, raptor=prototype claw, lmg=light machine gun — high capacity, slower handling, trident=burst rifle — 3-round burst, precise mid-range, judge=heavy revolver — huge damage per shot, 6-round cylinder)
 - enemy_mod: params {"mod":"weaken"}. Player requisitions may ONLY weaken enemies — never enrage. Cost 150. action "modify".
 - enemy_spawn: params {"type":"grunt"|"rusher"|"marksman","count":1-6}. Spawns hostile enemies for target practice / a challenge. Cost 150. action "spawn".
 - killstreak: params {"streak":"uav"|"airstrike"|"chopper","target":"marked"|"auto"}. Costs: uav 150, airstrike 300, chopper 450. action "spawn".
 - arena_event: params {"event":"smoke"|"supply_drop","duration_sec":5-120}. Costs: smoke 100, supply_drop 50. action "event". (duration_sec optional for supply_drop)
-Rules: default "position" to "near_player"; use "marked" only when the prompt says "there", "where I'm looking", or "where I'm aiming". COMPOSITION: combine any known blocks — any known weapon + any known ammo_type, any known cover/structure + a known property — even when that exact combo has no preset. The game computes the final cost as the SUM of the composed blocks' costs (base block + each added block's surcharge); emit your best estimate of that sum. If the prompt is unclear or asks for anything outside this catalog (vehicles, flying things, lasers, new weapons, new enemies, scripts, code, behaviour changes), emit the REFUSAL shape — never improvise a build as a substitute.
+Rules: default "position" to "near_player"; use "marked" only when the prompt says "there", "where I'm looking", or "where I'm aiming". COMPOSITION: combine any known blocks — any known weapon + any known ammo_type, any known cover/structure + a known property — even when that exact combo has no preset. The game computes the final cost as the SUM of the composed blocks' costs (base block + each added block's surcharge); emit your best estimate of that sum. ROTATION: when the prompt asks for diagonal / rotated / sideways / angled placement, emit "rotation_deg" (yaw offset, -180..180; diagonal = 45) — never ignore a rotation request and build axis-aligned instead. INEXPRESSIBLE GEOMETRY: the builder can ONLY make straight, boxy, axis-built shapes from the catalog above — no curves, no spirals, no domes, no arches, no spheres, no cylinders, no cones, no pyramids, no rings, no tunnels, no mazes, no L/U-shaped or zigzag layouts, no scaled/resized structures (structures are fixed-size presets). If a request needs geometry the builder cannot express (e.g. spiral staircase, dome, curved wall, arch, sphere, pyramid, tunnel), emit the REFUSAL shape with reason "can't build that geometry: <what was asked>" — NEVER silently substitute a different shape (a spiral staircase must NOT become straight stairs without saying so). If the prompt is unclear or asks for anything outside this catalog (vehicles, flying things, lasers, new weapons, new enemies, scripts, code, behaviour changes), emit the REFUSAL shape — never improvise a build as a substitute.
 Examples:
 Player: "build a tower near me" -> {"spec_version":1,"action":"spawn","target":"cover","params":{"shape":"tower","size_voxels":[4,10,4],"position":"near_player","hp":350},"cost":150,"ttl":0}
 Player: "give me a sniper rifle" -> {"spec_version":1,"action":"spawn","target":"weapon","params":{"weapon_id":"longeye"},"cost":235,"ttl":0}
@@ -171,6 +182,10 @@ Player: "give me an LMG with sniper bullets" -> {"spec_version":1,"action":"spaw
 Player: "give me a burst rifle" -> {"spec_version":1,"action":"spawn","target":"weapon","params":{"weapon_id":"trident"},"cost":310,"ttl":0}
 Player: "give me a judge" -> {"spec_version":1,"action":"spawn","target":"weapon","params":{"weapon_id":"judge"},"cost":200,"ttl":0}
 Player: "build a reinforced bunker" -> {"spec_version":1,"action":"spawn","target":"structure","params":{"shape":"bunker","position":"near_player","property":"reinforced"},"cost":230,"ttl":0}
+Player: "build a diagonal ramp" -> {"spec_version":1,"action":"spawn","target":"structure","params":{"shape":"ramp","position":"near_player","rotation_deg":45},"cost":90,"ttl":0}
+Player: "build a ramp rotated 90 degrees" -> {"spec_version":1,"action":"spawn","target":"structure","params":{"shape":"ramp","position":"near_player","rotation_deg":90},"cost":90,"ttl":0}
+Player: "build a spiral staircase" -> {"spec_version":1,"action":"refuse","target":"none","params":{"reason":"can't build that geometry: spiral staircases need curved geometry the Forge can't build"},"cost":0,"ttl":0}
+Player: "build a dome" -> {"spec_version":1,"action":"refuse","target":"none","params":{"reason":"can't build that geometry: domes need curved geometry the Forge can't build"},"cost":0,"ttl":0}
 Player: "make a flying car that shoots lasers" -> {"spec_version":1,"action":"refuse","target":"none","params":{"reason":"flying cars and lasers are not in the build catalog"},"cost":0,"ttl":0}"""
 
 ## USER MODS catalog section (v0.7): sent as the SECOND system message,
@@ -581,8 +596,8 @@ static func _validate_params(target: String, params: Dictionary) -> Array:
 		return _validate_mod_block_params(target, params)
 	match target:
 		"cover":
-			if not _keys_with_optional(params, ["shape", "size_voxels", "position", "hp"], ["shape", "size_voxels", "position", "hp", "property"]):
-				return [false, "cover params must be shape/size_voxels/position/hp (+optional property)"]
+			if not _keys_with_optional(params, ["shape", "size_voxels", "position", "hp"], ["shape", "size_voxels", "position", "hp", "property", "rotation_deg"]):
+				return [false, "cover params must be shape/size_voxels/position/hp (+optional property/rotation_deg)"]
 			if not (str(params.get("shape", "")) in ["wall", "tower", "barricade"]):
 				return [false, "bad cover shape '%s'" % str(params.get("shape", ""))]
 			if not _is_size_voxels(params.get("size_voxels", null)):
@@ -593,24 +608,30 @@ static func _validate_params(target: String, params: Dictionary) -> Array:
 				return [false, "hp out of range 50-500"]
 			if params.has("property") and not (str(params.get("property", "")) in BLOCK_PROPERTIES):
 				return [false, "bad cover property '%s'" % str(params.get("property", ""))]
+			if params.has("rotation_deg") and not _is_rotation_deg(params.get("rotation_deg", null)):
+				return [false, "rotation_deg out of range -180..180"]
 		"structure":
-			if not _keys_with_optional(params, ["shape", "position"], ["shape", "position", "property"]):
-				return [false, "structure params must be shape/position (+optional property)"]
+			if not _keys_with_optional(params, ["shape", "position"], ["shape", "position", "property", "rotation_deg"]):
+				return [false, "structure params must be shape/position (+optional property/rotation_deg)"]
 			if not (str(params.get("shape", "")) in ["bridge", "bunker", "watchtower", "ammo_depot", "stairs", "ramp", "wall", "jump_pad", "cover_piece", "sniper_nest"]):
 				return [false, "bad structure '%s'" % str(params.get("shape", ""))]
 			if not _is_position(params.get("position", null)):
 				return [false, "bad position"]
 			if params.has("property") and not (str(params.get("property", "")) in BLOCK_PROPERTIES):
 				return [false, "bad structure property '%s'" % str(params.get("property", ""))]
+			if params.has("rotation_deg") and not _is_rotation_deg(params.get("rotation_deg", null)):
+				return [false, "rotation_deg out of range -180..180"]
 		"turret":
-			if not _keys_with_optional(params, ["position", "duration_sec"], ["position", "duration_sec", "ammo_type"]):
-				return [false, "turret params must be position/duration_sec (+optional ammo_type)"]
+			if not _keys_with_optional(params, ["position", "duration_sec"], ["position", "duration_sec", "ammo_type", "rotation_deg"]):
+				return [false, "turret params must be position/duration_sec (+optional ammo_type/rotation_deg)"]
 			if not _is_position(params.get("position", null)):
 				return [false, "bad position"]
 			if not _is_num_in(params.get("duration_sec", null), 5.0, 120.0):
 				return [false, "duration_sec out of range 5-120"]
 			if params.has("ammo_type") and not (str(params.get("ammo_type", "")) in AMMO_TYPES):
 				return [false, "bad ammo_type '%s'" % str(params.get("ammo_type", ""))]
+			if params.has("rotation_deg") and not _is_rotation_deg(params.get("rotation_deg", null)):
+				return [false, "rotation_deg out of range -180..180"]
 		"pickup":
 			if not _keys_exact(params, ["kind", "position"]):
 				return [false, "pickup params must be kind/position"]
@@ -677,16 +698,16 @@ static func _validate_mod_block_params(target: String, params: Dictionary) -> Ar
 					return [false, "weapon mod_block params must be mod_block (+optional ammo_type)"]
 		"cover":
 			for k in params.keys():
-				if str(k) not in ["mod_block", "position", "property", "shape", "size_voxels", "hp"]:
-					return [false, "cover mod_block params must be mod_block/position (+optional property)"]
+				if str(k) not in ["mod_block", "position", "property", "shape", "size_voxels", "hp", "rotation_deg"]:
+					return [false, "cover mod_block params must be mod_block/position (+optional property/rotation_deg)"]
 		"structure":
 			for k in params.keys():
-				if str(k) not in ["mod_block", "position", "property", "shape"]:
-					return [false, "structure mod_block params must be mod_block/position (+optional property)"]
+				if str(k) not in ["mod_block", "position", "property", "shape", "rotation_deg"]:
+					return [false, "structure mod_block params must be mod_block/position (+optional property/rotation_deg)"]
 		"turret":
 			for k in params.keys():
-				if str(k) not in ["mod_block", "position", "duration_sec", "ammo_type"]:
-					return [false, "turret mod_block params must be mod_block/position (+optional duration_sec/ammo_type)"]
+				if str(k) not in ["mod_block", "position", "duration_sec", "ammo_type", "rotation_deg"]:
+					return [false, "turret mod_block params must be mod_block/position (+optional duration_sec/ammo_type/rotation_deg)"]
 		"pickup":
 			for k in params.keys():
 				if str(k) not in ["mod_block", "position", "kind"]:
@@ -695,6 +716,8 @@ static func _validate_mod_block_params(target: String, params: Dictionary) -> Ar
 			return [false, "mod_block not supported for target '%s'" % target]
 	if params.has("position") and not _is_position(params.get("position", null)):
 		return [false, "bad position"]
+	if params.has("rotation_deg") and not _is_rotation_deg(params.get("rotation_deg", null)):
+		return [false, "rotation_deg out of range -180..180"]
 	if params.has("ammo_type") and not (str(params.get("ammo_type", "")) in AMMO_TYPES):
 		return [false, "bad ammo_type '%s'" % str(params.get("ammo_type", ""))]
 	if params.has("property") and not (str(params.get("property", "")) in BLOCK_PROPERTIES):
@@ -766,6 +789,11 @@ static func _keys_subset(params: Dictionary, allowed: Array) -> bool:
 
 static func _is_num_in(v: Variant, lo: float, hi: float) -> bool:
 	return (v is int or v is float) and float(v) >= lo and float(v) <= hi
+
+
+## rotation_deg: yaw offset in degrees, -180..180 (0 = default orientation).
+static func _is_rotation_deg(v: Variant) -> bool:
+	return _is_num_in(v, -180.0, 180.0)
 
 
 static func _is_int_in(v: Variant, lo: int, hi: int) -> bool:
@@ -1014,7 +1042,120 @@ static func _normalize_json_numbers(v: Variant) -> Variant:
 	return v
 
 
+## Offline parse wrapper: the inner parser maps the prompt to a spec,
+## then rotation words ("diagonal", "rotated 45 degrees", ...) are
+## applied as params.rotation_deg on placed builds (structure / cover /
+## turret). Rotation is post-processing, not a branch: every placed
+## build benefits, including mod-block and approximation specs. Only
+## added when non-zero, so plain prompts produce byte-identical specs.
 static func _fallback_spec(prompt: String) -> Dictionary:
+	var spec := _fallback_spec_inner(prompt)
+	if spec.has("_error"):
+		return spec
+	if str(spec.get("target", "")) not in ["structure", "cover", "turret"]:
+		return spec
+	var rot := _rotation_deg_from_prompt(prompt.to_lower())
+	if is_zero_approx(rot):
+		return spec
+	var params: Dictionary = spec.get("params", {})
+	params["rotation_deg"] = rot
+	spec["params"] = params
+	return spec
+
+
+## Yaw offset in degrees parsed from prompt words. Explicit numbers win
+## ("rotated 30 degrees" -> 30); otherwise keywords: diagonal 45,
+## sideways/perpendicular 90, backwards/reversed 180. 0 = no rotation
+## requested. NOTE: a bare "N degrees" on a ramp is read as YAW (the
+## builder's slope is fixed and cannot be re-angled) — documented in
+## the SYSTEM_PROMPT rotation rule.
+static func _rotation_deg_from_prompt(p: String) -> float:
+	var rx := RegEx.new()
+	# "rotated 45 degrees" / "rotate the ramp 45" / "at 45 degrees" /
+	# "45-degree ramp" / "45°" — the number after a rotation keyword,
+	# or a number directly attached to "degree"/"°". Bare "at" is NOT a
+	# rotation keyword (it would misread "at position 3" as rotation);
+	# "at 45 degrees" is still caught by the "degrees" alternative.
+	if rx.compile("(rotat\\w*|turn\\w*|angle\\w*)\\D{0,15}(-?\\d+)|(-?\\d+)\\s*-?\\s*degrees?|(-?\\d+)\\s*°") == OK:
+		var m := rx.search(p)
+		if m != null:
+			for g in [2, 3, 4]:
+				var s := m.get_string(g)
+				if not s.is_empty():
+					return clampf(float(s), -180.0, 180.0)
+	if _ph(p, ["diagonal", "diagonally"]):
+		return 45.0
+	if _ph(p, ["sideways", "perpendicular", "crosswise"]):
+		return 90.0
+	if _ph(p, ["backwards", "backward", "reversed", "facing me", "facing toward me", "facing towards me"]):
+		return 180.0
+	return 0.0
+
+
+## Inexpressible-geometry check (v0.5.7 Part B): the builder only makes
+## straight, boxy shapes. Returns {} when the prompt is expressible.
+## Otherwise returns a spec that is NEVER a silent wrong build:
+## - {"kind": "approx"} cases return a real build spec for the nearest
+##   buildable shape PLUS a "_approximation" note ("Closest I can
+##   build: ...") — the manager strips the note before validation and
+##   appends it to the visible result message + cost preview.
+## - {"kind": "refuse"} cases return an "_error" spec whose message says
+##   "Can't build that geometry" — surfaced via forge_result, no build.
+## Runs AFTER the user-mod name match (a user-installed mod literally
+## named e.g. "spiral stairs" still wins) and BEFORE the shape branches
+## that would otherwise swallow these prompts ("spiral staircase"
+## contains "staircase"; "curved wall" contains "wall").
+static func _inexpressible_check(p: String) -> Dictionary:
+	if _ph(p, ["spiral", "helix", "helical", "corkscrew"]):
+		if _ph(p, ["ramp"]):
+			return _approximation_spec("ramp", COST_RAMP, "straight ramp", "spiral geometry")
+		if _ph(p, ["stairs", "staircase", "steps", "stair"]):
+			return _approximation_spec("stairs", COST_STAIRS, "straight stairs", "spiral geometry")
+		return _inexpressible_error(p)
+	if _ph(p, ["curved", "curving", "curve"]):
+		if _ph(p, ["wall"]):
+			return _approximation_spec("wall", COST_STRUCTURE_WALL, "straight wall", "curved geometry")
+		if _ph(p, ["ramp"]):
+			return _approximation_spec("ramp", COST_RAMP, "straight ramp", "curved geometry")
+		if _ph(p, ["bridge"]):
+			return _approximation_spec("bridge", COST_BRIDGE, "straight bridge", "curved geometry")
+		if _ph(p, ["stairs", "staircase"]):
+			return _approximation_spec("stairs", COST_STAIRS, "straight stairs", "curved geometry")
+		return _inexpressible_error(p)
+	if _ph(p, ["circular", "circle", "ring", "round wall", "round tower"]):
+		if _ph(p, ["wall"]):
+			return _approximation_spec("wall", COST_STRUCTURE_WALL, "straight wall", "circular geometry")
+		return _inexpressible_error(p)
+	# Bare "cone" is NOT listed — it is a substring of "concrete"
+	# ("concrete wall" must stay a wall). "a cone" / "cone-shaped" only.
+	# Bare "ball" is kept: "fireball"-style prompts get a geometry error
+	# instead of an unknown error — still an error, never a build.
+	if _ph(p, ["dome", "domed", "sphere", "spherical", "arch", "archway",
+			"cylinder", "cylindrical", "pyramid", "pyramidal",
+			"triangle", "triangular", "torus", "tunnel", "maze",
+			"labyrinth", "l-shaped", "l shaped", "u-shaped", "u shaped",
+			"zigzag", "zig-zag", "oval", "ellipse", "cone-shaped",
+			"cone shape", "a cone", "ball", "orb"]):
+		return _inexpressible_error(p)
+	return {}
+
+
+## Nearest-buildable spec + the visible approximation label.
+static func _approximation_spec(shape: String, cost: int, label: String, detail: String) -> Dictionary:
+	var spec := _spec("spawn", "structure", {"shape": shape, "position": "near_player"}, cost)
+	spec["_approximation"] = "Closest I can build: %s — the Forge can't build %s." % [label, detail]
+	return spec
+
+
+## Visible refusal for geometry the builder cannot express at all.
+static func _inexpressible_error(prompt: String) -> Dictionary:
+	var clean := prompt.strip_edges().left(40)
+	var d := _spec("event", "arena_event", {"event": "supply_drop"}, 0)
+	d["_error"] = "Can't build that geometry: '%s' — the Forge only builds straight, boxy shapes (no spirals, curves, domes, or arches). Try: %s" % [clean, UNKNOWN_SUGGESTIONS]
+	return d
+
+
+static func _fallback_spec_inner(prompt: String) -> Dictionary:
 	var p := prompt.to_lower()
 	# Installed user mods by NAME first: a multi-word mod name in the
 	# prompt ("give me a chunky wall") is a stronger signal than any base
@@ -1025,6 +1166,11 @@ static func _fallback_spec(prompt: String) -> Dictionary:
 	var mod_spec := _mod_spec_for_prompt(p)
 	if not mod_spec.is_empty():
 		return mod_spec
+	# Inexpressible geometry: visible refusal / labeled approximation,
+	# never a silent wrong build (see _inexpressible_check).
+	var inexpressible := _inexpressible_check(p)
+	if not inexpressible.is_empty():
+		return inexpressible
 	if _ph(p, ["turret", "sentry", "auto gun", "auto-gun"]):
 		return _spec("spawn", "turret", {"position": "near_player", "duration_sec": 45}, COST_TURRET)
 	# "watchtower" first: it contains "tower", and is its own buildable.
@@ -1168,7 +1314,7 @@ MODAPI — the ONLY functions a script mod may call (via the `api` argument). Ne
 - announce(title: String, subtitle: String) -> void — HUD banner.
 - get_player_health() -> float — current player HP, or -1 when there is no player / no HP to read.
 - heal_player(amount: float) -> float — heals the player, returns the player's HP afterwards, or -1 when there is no player.
-- apply_status_effect(target: Node, kind: String, params: Dictionary, origin: Vector3) -> bool — status effect (slow|freeze|burn|knockback) on a target; origin is the hit point.
+- apply_status_effect(target: Node, kind: String, params: Dictionary, origin: Vector3) -> bool — status effect on a target; origin is the hit point. Kinds: slow {"factor": 0.05-1.0, "duration_sec": 0.5-30}, freeze {"duration_sec": 0.5-10}, burn {"damage_per_sec": 1-500, "duration_sec": 0.5-30}, knockback {"force": 1-30} (AWAY from origin), pull {"force": 1-30} (TOWARD origin), poison {"damage_per_sec": 1-500, "duration_sec": 0.5-30} (DOT + slow x0.85), bleed {"damage_per_sec": 1-500, "duration_sec": 0.5-30} (DOT, ticks faster while moving), regen {"heal_per_sec": 1-500, "duration_sec": 0.5-30}, haste {"factor": 1.05-2.5, "duration_sec": 0.5-30} (movement speed only), restrained {"duration_sec": 0.5-10} (speed 0, can act, can be shoved), prone {"force": 1-30, "duration_sec": 0.5-10} (knockdown + speed 0), sleep {"duration_sec": 0.5-30} (wakes on damage), confusion {"force": 1-10, "duration_sec": 0.5-30} (random stumbles), blind {"factor": 0.05-1.0, "duration_sec": 0.5-30} (accuracy disruption), weaken {"factor": 0.05-1.0, "duration_sec": 0.5-30} (damage dealt reduced), exhaustion {"duration_sec": 0.5-60} (+1 level per application, 6 = death), typed_damage {"damage_type": "acid"|"cold"|"fire"|"lightning"|"necrotic"|"poison"|"psychic"|"radiant"|"thunder", "amount": 1-500, "duration_sec": 0.5-30} (instant damage + rider). Status kinds need a target — never on a fire point. Do NOT invent other kinds (stunned/paralyzed/unconscious/petrified/grappled/frightened/charmed/deafened/silence/shield/vulnerable/thorns/lifesteal/curse are NOT kinds).
 - spawn_projectile(spec: Dictionary, origin: Vector3, direction: Vector3, hooks: Array = []) -> Node — flying mod projectile travelling along direction; spec carries visual / speed / damage / explodes_on_impact.
 MODBLOCK CONTRACT — every script mod MUST follow this exactly:
 - First line: `extends ModBlock` (exactly, nothing else on that line).
