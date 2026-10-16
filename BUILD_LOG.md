@@ -1,5 +1,46 @@
 # FORGEFALL — Build Log
 
+## v0.5.3 — Forge MAKE + invented hooks (2026-10-15)
+
+### Shipped
+- **Forge MAKE:** one-box session-scoped creation in the Forge menu. Type one prompt, get a one-shot creation that lives for the session only — never saved, never written to `user://mods/`, gone on quit.
+- **Create-a-Mod may invent hooks:** when no existing hook expresses what the mod needs, the LLM may create a hook/script for it. The validator accepts invented hooks; forbidden APIs are still rejected.
+- **Custom projectile / fire-mode hook in the real firing path:** generated weapon mods can now fire custom projectiles in the actual game, not just the sandbox. Verified live in-game: Long Laser Pistol fires a beam; watermelon LMG fires exploding watermelons.
+- **Approval lists invented hooks explicitly:** the approval screen names every invented hook the spec introduces, so nothing new slips in silently.
+- **Session/permanent split:** MAKE = session-only, never saved. Create-a-Mod = permanent install to `user://mods/` behind validation + approval. The two paths never mix.
+
+### Known limits (in this release, by design)
+- Script-mod candidates can't run in-session via MAKE — MAKE refuses visibly and names Create-a-Mod as the route.
+- MAKE bypasses ForgeManager undo / MP-sync / history (session-only by design).
+- `on_damage_taken` `damage_mult > 1` is ignored by the poll (damage-taken hooks only reduce).
+- Turret damage hooks are not wired (turrets don't fire invented-hook projectiles).
+
+### Version bump (publish mechanics only — no game-source changes in this entry)
+- `export_presets.cfg`: `version/code=29`, `version/name="0.5.3"`; Windows preset export_path → `windows_staging/forgefall-v0.5.3-windows/`.
+- `scripts/core/tuning.gd`: `FALLBACK_VERSION_CODE := 29`.
+- `tools/verify_updater_pc.gd`: manifest expectations 0.5.2/code 28 → 0.5.3/code 29.
+
+### Verification (all headless, 2026-10-15 — prior workers, GREEN before publish)
+- `verify_invented_hooks`: **85/85 ALL PASS**.
+- `verify_forge_batch`: **143/143 ALL PASS**.
+- Smoke: clean.
+
+### Builds (all from the same current source)
+- **Android** `updates/forgefall-v0.5.3-debug.apk` (30,889,559 bytes, SHA-256 `7593a5613f314b5abca9043a4e7235440f03e5cd43c60d84769c22ce42834b5a`) + `.idsig`. Godot 4.7.2 headless `--export-debug "Android"`, unchanged custom template (Godot signs + emits the .idsig).
+- **Linux** `linux_staging/forgefall-v0.5.3-linux.zip` (29,980,793 bytes, SHA-256 `4c0022fc502125b4c6e3bcda62ee2bb9be42a9bff169c92439ae7ceea458725c`): binary + forgefall.pck + forgefall.sh + README-LINUX.txt (0.5.2 → 0.5.3, + FORGE MAKE section).
+- **Windows** `windows_staging/forgefall-v0.5.3-windows.zip` (36,908,398 bytes, SHA-256 `99d4e81621daba10331126a81e290b692382cb0b58fae5d15407e4bbc795ca98`): forgefall.exe + forgefall.console.exe + forgefall.pck + README-WINDOWS.txt (0.5.2 → 0.5.3, + FORGE MAKE section).
+- Android APK: apksigner OK (v2+v3 true), aapt `com.sparky.forgefall` versionCode 29 / 0.5.3, manifest UpdateStatusReceiver + ForgeUpdater + ForgeSpeech meta-data + REQUEST_INSTALL_PACKAGES + RECORD_AUDIO, classes2.dex = stock XRMode (1960 B), classes14.dex = ForgeUpdaterPlugin + UpdateStatusReceiver, classes15.dex = ForgeSpeechPlugin. Linux binary headless `--quit-after 120`, exit 0 (known TLS-handshake Updater chatter only).
+
+### Publish
+- **GitHub Release** [v0.5.3](https://github.com/vatherty/FORGEFALL/releases/tag/v0.5.3) in `vatherty/FORGEFALL` — all 3 artifacts attached, all `uploaded`, sizes match local builds.
+- **Pages** (`vatherty/Forgefall-updates`): binaries uploaded first, then `version.json` + `version_pc.json` (0.5.3 / code 29) + `index.html` (0.5.3 links). Changelog: "Forge MAKE: one-box session-scoped creation in the Forge menu (never saved). Create-a-Mod can now invent hooks when nothing exists. Custom projectiles fire in the real game (laser beams, exploding watermelons). Approval lists invented hooks explicitly." `.nojekyll` untouched (still present, empty). Old v0.5.2 files stay as unlisted archive.
+- **Pages build `errored` + recovered (known transient pattern):** right after the uploads, Pages status was `errored` and the live site still served 0.5.2 (new files 404). `pages-enable` re-apply (409 = already enabled) + ~5.5 min total wait flipped status to `built` and the live site to code 29.
+- Live verified: manifests 200 (0.5.3/code 29, Pages URLs, MAKE changelog); all three artifacts 206; v0.5.2 trio still 206; index.html 200 with the three v0.5.3 links; downloaded APK sha256 matches the local build hash.
+- Local `updates/` mirror synced (new index.html + version.json + version_pc.json + APK).
+
+### Deferred / follow-ups (not in this release's scope)
+- None surfaced during publish. Source push is a separate step (not done by this worker).
+
 ## v0.5.2 — Create-a-Mod fixes: sandbox flies the projectile, Mods lists visible (2026-10-15)
 
 ### Shipped (fixes landed by the creator + mirror workers; this entry covers version bump + rebuild + publish)
