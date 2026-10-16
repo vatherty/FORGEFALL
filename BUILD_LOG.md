@@ -1,5 +1,46 @@
 # FORGEFALL — Build Log
 
+## v0.5.6 — LLM-authored hook scripts (2026-10-15)
+
+### Shipped
+- **LLM-authored hook scripts:** when the effect table doesn't cover the request, the LLM may now author a GDScript hook (`extends ModHook`) for the mod instead of getting a refusal. **Prefer-table rule:** data hooks from the effect-kinds table are still preferred whenever they can express the request — code hooks are the fallback for genuinely new behaviour, not the default.
+- **Allowlist validator:** a hook script may call ONLY the ModAPI methods in `ModAPI.HOOK_ALLOWED_*` (the single authoritative list in `scripts/mods/mod_api.gd`) plus the listed safe builtins / ctx methods / local value methods / components. Anything outside it is REJECTED with the violation named (e.g. "hook script calls non-ModAPI (forbidden API): OS.execute"). A hook script that errors at load or run DISABLES ITS MOD VISIBLY, never crashes.
+- **Step/time budget + visible disable:** one hook run may make at most 200 ModAPI calls and take at most 100 ms; a whole dispatch at most 250 ms. Exceeding any of them aborts the rest of the dispatch and disables the mod visibly.
+- **Approval shows script source + LLM-authored label:** the approval screen shows the hook script source and labels it as LLM-authored, so nothing new slips in silently.
+- **Sandbox runs + reports hook scripts:** TEST IN SANDBOX runs code hooks against the dummy and reports what they did.
+- **Pull/vortex E2E:** the few-shot pull/vortex hook script validates, installs, builds, and pulls the dummy toward the player in-game.
+- **Integration fix (publish worker):** `GENERATION_SYSTEM_PROMPT` in `scripts/forge/forge_llm.gd` listed only 11 of the 15 allowlisted ModAPI methods. Synced ONLY that list to the authoritative `HOOK_ALLOWED_API_METHODS` (added `get_player_health`, `heal_player`, `apply_status_effect`, `spawn_projectile`). Nothing else in the file changed.
+
+### Honest limit
+- **A tight loop with no API calls cannot be preempted:** GDScript has no preemptive timeout, so a truly infinite tight loop inside one hook call (no `api` calls, never returns) hangs the frame. What the budget DOES bound: total ModAPI side-effects per run (step cap turns further api calls into no-ops), hooks that loop long but return (wall check after the call), and unbounded `while` loops (rejected at validation — hooks use bounded `for` loops; `range()` literals over 1000 are rejected too).
+
+### Verification (all headless, 2026-10-15 — GREEN)
+- New `tools/verify_hook_scripts.gd`: **89/89 ALL PASS** — pull/vortex E2E, allowlist validation, step-budget disable, sandbox reporting, approval labelling.
+- Regressions: `verify_invented_hooks` **85/85** (re-run after the prompt sync — no regression), `verify_forge_batch` **143/143 ALL PASS**.
+- Shipped-artifact probes (Godot `--main-pack` against the built PCKs): `verify_hook_scripts` **89/89** on BOTH the Linux and Windows PCKs — the hook-script code is IN the built artifacts, not just in source. Both PCKs contain all six new/changed files (`mod_hook.gd`, `mod_api.gd`, `mod_creator.gd`, `mod_creator_menu.gd` [scripts/ui/], `sandbox_test_room.gd` [scripts/ui/], `verify_hook_scripts.gd`) and the synced prompt (all four new ModAPI methods present in the shipped `forge_llm.gd`).
+- Linux binary headless `--quit-after 60`, exit 0 (only the known pre-existing UpdateManager TLS-handshake chatter).
+
+### Version bump (publish mechanics only — no game-source changes in this entry beyond the prompt sync above)
+- `export_presets.cfg`: `version/code=32`, `version/name="0.5.6"`; Windows preset export_path → `windows_staging/forgefall-v0.5.6-windows/`.
+- `scripts/core/tuning.gd`: `FALLBACK_VERSION_CODE := 32`.
+
+### Builds (all from the same current source)
+- **Android** `updates/forgefall-v0.5.6-debug.apk` (31,021,820 bytes, SHA-256 `30ed115bbbe31746092a6bfc81369065727982ffdc05d9bfcd6057bf1ce1ec86`) + `.idsig`. Godot 4.7.2 headless `--export-debug "Android"`, unchanged custom template (Godot signs + emits the .idsig).
+- **Linux** `linux_staging/forgefall-v0.5.6-linux.zip` (30,109,769 bytes, SHA-256 `3d3f869002dd8281285446483316285bdd53ad464fd5099c2b46b4de883c6198`): binary + forgefall.pck + forgefall.sh + README-LINUX.txt (0.5.5 → 0.5.6, + LLM-AUTHORED HOOK SCRIPTS section).
+- **Windows** `windows_staging/forgefall-v0.5.6-windows.zip` (37,037,316 bytes, SHA-256 `e228eafbc3890d4f6bf467058ab5fc5a8c61705205a3683fe1cf039c7adb68b9`): forgefall.exe + forgefall.console.exe + forgefall.pck + README-WINDOWS.txt (0.5.5 → 0.5.6, + LLM-AUTHORED HOOK SCRIPTS section).
+- Android APK: apksigner OK (v2+v3 true), aapt `com.sparky.forgefall` versionCode 32 / 0.5.6, manifest UpdateStatusReceiver + ForgeUpdater + ForgeSpeech meta-data + REQUEST_INSTALL_PACKAGES + RECORD_AUDIO + INTERNET, classes2.dex = stock XRMode (1960 B), classes14.dex = ForgeUpdaterPlugin + UpdateStatusReceiver (9228 B), classes15.dex = ForgeSpeechPlugin (6148 B).
+
+### Publish
+- **GitHub Release** [v0.5.6](https://github.com/vatherty/FORGEFALL/releases/tag/v0.5.6) in `vatherty/FORGEFALL` — all 3 artifacts attached, all `uploaded`, sizes match local builds.
+- **Pages** (`vatherty/Forgefall-updates`): binaries uploaded first, then `version.json` + `version_pc.json` (0.5.6 / code 32) + `index.html` (0.5.6 links). Changelog: "LLM-authored hook scripts: when the effect table doesn't cover the request, the LLM may now author a GDScript hook (extends ModHook) for the mod — data hooks are still preferred whenever they can express it. Hook scripts may call ONLY the ModAPI allowlist; anything else is rejected with the violation named. Step/time budget (200 calls / 100 ms per run, 250 ms per dispatch) with visible disable. Approval shows the script source + LLM-authored label; the sandbox runs code hooks and reports them. Pull/vortex verified end-to-end. Honest limit: a tight loop with no API calls cannot be preempted." `.nojekyll` untouched (still present, empty). Old v0.5.5 files stay as unlisted archive.
+- **Pages build `errored` + recovered (known transient pattern, longer this time):** right after the uploads, Pages status was `errored` and the live site still served 0.5.5 for ~10 min. `pages-enable` re-apply (409 = already enabled). The Pages builds API showed the latest build (`e36ecd75`) still `building`; it flipped to `built` and the live site to code 32. Lesson: check `pages/builds/latest` directly — the site-level `errored` status can lag/stick while a build is still running.
+- Live verified: manifests 200 (0.5.6/code 32, Pages URLs, hook-scripts changelog); all three artifacts 206; v0.5.5 trio still present; index.html 200 with the three v0.5.6 links; downloaded APK sha256 matches the local build hash.
+- Local `updates/` mirror synced (new index.html + version.json + version_pc.json + APK).
+
+### Deferred / follow-ups (not in this release's scope)
+- Source push is a separate step (not done by this worker). **Do NOT push source** — a separate source-sync follows.
+- `tools/verify_updater_pc.gd` still expects the v0.5.4 manifest (code 30) — it was NOT updated because this worker's allowed code edits were limited to the prompt sync + `tuning.gd` + `export_presets.cfg`. The follow-up source-sync should bump its manifest expectations to 0.5.6 / code 32.
+
 ## v0.5.5 — Status effects for invented hooks (Bubble Blaster fix, 2026-10-15)
 
 ### The bug (Colin's report, 3 screenshots)
@@ -2645,3 +2686,8 @@ Synced local source tree to vatherty/FORGEFALL main via contents API (diff by gi
 
 ## v0.5.5 source sync
 Synced local source tree to vatherty/FORGEFALL main via contents API (diff by git blob SHA). Includes CONTRIBUTING.md (new), status-effects files, and verify_updater_pc.gd bumped to 0.5.5 / code 31. No secrets/binaries.
+
+## v0.5.6 source sync
+Synced local source tree to vatherty/FORGEFALL main via contents API (diff by git blob SHA). Uploaded 15 files, deleted 0.
+Changed set: v0.5.6 LLM-authored hook scripts (mod_api.gd, mod_hook.gd, mod_hook_registry.gd, mod_loader.gd, mod_creator.gd, forge_llm.gd, mod_creator_menu.gd, sandbox_test_room.gd, verify_hook_scripts.gd + .uid — new), tuning.gd, export_presets.cfg (sanitized copy uploaded: keystore passwords blanked, version 0.5.6 / code 32), verify_updater_pc.gd (manifest expectation bumped to 0.5.6 / code 32), verify_creator_redesign.gd (creator-menu expectation updated to the 4-tab CREATE / CHAT / MODS / IMPORT-EXPORT layout), BUILD_LOG.md (this entry).
+Exclusions (never pushed): builds/, updates/, .godot/, staging dirs, *.apk/*.zip/*.pck/*.keystore/*.import, top-level android/ template, any credentials. The 4 .aar plugin binaries were unchanged (SHAs match). No secrets/binaries landed.
