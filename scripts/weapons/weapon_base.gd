@@ -74,6 +74,17 @@ var reload_stages: Array = [0.45, 0.85, 0.35] # mag_out, mag_in, chamber
 var cycle_time: float = 0.0      # bolt/pump re-chamber lockout
 var sfx_fire: String = "shot"
 
+# --- Mod hooks (v0.5.3: invented hooks) ---
+# Attached by ModHookRegistry when a mod weapon is granted (see
+# ModHookRegistry.try_attach_pending / attach_mod_to_weapon). Empty for
+# every stock weapon, which keeps the stock firing path byte-for-byte
+# identical. When mod_projectile_spec is non-empty (after hook merging
+# in resolve_projectile_spec), the weapon fires ModProjectiles instead
+# of hitscan; mod_hooks run on_fire / on_hit / on_kill.
+var mod_id: String = ""
+var mod_projectile_spec: Dictionary = {}
+var mod_hooks: Array = []
+
 # --- Runtime state ---
 var _player: Node = null
 var _camera: Camera3D = null
@@ -139,6 +150,14 @@ func setup(stats: Dictionary) -> void:
 	reload_stages = (stats.get("reload_stages", [0.45, 0.85, 0.35]) as Array).duplicate()
 	cycle_time = float(stats.get("cycle_time", 0.0))
 	sfx_fire = str(stats.get("sfx_fire", "shot"))
+	# v0.5.3: forward-compat for mod-weapon Arsenal entries (custom
+	# stats dicts may carry their mod attachment inline).
+	if stats.has("mod_id"):
+		mod_id = str(stats.get("mod_id", ""))
+	if stats.has("mod_projectile_spec") and stats["mod_projectile_spec"] is Dictionary:
+		mod_projectile_spec = (stats["mod_projectile_spec"] as Dictionary).duplicate(true)
+	if stats.has("mod_hooks") and stats["mod_hooks"] is Array:
+		mod_hooks = (stats["mod_hooks"] as Array).duplicate(true)
 	# ADS target: shift the viewmodel so this weapon's sight line
 	# (Arsenal.sight_height) lands exactly on the camera's -Z axis, i.e.
 	# the sight sits centered on screen. Shared ADS_POS is the fallback.
@@ -154,6 +173,29 @@ func setup(stats: Dictionary) -> void:
 func attach(p_player: Node, p_camera: Camera3D) -> void:
 	_player = p_player
 	_camera = p_camera
+
+
+## Attaches a mod's hooks + projectile spec to this weapon (called by
+## ModHookRegistry; the Forge grant path attaches automatically). The
+## weapon keeps the attachment until it is replaced.
+func set_mod(p_mod_id: String, projectile_spec: Dictionary, hooks: Array) -> void:
+	mod_id = p_mod_id
+	mod_projectile_spec = projectile_spec.duplicate(true)
+	mod_hooks = hooks.duplicate(true)
+
+
+## A ModAPI bound to this weapon's player + scene root (for hook
+## dispatch). Cheap RefCounted; safe with a null root (spawn calls
+## no-op, heal/announce still work).
+func _mod_api() -> ModAPI:
+	var root: Node = null
+	if is_inside_tree():
+		var tree := get_tree()
+		if tree != null:
+			root = tree.current_scene
+			if root == null:
+				root = tree.root
+	return ModAPI.new(_player as Node3D, root)
 
 
 ## Called by WeaponManager when this weapon becomes active.
@@ -336,7 +378,22 @@ func _attempt_fire() -> void:
 	# Goal 6 (Progression): one shot per round fired (not per pellet).
 	_record_stat("shot", {"weapon_id": weapon_id})
 	_cooldown = 60.0 / maxf(rpm, 1.0)
-	_fire_hitscan()
+	# v0.5.3 INVENTED HOOKS: a mod weapon fires its mod's projectile
+	# (ModProjectile, real firing path) instead of hitscan, and its
+	# on_fire / projectile_spawn hooks run on every shot. Stock weapons
+	# (no hooks, no projectile spec) take the old hitscan path exactly.
+	var proj_spec := ModHookRegistry.resolve_projectile_spec(self)
+	if not proj_spec.is_empty() or not mod_hooks.is_empty():
+		var fire_api := _mod_api()
+		var fire_pos: Vector3 = _muzzle.global_position if _muzzle != null else (_camera.global_position if _camera != null else Vector3.ZERO)
+		var fire_ctx := {"weapon_id": weapon_id, "position": fire_pos,
+			"direction": -_camera.global_transform.basis.z if _camera != null else Vector3.FORWARD}
+		ModHookRegistry.run_point_for_weapon(self, "on_fire", fire_api, fire_ctx)
+		ModHookRegistry.run_point_for_weapon(self, "projectile_spawn", fire_api, fire_ctx)
+	if not proj_spec.is_empty():
+		_fire_projectile(proj_spec)
+	else:
+		_fire_hitscan()
 	_apply_recoil()
 	_show_muzzle_flash()
 	_eject_shell()
@@ -378,6 +435,33 @@ func _spread_dir(spread: float) -> Vector3:
 	return dir
 
 
+## v0.5.3: fires the mod's custom projectile(s) — one per pellet, each
+## with its own spread dir. The projectile carries the weapon's damage
+## when the spec leaves damage at -1 (default), plus the weapon's
+## attached hooks (on_hit / on_kill run on impact in ModProjectile).
+func _fire_projectile(spec: Dictionary) -> void:
+	if _camera == null:
+		return
+	var tree := get_tree()
+	if tree == null:
+		return
+	var root: Node = tree.current_scene
+	if root == null:
+		root = tree.root
+	var muzzle_pos: Vector3 = _muzzle.global_position if _muzzle != null else _camera.global_position + (-_camera.global_transform.basis.z) * 0.6
+	var spread := _current_spread()
+	for i in maxi(pellets, 1):
+		var dir := _spread_dir(spread)
+		var pspec := spec.duplicate(true)
+		var dmg: Variant = pspec.get("damage", -1.0)
+		if not (dmg is int or dmg is float) or float(dmg) < 0.0:
+			pspec["damage"] = damage
+		var p := ModProjectile.new()
+		p.setup(pspec, mod_hooks, _player)
+		root.add_child(p)
+		p.launch(muzzle_pos, dir)
+
+
 func _fire_hitscan() -> void:
 	if _camera == null:
 		return
@@ -391,6 +475,9 @@ func _fire_hitscan() -> void:
 	# Goal 6: one hit per round that damaged at least one enemy (not per
 	# pellet) so accuracy = rounds that hit / rounds fired.
 	var hit_enemy_this_round := false
+	# v0.5.3: on_kill hooks run once per killed target per shot, even
+	# with multi-pellet weapons (later pellets see an already-dead body).
+	var killed_ids := {}
 	for i in maxi(pellets, 1):
 		var dir := _spread_dir(spread)
 		var query := PhysicsRayQueryParameters3D.create(from, from + dir * MAX_HITSCAN_RANGE, 0xFFFFFFFF, exclude)
@@ -410,15 +497,37 @@ func _fire_hitscan() -> void:
 			# on world surfaces. Enemy hits already get flash + flinch.
 			if not hit_enemy and damage >= 60.0:
 				ImpactFX.spawn_smoke(hit_pos, 0.7)
-		if collider != null and collider.has_method("take_damage"):
+		if not hit.is_empty():
+			# v0.5.3 INVENTED HOOKS (mod weapons only): on_hit hooks
+			# run on EVERY hit (wall hits included — an on-hit
+			# explosion still goes off), and a damage_mult effect
+			# multiplies this hit's damage before it lands. on_kill
+			# hooks run once per killed target.
 			var dist := from.distance_to(hit_pos)
 			var dmg := _falloff_damage(dist)
 			var head := _is_headshot(collider)
 			if head:
 				dmg *= headshot_mult
-			collider.take_damage(dmg, hit_pos, head)
-			hit_enemy_this_round = true
-			_notify_hit(collider, head)
+			if not mod_hooks.is_empty():
+				var hit_api := _mod_api()
+				var hit_ctx := {"position": hit_pos, "hit_position": hit_pos,
+					"damage": dmg, "target": collider, "headshot": head,
+					"weapon_id": weapon_id}
+				var hres := ModHookRegistry.run_hooks(mod_hooks, "on_hit", hit_api, hit_ctx)
+				dmg *= float(hres.get("damage_mult", 1.0))
+			if collider != null and collider.has_method("take_damage"):
+				collider.take_damage(dmg, hit_pos, head)
+				hit_enemy_this_round = true
+				_notify_hit(collider, head)
+				if ModHookRegistry.target_is_dead(collider) and not mod_hooks.is_empty():
+					var iid := collider.get_instance_id()
+					if not killed_ids.has(iid):
+						killed_ids[iid] = true
+						var kill_api := _mod_api()
+						var kill_ctx := {"position": hit_pos, "hit_position": hit_pos,
+							"damage": dmg, "target": collider, "headshot": head,
+							"weapon_id": weapon_id}
+						ModHookRegistry.run_hooks(mod_hooks, "on_kill", kill_api, kill_ctx)
 
 
 	if hit_enemy_this_round:
