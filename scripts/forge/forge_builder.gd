@@ -218,6 +218,8 @@ static func build(spec: Dictionary, ctx: Dictionary) -> String:
 			return _build_structure(params, player, root)
 		"turret":
 			return _build_turret(params, player, root)
+		"emitter":
+			return _build_emitter(params, player, root)
 		"pickup":
 			return _build_pickup(params, player, root)
 		"weapon":
@@ -851,6 +853,11 @@ static func _build_turret(params: Dictionary, player: Node3D, root: Node) -> Str
 	var ammo_type := str(params.get("ammo_type", "standard"))
 	var t = TURRET_SCRIPT.new()
 	_apply_turret_ammo(t, ammo_type)
+	# v0.5.8 elemental emitters: an "element" param turns the turret
+	# into an elemental emitter turret — every shot deals its full
+	# damage AS that element (see forge_turret.gd _fire).
+	if params.has("element") and ElementalEmitter.is_element(str(params.get("element", ""))):
+		t.set_meta("element", str(params.get("element", "")))
 	t.ttl_seconds = ttl
 	# Worker B: enemy-pressure tick so enemies can damage the turret
 	# (its take_damage() previously had no enemy caller).
@@ -868,6 +875,8 @@ static func _build_turret(params: Dictionary, player: Node3D, root: Node) -> Str
 	root.add_child(t)
 	_register_build(t, pos, root, true)
 	var ammo_note := "" if ammo_type == "standard" else " (%s ammo)" % ammo_type
+	if t.has_meta("element"):
+		ammo_note += " (%s emitter)" % str(t.get_meta("element"))
 	var rot := _rotation_deg(params)
 	if not is_zero_approx(rot):
 		ammo_note += ", rotated %d°" % int(round(rot))
@@ -896,6 +905,28 @@ static func _apply_turret_ammo(turret: Node, ammo_type: String) -> void:
 	turret.set_meta("ammo_type", ammo_type)
 	turret.set_meta("damage_mult", damage_mult)
 	turret.set_meta("range_mult", range_mult)
+
+
+## v0.5.8 elemental emitters: a free-standing emitter pylon —
+## voxel particles + one elemental damage type + radius + duration,
+## damaging ENEMIES ONLY inside the radius. Counts toward the
+## structure cap and registers for undo like any structure.
+static func _build_emitter(params: Dictionary, player: Node3D, root: Node) -> String:
+	var cap := _cap_check()
+	if not cap.is_empty():
+		return cap
+	var element := str(params.get("element", "fire"))
+	if not ElementalEmitter.is_element(element):
+		return FAIL_PREFIX + "unknown emitter element '%s'." % element
+	var pos := snap_to_ground(_resolve_position(params.get("position", "near_player"), player, root), root)
+	var radius := clampf(float(params.get("radius", 4.0)), 1.0, 10.0)
+	var dur := clampf(float(params.get("duration_sec", 10.0)), 3.0, 60.0)
+	var dps := clampf(float(params.get("damage_per_sec", 10.0)), 1.0, 100.0)
+	var node := ElementalEmitter.spawn_field(root, element, pos, radius, dur, dps)
+	if node == null:
+		return FAIL_PREFIX + "could not deploy %s emitter." % element
+	_register_build(node, pos, root, true)
+	return "Forge deployed %s emitter (radius %.0f m, %ds, %.0f dmg/s, enemies only)." % [element, radius, int(dur), dps]
 
 
 static func _build_pickup(params: Dictionary, player: Node3D, root: Node) -> String:
@@ -954,8 +985,17 @@ static func _build_weapon(params: Dictionary, player: Node3D) -> String:
 		var weapon := _find_fresh_weapon(wm, arsenal_id)
 		if weapon != null:
 			_apply_ammo_modifiers(weapon, ammo_type)
+	# v0.5.8 elemental emitters: an "element" param makes every
+	# hitscan hit deal its full damage AS that element (recorded as
+	# metadata — WeaponBase reads it on hit). Composes with ammo_type.
+	if params.has("element") and ElementalEmitter.is_element(str(params.get("element", ""))):
+		var eweapon := _find_fresh_weapon(wm, arsenal_id)
+		if eweapon != null:
+			eweapon.set_meta("elemental_ammo", str(params.get("element", "")))
 	Sfx.play_2d("weapon_raise")
 	var ammo_note := "" if ammo_type == "standard" else " (%s ammo)" % ammo_type
+	if params.has("element") and ElementalEmitter.is_element(str(params.get("element", ""))):
+		ammo_note += " (%s elemental)" % str(params.get("element", ""))
 	return "Forge fabricated: %s%s." % [str(WEAPON_NAMES.get(wid, wid)), ammo_note]
 
 
@@ -995,19 +1035,29 @@ static func _build_enemy_mod(params: Dictionary, root: Node) -> String:
 	return "Forge: enemy force weakened (they take +50% damage)."
 
 
-## "Spawn enemies": player-paid challenge wave — 3 grunts queue into the
+## "Spawn enemies": player-paid challenge wave — enemies queue into the
 ## wave manager's spawn queue. Nothing to remove on undo (see manager: the
-## refund still applies, the grunts stay).
+## refund still applies, the spawned enemies stay).
+## v0.5.8 D&D: all 8 chassis are spawnable (was grunt/rusher/marksman
+## only) and params may carry "creature_type" — a 5e type override
+## ("spawn an undead brute", "a fiend warlord") that the wave manager
+## applies to those spawns only. The type shows in the result message
+## (the Forge side of "type shows in enemy info/Forge").
 static func _build_enemy_spawn(params: Dictionary, root: Node) -> String:
 	var wm = _wave_manager(root)
 	if wm == null or not wm.has_method("apply_director_mod"):
 		return FAIL_PREFIX + "no wave manager to spawn enemies."
 	var etype := str(params.get("type", "grunt"))
-	if not (etype in ["grunt", "rusher", "marksman"]):
+	if not (etype in ["grunt", "rusher", "marksman", "brute", "shredder", "suppressor", "bulwark", "warlord"]):
 		etype = "grunt"
 	var count := clampi(int(params.get("count", 3)), 1, 6)
-	wm.apply_director_mod({"kind": "spawn_extra", "type": etype, "count": count, "source": "forge"})
-	return "Forge: %d hostile %s inbound — good hunting." % [count, etype + ("s" if count != 1 else "")]
+	var mod := {"kind": "spawn_extra", "type": etype, "count": count, "source": "forge"}
+	var ct := str(params.get("creature_type", ""))
+	if DnDTypes.is_creature_type(ct):
+		mod["creature_type"] = ct
+	wm.apply_director_mod(mod)
+	var type_note := "" if ct.is_empty() else " %s" % DnDTypes.creature_display_name(ct).to_lower()
+	return "Forge: %d hostile%s %s inbound — good hunting." % [count, type_note, etype + ("s" if count != 1 else "")]
 
 
 static func _build_killstreak(params: Dictionary, player: Node3D, root: Node) -> String:
