@@ -328,7 +328,10 @@ func spawn_turret(position: Vector3, duration_sec: float, damage_mult: float, ra
 ## Give the player a base weapon, tuned by the multipliers (1.0 = stock).
 ## weapon_id is a Forge id (manticore/longeye/breacher/hornet/p9/raptor/lmg).
 ## False when there is no player / WeaponManager / unknown weapon.
-func give_weapon(weapon_id: String, damage_mult: float, range_mult: float, mag_mult: float) -> bool:
+## Gives the player a weapon with optional multipliers + fire mode.
+## fire_mode: "" (keep base) or "auto"|"semi"|"burst"|"bolt"|"pump".
+## burst_size: rounds per burst (only with fire_mode "burst", 2-10).
+func give_weapon(weapon_id: String, damage_mult: float, range_mult: float, mag_mult: float, fire_mode: String = "", burst_size: int = 0) -> bool:
 	if not _charge_step():
 		return false
 	if _player == null:
@@ -357,6 +360,10 @@ func give_weapon(weapon_id: String, damage_mult: float, range_mult: float, mag_m
 				var mag_size := maxi(1, int(round(float(kid.get("mag_size")) * mag_mult)))
 				kid.set("mag_size", mag_size)
 				kid.set("mag", mag_size)
+			if not fire_mode.is_empty():
+				kid.set("fire_mode", WeaponBase.fire_mode_from_string(fire_mode))
+			if burst_size >= 2:
+				kid.set("burst_size", mini(burst_size, 10))
 			break
 	return true
 
