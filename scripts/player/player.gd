@@ -654,11 +654,59 @@ func heal(amount: float) -> void:
 	health_changed.emit(_hp, get_max_hp())
 
 
-# Damageable interface: take_damage(amount, hit_position, is_headshot).
-func take_damage(amount: float, hit_position: Vector3, is_headshot: bool) -> void:
+# Damageable interface: take_damage(amount, hit_position, is_headshot,
+# attacker). `attacker` is the Node that dealt the hit when the caller
+# has a handle on it (EnemyBase.fire_hitscan passes self); null for
+# attacker-less sources (explosions, grenades, slams) — thorns then
+# reflects to the nearest live enemy (see ModStatusEffects).
+# v0.5.9 take_damage INTERCEPTION (ONE hook point, no refactor):
+#   1. take_damage hooks of the EQUIPPED weapon run first (they may
+#      apply shield/vulnerable/thorns/petrified to the player, or
+#      return damage_mult for THIS hit).
+#   2. The class damage-taken multiplier applies.
+#   3. ModStatusEffects.resolve_incoming_damage() applies the
+#      player's active defensive states (petrified nullifies,
+#      vulnerable multiplies, shield absorbs, thorns reflects).
+#   4. Only the final damage lands. A fully absorbed / nullified hit
+#      deals no damage: no HP loss, no hurt feedback, no regen reset.
+#   5. Thorns reflection (if any) is delivered to the attacker as a
+#      plain hit — it passes through the attacker's own defensive
+#      states but never reflects again (reflection guard).
+func take_damage(amount: float, hit_position: Vector3, is_headshot: bool, attacker: Node = null) -> void:
 	if _dead:
 		return
-	_hp = maxf(_hp - amount * class_damage_taken_mult(), 0.0)
+	var final_damage := amount
+	var reflected := 0.0
+	var reflected_target: Node = null
+	if amount > 0.0:
+		var incoming := amount
+		var hooks := _take_damage_hooks()
+		if not hooks.is_empty():
+			var root: Node = null
+			if is_inside_tree():
+				var tree := get_tree()
+				if tree != null:
+					root = tree.current_scene
+			var api := ModAPI.new(self, root)
+			var ctx := {"damage": incoming, "target": self, "attacker": attacker,
+				"hit_position": hit_position, "position": global_position,
+				"headshot": is_headshot, "hp_before": _hp}
+			var res := ModHookRegistry.run_take_damage(hooks, api, ctx)
+			incoming *= float(res.get("damage_mult", 1.0))
+		incoming *= class_damage_taken_mult()
+		var resolved := ModStatusEffects.resolve_incoming_damage(self, incoming, attacker)
+		final_damage = float(resolved.get("final_damage", incoming))
+		reflected = float(resolved.get("reflected", 0.0))
+		var rt: Variant = resolved.get("reflected_target", null)
+		if rt is Node:
+			reflected_target = rt as Node
+	if final_damage <= 0.0:
+		# Fully absorbed / nullified / non-positive: no damage lands.
+		# Thorns cannot reflect damage that was never taken (resolve
+		# returns reflected 0.0 for nullified hits), so nothing more
+		# to do.
+		return
+	_hp = maxf(_hp - final_damage, 0.0)
 	_regen_t = 0.0
 	# v0.5.8 FIGHTER Second Wind: once per life, dropping to <=30% HP
 	# (but not to 0) restores 30% of max HP instead of staying low.
@@ -672,8 +720,32 @@ func take_damage(amount: float, hit_position: Vector3, is_headshot: bool) -> voi
 	damaged.emit(dir.normalized() if dir.length() > 0.01 else Vector3.ZERO)
 	Input.vibrate_handheld(20)  # no-op on desktop; Android needs VIBRATE permission
 	Sfx.play_2d("player_hurt")
+	if reflected > 0.0 and reflected_target != null and is_instance_valid(reflected_target) \
+			and reflected_target.has_method("take_damage"):
+		ModStatusEffects.begin_reflection()
+		# 3-arg call: the reflected hit is a plain hit — the
+		# reflection guard (not an attacker param) stops ping-pong,
+		# and 3 args stay compatible with every take_damage.
+		reflected_target.call("take_damage", reflected, global_position, false)
+		ModStatusEffects.end_reflection()
 	if _hp <= 0.0:
 		_die()
+
+
+## take_damage hooks of the EQUIPPED weapon (the WeaponManager's
+## current weapon's mod_hooks). [] when there is no WeaponManager /
+## no current weapon / no hooks. The registry filters by hook point.
+func _take_damage_hooks() -> Array:
+	var wm := get_node_or_null("WeaponManager")
+	if wm == null:
+		return []
+	var cur: Variant = wm.get("_current")
+	if not (cur is Node):
+		return []
+	var hooks: Variant = (cur as Node).get("mod_hooks")
+	if hooks is Array:
+		return hooks as Array
+	return []
 
 
 func _die() -> void:
