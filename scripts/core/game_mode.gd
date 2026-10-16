@@ -40,6 +40,10 @@ const MODES := {
 		"name": "ENDLESS",
 		"desc": "Waves never stop. Chase your best score.",
 	},
+	"base_defense": {
+		"name": "BASE DEFENSE",
+		"desc": "Build phase, then hold the core. Forge is how you survive.",
+	},
 }
 
 const BEST_PATH := "user://endless_best.json"
@@ -97,6 +101,7 @@ func start(m: String) -> void:
 	_respawn_t = -1.0
 	Game.reset_run()
 	_clear_points()
+	if mode == "base_defense": add_child(BaseDefenseMode.new())
 	if mode == "domination":
 		_build_points()
 	running = true
