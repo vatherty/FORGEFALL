@@ -48,13 +48,25 @@ var _projectile_pos := Vector3.ZERO
 var _target_pos := Vector3.ZERO
 var _result: Dictionary = {}
 var _flash: MeshInstance3D
+# v0.5.3: visual flight speed, from the behavior's projectile_spec
+# (the hook's speed) — the UI animation replays the same speed the
+# pure-logic simulation uses.
+var _anim_speed := PROJECTILE_SPEED
 
 
 ## Pure-logic simulation: no nodes, no scene tree, no writes.
-## behavior: {"projectile": bool, "explodes_on_impact": bool}.
+## behavior: {"projectile": bool, "explodes_on_impact": bool,
+##  "projectile_spec": Dictionary (a ModHook projectile dict),
+##  "hooks": Array (ModHook dicts), "heal_on_kill": float}.
+## v0.5.3: invented hooks are EXERCISED here, not just declared — the
+## projectile flies at the hook's speed with the hook's explosion, an
+## on_hit explosion hook detonates on impact, and an on_kill heal hook
+## heals (the sandbox dummy dies on any hit, so a hit is a kill).
 ## Returns {"placed": bool, "hit": bool, "explosion_fired": bool,
 ##  "projectile_voxels": int, "steps": int, "dummy_hit": int,
 ##  "explosion_radius": float, "explosion_damage": float,
+##  "heal_on_kill": float, "healed": bool, "hooks_run": Array[String],
+##  "projectile_speed": float, "projectile_damage": float,
 ##  "wrote_to_mod_list": false, "wrote_to_progression": false}.
 static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: Dictionary) -> Dictionary:
 	var voxels := int((asset as Dictionary).get("voxel_count", 0))
@@ -62,23 +74,85 @@ static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: D
 		return {"placed": true, "hit": false, "explosion_fired": false,
 			"projectile_voxels": voxels, "steps": 0, "dummy_hit": -1,
 			"explosion_radius": 0.0, "explosion_damage": 0.0,
+			"heal_on_kill": 0.0, "healed": false, "hooks_run": [],
+			"projectile_speed": 0.0, "projectile_damage": 0.0,
 			"wrote_to_mod_list": false, "wrote_to_progression": false}
+	var spec: Dictionary = {}
+	if behavior.get("projectile_spec") is Dictionary:
+		spec = behavior.get("projectile_spec", {}) as Dictionary
+	var speed := PROJECTILE_SPEED
+	if spec.has("speed") and (spec["speed"] is int or spec["speed"] is float):
+		speed = clampf(float(spec["speed"]), 1.0, 200.0)
+	var hooks: Array = []
+	if behavior.get("hooks") is Array:
+		hooks = behavior.get("hooks", []) as Array
+	var heal_on_kill := 0.0
+	if behavior.has("heal_on_kill") and (behavior["heal_on_kill"] is int or behavior["heal_on_kill"] is float):
+		heal_on_kill = float(behavior["heal_on_kill"])
+	var hooks_run: Array = []
+	for h in hooks:
+		if not (h is Dictionary):
+			continue
+		var d := h as Dictionary
+		if str(d.get("hook_point", "")) in ["on_fire", "projectile_spawn"] and d.has("projectile"):
+			hooks_run.append(str(d.get("hook_id", "")))
 	var pos := SHOOTER_POS
 	var steps := 0
 	var hit := false
 	while steps < MAX_STEPS:
 		steps += 1
-		pos = pos.move_toward(DUMMY0_POS, PROJECTILE_SPEED * STEP_DT)
+		pos = pos.move_toward(DUMMY0_POS, speed * STEP_DT)
 		if pos.distance_to(DUMMY0_POS) <= HIT_DIST:
 			hit = true
 			break
-	var explodes := bool(behavior.get("explodes_on_impact", false))
+	# On hit: on_hit explosion hooks detonate; on_kill hooks run (the
+	# dummy dies on any hit) — a heal effect heals.
+	var hit_explodes := false
+	var hit_radius := EXPLOSION_RADIUS
+	var hit_damage := EXPLOSION_DAMAGE
+	if hit:
+		for h in hooks:
+			if not (h is Dictionary):
+				continue
+			var d := h as Dictionary
+			if str(d.get("hook_point", "")) == "on_hit":
+				for eff in (d.get("effects", []) as Array):
+					if eff is Dictionary and str((eff as Dictionary).get("kind", "")) == "explosion":
+						hit_explodes = true
+						hit_radius = float((eff as Dictionary).get("radius", EXPLOSION_RADIUS))
+						hit_damage = float((eff as Dictionary).get("damage", EXPLOSION_DAMAGE))
+				if not hooks_run.has(str(d.get("hook_id", ""))):
+					hooks_run.append(str(d.get("hook_id", "")))
+			if str(d.get("hook_point", "")) == "on_kill":
+				for eff in (d.get("effects", []) as Array):
+					if eff is Dictionary and str((eff as Dictionary).get("kind", "")) == "heal":
+						heal_on_kill = maxf(heal_on_kill, float((eff as Dictionary).get("amount", 0.0)))
+				if not hooks_run.has(str(d.get("hook_id", ""))):
+					hooks_run.append(str(d.get("hook_id", "")))
+	var spec_explodes := bool(spec.get("explodes_on_impact", false))
+	var explodes := bool(behavior.get("explodes_on_impact", false)) or spec_explodes or hit_explodes
+	var radius := EXPLOSION_RADIUS
+	var edamage := EXPLOSION_DAMAGE
+	if spec_explodes:
+		radius = float(spec.get("explosion_radius", EXPLOSION_RADIUS))
+		edamage = float(spec.get("explosion_damage", EXPLOSION_DAMAGE))
+	elif hit_explodes:
+		radius = hit_radius
+		edamage = hit_damage
+	var proj_damage := 0.0
+	if spec.has("damage") and (spec["damage"] is int or spec["damage"] is float) and float(spec["damage"]) >= 0.0:
+		proj_damage = float(spec["damage"])
 	return {"placed": false, "hit": hit,
 		"explosion_fired": hit and explodes,
 		"projectile_voxels": voxels, "steps": steps,
 		"dummy_hit": 0 if hit else -1,
-		"explosion_radius": EXPLOSION_RADIUS if (hit and explodes) else 0.0,
-		"explosion_damage": EXPLOSION_DAMAGE if (hit and explodes) else 0.0,
+		"explosion_radius": radius if (hit and explodes) else 0.0,
+		"explosion_damage": edamage if (hit and explodes) else 0.0,
+		"heal_on_kill": heal_on_kill if hit else 0.0,
+		"healed": hit and heal_on_kill > 0.0,
+		"hooks_run": hooks_run,
+		"projectile_speed": speed,
+		"projectile_damage": proj_damage,
 		"wrote_to_mod_list": false, "wrote_to_progression": false}
 
 
@@ -220,8 +294,21 @@ func open(candidate: Dictionary, asset: Dictionary, behavior: Dictionary, weapon
 	_result = {}
 	_animating = false
 	_weapon_visual = null
+	_anim_speed = PROJECTILE_SPEED
+	if behavior.get("projectile_spec") is Dictionary:
+		var pspec := behavior.get("projectile_spec", {}) as Dictionary
+		if pspec.has("speed") and (pspec["speed"] is int or pspec["speed"] is float):
+			_anim_speed = clampf(float(pspec["speed"]), 1.0, 200.0)
 	if _candidate_label != null:
 		_candidate_label.text = str(candidate.get("name", ""))
+		# v0.5.3: show the invented hooks under test, so the tester can
+		# see which hooks the shot is exercising.
+		if behavior.get("hooks") is Array and not (behavior.get("hooks", []) as Array).is_empty():
+			var parts: Array[String] = []
+			for h in (behavior.get("hooks", []) as Array):
+				if h is Dictionary:
+					parts.append("%s (%s)" % [str((h as Dictionary).get("hook_id", "?")), str((h as Dictionary).get("hook_point", "?"))])
+			_candidate_label.text += "\nHooks: " + ", ".join(parts)
 	if _viewport == null:
 		return
 	for child in _viewport.get_children():
@@ -265,7 +352,7 @@ func get_last_result() -> Dictionary:
 func _process(_delta: float) -> void:
 	if not _animating or _projectile == null:
 		return
-	_projectile_pos = _projectile_pos.move_toward(_target_pos, PROJECTILE_SPEED * _delta)
+	_projectile_pos = _projectile_pos.move_toward(_target_pos, _anim_speed * _delta)
 	_projectile.position = _projectile_pos
 	_projectile.rotate_y(_delta * 6.0)
 	if _projectile_pos.distance_to(_target_pos) <= HIT_DIST:
@@ -308,7 +395,7 @@ func _detonate_visual() -> void:
 		if _room_root != null:
 			_room_root.add_child(_flash)
 		var tw := _flash.create_tween()
-		tw.tween_property(_flash, "scale", Vector3.ONE * EXPLOSION_RADIUS, 0.25)
+		tw.tween_property(_flash, "scale", Vector3.ONE * float(_result.get("explosion_radius", EXPLOSION_RADIUS)), 0.25)
 		tw.tween_property(mat, "albedo_color:a", 0.0, 0.25)
 		tw.chain().tween_callback(_flash.queue_free)
 	if _dummies.size() > 0 and _dummies[0] is Node3D:
@@ -317,11 +404,20 @@ func _detonate_visual() -> void:
 		tw2.tween_property(dummy, "rotation", Vector3(-PI / 2.0, 0, 0), 0.3)
 	if _result_label != null:
 		if bool(_result.get("hit", false)) and bool(_result.get("explosion_fired", false)):
-			_result_label.text = "HIT — projectile struck dummy 0 and EXPLODED (radius %.0f, damage %.0f). Nothing installed." % [EXPLOSION_RADIUS, EXPLOSION_DAMAGE]
+			_result_label.text = "HIT — projectile struck dummy 0 and EXPLODED (radius %.0f, damage %.0f). Nothing installed." % [float(_result.get("explosion_radius", EXPLOSION_RADIUS)), float(_result.get("explosion_damage", EXPLOSION_DAMAGE))]
 		elif bool(_result.get("hit", false)):
 			_result_label.text = "HIT — projectile struck dummy 0 (no explosion in this mod). Nothing installed."
 		else:
 			_result_label.text = "MISS — projectile did not reach the dummy."
+		# v0.5.3: report the hooks the shot exercised.
+		if bool(_result.get("healed", false)):
+			_result_label.text += " On-kill hook healed +%.0f HP." % float(_result.get("heal_on_kill", 0.0))
+		var hooks_run: Variant = _result.get("hooks_run", [])
+		if hooks_run is Array and not (hooks_run as Array).is_empty():
+			var names: Array[String] = []
+			for h in (hooks_run as Array):
+				names.append(str(h))
+			_result_label.text += " Hooks run: " + ", ".join(names) + "."
 	if _fire_button != null:
 		_fire_button.disabled = true
 
