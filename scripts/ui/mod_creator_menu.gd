@@ -16,9 +16,25 @@
 #     validation -> approval -> Install path, nothing installs from chat).
 #     list / enable / disable / Rescan. The Forge menu's Mods tab keeps
 #     the same list — one create flow, no duplicates.
-#   IMPORT/EXPORT — PLACEHOLDER / DISABLED tab ONLY, no functionality.
-#     FOR LATER: the tab exists so the layout is stable; both buttons
-#     are disabled and nothing is wired.
+#   IMPORT/EXPORT (v0.5.10, Worker B) — share mods as one copy-pasteable
+#     code (MOD1-...). EXPORT turns an installed mod into a code
+#     (pipeline: export_mod) shown in a copyable field + COPY button.
+#     IMPORT pastes a code, decodes/validates it via the pipeline
+#     (import_code), and shows the SAME approval screen as generation
+#     (summary + full payload + invented hooks + hook script source)
+#     before anything installs. A conflict (an installed mod already
+#     claims the id OR the payload's block_id — a folder-collision
+#     with a different block_id counts too) offers REPLACE (version
+#     bump) or KEEP BOTH (renamed copy) — never a silent overwrite,
+#     never a dead end. Invalid / tampered codes show the pipeline's
+#     visible rejection reason. NEVER installs on import without
+#     approval. The UI owns NO encode/decode/validation — all of that
+#     is the pipeline in scripts/mods/* (see _share_target for the
+#     resolved API). When the pipeline exposes install_import_result /
+#     install_imported, Install routes through it (it owns the
+#     pre-rewritten script Keep Both candidate); otherwise the
+#     ModCreator paths (install / install_update / "<id>_copy" rename
+#     + install) are the write path.
 #
 # VOXEL ASSETS: after a candidate arrives, the menu generates the voxel
 # asset from the VISUAL DESCRIPTION via VoxelAssetGenerator (local,
@@ -45,6 +61,13 @@ signal creator_closed
 
 const CATEGORIES := ["Weapon", "Block/Structure", "Enemy", "Effect", "Gameplay"]
 const CREATOR_TABS := ["CREATE", "CHAT", "MODS", "IMPORT/EXPORT"]
+# Sharing-pipeline method-name aliases (Worker C's suite probes the
+# same lists): the pipeline may expose any of these; the menu tries
+# each in order and uses the first that exists.
+const _SHARE_EXPORT_NAMES := ["export_mod", "export_code", "encode_mod", "share_export",
+	"export_share_code", "make_share_code", "create_share_code"]
+const _SHARE_IMPORT_NAMES := ["import_code", "import_mod", "decode_mod", "decode_mod_code",
+	"parse_share_code", "import_share_code", "decode_share_code"]
 
 var _tabs: TabContainer
 var _category_checks: Dictionary = {}
@@ -104,6 +127,53 @@ var _pending_chat_request: String = ""
 # these from the session in _ready().
 var _editing_mod_id := ""
 var _edit_original: Dictionary = {}
+# IMPORT/EXPORT tab (v0.5.10): picker + code field + import approval.
+# The import approval is its OWN panel on this tab (same CONTENT as the
+# CREATE approval — summary + payload + hooks + hook script source —
+# not the same panel), so the user never leaves the tab mid-import and
+# the conflict choice (Replace / Keep Both) stays next to Install.
+var _ie_export_picker: OptionButton
+var _ie_export_ids: Array = []
+var _ie_export_button: Button
+var _ie_export_rescan_button: Button
+var _ie_export_code: TextEdit
+var _ie_copy_button: Button
+var _ie_export_status: Label
+var _ie_import_input: TextEdit
+var _ie_import_button: Button
+var _ie_import_paste_button: Button
+var _ie_import_status: Label
+var _ie_import_approval: VBoxContainer
+var _ie_import_summary: Label
+var _ie_import_hooks: Label
+var _ie_import_diff: Label
+var _ie_import_payload: TextEdit
+var _ie_import_script_label: Label
+var _ie_import_script_toggle: Button
+var _ie_import_script: TextEdit
+var _ie_import_script_collapsed := false
+var _ie_conflict_row: HBoxContainer
+var _ie_replace_toggle: Button
+var _ie_keepboth_toggle: Button
+var _ie_import_install_button: Button
+var _ie_import_discard_button: Button
+var _ie_import_approval_status: Label
+var _ie_import_candidate: Dictionary = {}
+var _ie_import_conflict := false
+var _ie_import_existing_id := ""
+var _ie_import_existing: Dictionary = {}
+## Import resolution: "" = none chosen yet, "fresh" = no conflict,
+## "replace" = overwrite the installed mod (version bump),
+## "keepboth" = install as a renamed copy. Install stays disabled
+## while a conflict has no resolution — no silent overwrite, ever.
+var _ie_import_resolution := ""
+var _ie_import_raw: Dictionary = {}
+var _ie_import_keepboth_candidate: Dictionary = {}
+var _ie_import_resolutions: Array = []
+var _ie_import_replace_available := true
+var _ie_import_keepboth_available := true
+var _ie_share_target: Variant = null
+var _ie_share_target_checked := false
 
 
 ## Composes ONE stable prompt from the structured form. Fixed section
@@ -202,6 +272,7 @@ func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	_build()
 	_refresh_mods()
+	_refresh_export_picker()
 	_restore_edit_state()
 
 
@@ -560,7 +631,13 @@ func _build_mods_tab() -> void:
 	list_scroll.add_child(_mods_list)
 
 
-# --- IMPORT/EXPORT tab: PLACEHOLDER ONLY, no functionality ---------------------
+# --- IMPORT/EXPORT tab (v0.5.10) ----------------------------------------------
+# Layout rule (the v0.5.2 Mods-tab bug must not recur): EVERY label
+# that can hold a long string gets autowrap + SIZE_EXPAND_FILL, every
+# TextEdit gets SIZE_EXPAND_FILL, and the share code lives in a
+# wrapping TextEdit — never in a bare Label, never a 1-char-wide
+# column. The tab scrolls vertically; nothing inside scrolls
+# horizontally except the code/payload TextEdits themselves.
 
 func _build_import_export_tab() -> void:
 	var scroll := _tab_scroll("ImportExportTab")
@@ -568,27 +645,207 @@ func _build_import_export_tab() -> void:
 	var box := VBoxContainer.new()
 	box.name = "ImportExportBox"
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	box.alignment = BoxContainer.ALIGNMENT_CENTER
+	box.add_theme_constant_override("separation", 8)
 	scroll.add_child(box)
-	var note := Label.new()
-	note.name = "ImportExportNote"
-	note.text = "IMPORT / EXPORT — coming in a later update.\nShare mods as files and bring in mods from other players."
-	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	StencilStyle.apply_body(note, 20, StencilStyle.TEXT_DIM, 2)
-	box.add_child(note)
-	var import_btn := Button.new()
-	import_btn.name = "ImportButton"
-	import_btn.text = "IMPORT MOD"
-	import_btn.disabled = true
-	StencilStyle.style_button(import_btn)
-	box.add_child(import_btn)
-	var export_btn := Button.new()
-	export_btn.name = "ExportButton"
-	export_btn.text = "EXPORT MOD"
-	export_btn.disabled = true
-	StencilStyle.style_button(export_btn)
-	box.add_child(export_btn)
+	# How sharing works.
+	var howto := Label.new()
+	howto.name = "ImportExportHowTo"
+	howto.text = "HOW SHARING WORKS — Mods travel as a single code. Export one, paste it into any chat or message, and the other player pastes it here to import it. Works offline — no account, no server, no files to move."
+	howto.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	howto.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.apply_body(howto, 18, StencilStyle.TEXT_DIM, 2)
+	box.add_child(howto)
+	# --- EXPORT ---
+	box.add_child(_section_label("EXPORT — turn an installed mod into a shareable code"))
+	var picker_row := HBoxContainer.new()
+	picker_row.name = "ExportPickerRow"
+	box.add_child(picker_row)
+	_ie_export_picker = OptionButton.new()
+	_ie_export_picker.name = "ExportPicker"
+	_ie_export_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	picker_row.add_child(_ie_export_picker)
+	_ie_export_rescan_button = Button.new()
+	_ie_export_rescan_button.name = "ExportRescanButton"
+	_ie_export_rescan_button.text = "REFRESH"
+	StencilStyle.style_button(_ie_export_rescan_button)
+	_ie_export_rescan_button.pressed.connect(_refresh_export_picker)
+	picker_row.add_child(_ie_export_rescan_button)
+	var export_row := HBoxContainer.new()
+	export_row.name = "ExportButtonRow"
+	box.add_child(export_row)
+	_ie_export_button = Button.new()
+	_ie_export_button.name = "ExportButton"
+	_ie_export_button.text = "EXPORT"
+	_ie_export_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.style_button(_ie_export_button)
+	_ie_export_button.pressed.connect(_on_export_pressed)
+	export_row.add_child(_ie_export_button)
+	_ie_copy_button = Button.new()
+	_ie_copy_button.name = "CopyButton"
+	_ie_copy_button.text = "COPY"
+	StencilStyle.style_button(_ie_copy_button)
+	_ie_copy_button.pressed.connect(_on_copy_pressed)
+	export_row.add_child(_ie_copy_button)
+	_ie_export_code = TextEdit.new()
+	_ie_export_code.name = "ExportCode"
+	_ie_export_code.editable = false
+	_ie_export_code.placeholder_text = "Your share code appears here after EXPORT."
+	_ie_export_code.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	_ie_export_code.custom_minimum_size = Vector2(0, 120)
+	_ie_export_code.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(_ie_export_code)
+	_ie_export_status = Label.new()
+	_ie_export_status.name = "ExportStatus"
+	_ie_export_status.text = ""
+	_ie_export_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_ie_export_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.apply_body(_ie_export_status, 17, StencilStyle.TEXT_DIM, 2)
+	box.add_child(_ie_export_status)
+	# --- IMPORT ---
+	box.add_child(_section_label("IMPORT — paste a share code from another player"))
+	_ie_import_input = TextEdit.new()
+	_ie_import_input.name = "ImportInput"
+	_ie_import_input.placeholder_text = "Paste a MOD1-... code here"
+	_ie_import_input.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	_ie_import_input.custom_minimum_size = Vector2(0, 120)
+	_ie_import_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(_ie_import_input)
+	var import_row := HBoxContainer.new()
+	import_row.name = "ImportButtonRow"
+	box.add_child(import_row)
+	_ie_import_button = Button.new()
+	_ie_import_button.name = "ImportButton"
+	_ie_import_button.text = "IMPORT"
+	_ie_import_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.style_button(_ie_import_button)
+	_ie_import_button.pressed.connect(_on_import_pressed)
+	import_row.add_child(_ie_import_button)
+	_ie_import_paste_button = Button.new()
+	_ie_import_paste_button.name = "ImportPasteButton"
+	_ie_import_paste_button.text = "PASTE FROM CLIPBOARD"
+	StencilStyle.style_button(_ie_import_paste_button)
+	_ie_import_paste_button.pressed.connect(_on_import_paste_pressed)
+	import_row.add_child(_ie_import_paste_button)
+	_ie_import_status = Label.new()
+	_ie_import_status.name = "ImportStatus"
+	_ie_import_status.text = ""
+	_ie_import_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_ie_import_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.apply_body(_ie_import_status, 17, StencilStyle.TEXT_DIM, 2)
+	box.add_child(_ie_import_status)
+	# --- IMPORT APPROVAL (same content as the CREATE approval) ---
+	_ie_import_approval = VBoxContainer.new()
+	_ie_import_approval.name = "ImportApprovalPanel"
+	_ie_import_approval.visible = false
+	_ie_import_approval.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(_ie_import_approval)
+	var approval_title := Label.new()
+	approval_title.text = "REVIEW IMPORT — nothing is installed until you tap Install."
+	approval_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	approval_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.apply_body(approval_title, 18, StencilStyle.ORANGE, 2)
+	_ie_import_approval.add_child(approval_title)
+	_ie_import_summary = Label.new()
+	_ie_import_summary.name = "ImportApprovalSummary"
+	_ie_import_summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_ie_import_summary.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.apply_body(_ie_import_summary, 18, StencilStyle.TEXT, 2)
+	_ie_import_approval.add_child(_ie_import_summary)
+	_ie_import_hooks = Label.new()
+	_ie_import_hooks.name = "ImportApprovalHooks"
+	_ie_import_hooks.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_ie_import_hooks.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.apply_body(_ie_import_hooks, 18, StencilStyle.ORANGE, 2)
+	_ie_import_approval.add_child(_ie_import_hooks)
+	_ie_import_diff = Label.new()
+	_ie_import_diff.name = "ImportApprovalDiff"
+	_ie_import_diff.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_ie_import_diff.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.apply_body(_ie_import_diff, 18, StencilStyle.TEXT, 2)
+	_ie_import_diff.visible = false
+	_ie_import_approval.add_child(_ie_import_diff)
+	_ie_import_payload = TextEdit.new()
+	_ie_import_payload.name = "ImportApprovalPayload"
+	_ie_import_payload.editable = false
+	_ie_import_payload.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	_ie_import_payload.custom_minimum_size = Vector2(0, 240)
+	_ie_import_payload.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ie_import_approval.add_child(_ie_import_payload)
+	_ie_import_script_label = Label.new()
+	_ie_import_script_label.name = "ImportApprovalScriptLabel"
+	_ie_import_script_label.text = "LLM-AUTHORED HOOK SCRIPT — this mod contains a hook script written by the LLM (not a table effect). Read the full source below before installing."
+	_ie_import_script_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_ie_import_script_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.apply_body(_ie_import_script_label, 18, StencilStyle.RED, 2)
+	_ie_import_script_label.visible = false
+	_ie_import_approval.add_child(_ie_import_script_label)
+	_ie_import_script_toggle = Button.new()
+	_ie_import_script_toggle.name = "ImportApprovalScriptToggle"
+	_ie_import_script_toggle.text = "HIDE HOOK SCRIPT"
+	StencilStyle.style_button(_ie_import_script_toggle)
+	_ie_import_script_toggle.pressed.connect(_on_import_script_toggle_pressed)
+	_ie_import_script_toggle.visible = false
+	_ie_import_approval.add_child(_ie_import_script_toggle)
+	_ie_import_script = TextEdit.new()
+	_ie_import_script.name = "ImportApprovalScript"
+	_ie_import_script.editable = false
+	_ie_import_script.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	_ie_import_script.custom_minimum_size = Vector2(0, 240)
+	_ie_import_script.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ie_import_script.visible = false
+	_ie_import_approval.add_child(_ie_import_script)
+	# Conflict choice — visible ONLY on conflict. Toggle buttons in
+	# one ButtonGroup: exactly one resolution at a time, and tapping
+	# the selected one again clears it (Install goes dead again).
+	_ie_conflict_row = HBoxContainer.new()
+	_ie_conflict_row.name = "ImportConflictRow"
+	_ie_conflict_row.visible = false
+	_ie_import_approval.add_child(_ie_conflict_row)
+	var conflict_lbl := Label.new()
+	conflict_lbl.text = "Already installed — choose:"
+	conflict_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	conflict_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.apply_body(conflict_lbl, 18, StencilStyle.TEXT, 2)
+	_ie_conflict_row.add_child(conflict_lbl)
+	var conflict_group := ButtonGroup.new()
+	_ie_replace_toggle = Button.new()
+	_ie_replace_toggle.name = "ImportReplaceButton"
+	_ie_replace_toggle.text = "REPLACE"
+	_ie_replace_toggle.toggle_mode = true
+	_ie_replace_toggle.button_group = conflict_group
+	StencilStyle.style_button(_ie_replace_toggle)
+	_ie_replace_toggle.toggled.connect(_on_import_resolution_toggled.bind("replace"))
+	_ie_conflict_row.add_child(_ie_replace_toggle)
+	_ie_keepboth_toggle = Button.new()
+	_ie_keepboth_toggle.name = "ImportKeepBothButton"
+	_ie_keepboth_toggle.text = "KEEP BOTH"
+	_ie_keepboth_toggle.toggle_mode = true
+	_ie_keepboth_toggle.button_group = conflict_group
+	StencilStyle.style_button(_ie_keepboth_toggle)
+	_ie_keepboth_toggle.toggled.connect(_on_import_resolution_toggled.bind("keepboth"))
+	_ie_conflict_row.add_child(_ie_keepboth_toggle)
+	var approval_btn_row := HBoxContainer.new()
+	approval_btn_row.name = "ImportApprovalButtonRow"
+	_ie_import_approval.add_child(approval_btn_row)
+	_ie_import_install_button = Button.new()
+	_ie_import_install_button.name = "ImportApprovalInstallButton"
+	_ie_import_install_button.text = "INSTALL"
+	StencilStyle.style_button(_ie_import_install_button)
+	_ie_import_install_button.pressed.connect(_on_import_install_pressed)
+	approval_btn_row.add_child(_ie_import_install_button)
+	_ie_import_discard_button = Button.new()
+	_ie_import_discard_button.name = "ImportApprovalDiscardButton"
+	_ie_import_discard_button.text = "DISCARD"
+	StencilStyle.style_button(_ie_import_discard_button)
+	_ie_import_discard_button.pressed.connect(_on_import_discard_pressed)
+	approval_btn_row.add_child(_ie_import_discard_button)
+	_ie_import_approval_status = Label.new()
+	_ie_import_approval_status.name = "ImportApprovalStatus"
+	_ie_import_approval_status.text = ""
+	_ie_import_approval_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_ie_import_approval_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.apply_body(_ie_import_approval_status, 17, StencilStyle.RED, 2)
+	_ie_import_approval.add_child(_ie_import_approval_status)
 
 
 # --- Form state -----------------------------------------------------------------
@@ -617,6 +874,8 @@ func get_last_sandbox_result() -> Dictionary:
 func _on_tab_changed(tab: int) -> void:
 	if tab == 2:
 		_refresh_mods()
+	if tab == 3:
+		_refresh_export_picker()
 
 
 func _on_close_pressed() -> void:
@@ -1036,3 +1295,616 @@ func _on_mod_edit_pressed(mod_id: String) -> void:
 func _on_mods_rescan_pressed() -> void:
 	ModLoader.rescan()
 	_refresh_mods()
+
+
+# --- IMPORT/EXPORT tab ----------------------------------------------------------
+# PIPELINE CONTRACT (Worker A owns scripts/mods/* — this UI implements
+# NONE of it: no base64, no JSON decode, no validation, no checksums):
+#   export_mod(block_id: String) -> {ok, code, error} (or a bare
+#       String code). Aliases in _SHARE_EXPORT_NAMES also accepted.
+#   import_code(code: String) -> EITHER the pipeline shape:
+#       {kind: "candidate"|"conflict"|"error", candidate: Dictionary,
+#        candidate_keep_both: Dictionary, existing: Dictionary,
+#        resolutions: [{action: "replace"|"keep_both", mod_id: String}],
+#        error: String}
+#     OR the legacy shape:
+#       {ok, candidate, conflict: bool, existing_id: String,
+#        existing: Dictionary, error: String}
+#     OR a bare candidate-shaped Dictionary. A conflict is ANY of:
+#     kind == "conflict", conflict == true, a non-empty "existing"
+#     record, or a non-empty "resolutions" list — an EMPTY existing {}
+#     does NOT mean conflict (the pipeline returns it for clean
+#     candidates too). "resolutions" also gates the toggles: a
+#     keep_both resolution with an EMPTY mod_id means the pipeline
+#     cannot offer Keep Both.
+#   install_import_result(raw_import_result, resolution) and
+#   install_imported(candidate, resolution, existing_mod_id) — the
+#   pipeline's write path when it exposes them (resolution:
+#   "fresh" | "replace" | "keep_both"). The menu routes Install
+#   through them when present; otherwise the ModCreator paths
+#   (install / install_update / "<id>_copy" rename + install).
+#   The candidate is the SAME shape as a generation candidate
+#   (mod_id / name / kind / manifest / payload / summary), so the
+#   import approval below reuses the same display rules as _show_approval.
+# Resolution order: (1) a sharing script at
+# scripts/mods/mod_share.gd (or mod_import_export.gd / mod_sharing.gd
+# / mod_code.gd / mod_export.gd), loaded by path — found even though
+# script global classes are NOT in ClassDB at runtime (verified
+# headlessly); (2) export/import on the shared ModCreator instance;
+# (3) the same on a ModLoader instance (static dispatch via .call
+# works for both). When nothing resolves, the tab says so visibly
+# instead of crashing or faking it. Cached per menu instance —
+# reopening the menu re-resolves.
+
+func _share_target() -> Variant:
+	if _ie_share_target_checked:
+		return _ie_share_target
+	_ie_share_target_checked = true
+	for path in ["res://scripts/mods/mod_share.gd",
+			"res://scripts/mods/mod_import_export.gd",
+			"res://scripts/mods/mod_sharing.gd",
+			"res://scripts/mods/mod_code.gd",
+			"res://scripts/mods/mod_export.gd"]:
+		if ResourceLoader.exists(path):
+			var scr = load(path)
+			if scr != null and _has_any_method(scr, _SHARE_EXPORT_NAMES + _SHARE_IMPORT_NAMES):
+				_ie_share_target = scr
+				return _ie_share_target
+	var creator := _creator_instance()
+	if creator != null and _has_any_method(creator, _SHARE_EXPORT_NAMES + _SHARE_IMPORT_NAMES):
+		_ie_share_target = creator
+		return _ie_share_target
+	var loader := ModLoader.new()
+	if _has_any_method(loader, _SHARE_EXPORT_NAMES + _SHARE_IMPORT_NAMES):
+		_ie_share_target = loader
+		return _ie_share_target
+	return null
+
+
+## One pipeline call. Returns null when no pipeline resolved (the
+## caller shows "sharing not available") or the method is missing on
+## the resolved target — never a crash, never a local reimplementation.
+func _has_any_method(target: Variant, names: Array) -> bool:
+	if target == null:
+		return false
+	for n in names:
+		if target.has_method(str(n)):
+			return true
+	return false
+
+
+func _share_call_aliases(names: Array, args: Array) -> Variant:
+	var target: Variant = _share_target()
+	if target == null:
+		return null
+	for n in names:
+		var name := str(n)
+		if target.has_method(name):
+			return target.callv(name, args)
+	return null
+
+
+## True when the pipeline exposes its own install path.
+func _share_has_install() -> bool:
+	var target: Variant = _share_target()
+	if target == null:
+		return false
+	return target.has_method("install_import_result") or target.has_method("install_imported")
+
+
+## A resolutions entry offers `action` ("replace" / "keep_both";
+## "keepboth" spelling also accepted). A keep_both entry with an
+## EMPTY mod_id means the pipeline cannot offer Keep Both. No
+## resolutions at all (legacy shape) means both are offered.
+func _resolution_available(resolutions: Array, action: String) -> bool:
+	if resolutions.is_empty():
+		return true
+	for r in resolutions:
+		if r is Dictionary:
+			var a := str((r as Dictionary).get("action", ""))
+			if a == action or (action == "keep_both" and a == "keepboth"):
+				if action == "keep_both" and (r as Dictionary).has("mod_id"):
+					return str((r as Dictionary).get("mod_id", "")) != ""
+				return true
+	return false
+
+
+## The payload's block_id for a candidate: a top-level "block_id"
+## when present, else the block object's block_id for block mods.
+## "" for script mods (their id lives in script source) and when
+## the payload is not block JSON.
+func _block_id_of_candidate(candidate: Dictionary) -> String:
+	var direct := str(candidate.get("block_id", ""))
+	if not direct.is_empty():
+		return direct
+	if str(candidate.get("kind", "")) != "block":
+		return ""
+	var parsed: Variant = JSON.parse_string(str(candidate.get("payload", "")))
+	if parsed is Dictionary:
+		var block: Variant = (parsed as Dictionary).get("block", null)
+		if block is Dictionary:
+			return str((block as Dictionary).get("block_id", ""))
+	return ""
+
+
+## Installs through the pipeline's write path when it exposes one.
+## Returns {handled: bool, error: String}. "handled" is false only
+## when no pipeline install function exists (the caller falls back
+## to the ModCreator paths); a handled failure carries the error.
+func _install_via_pipeline() -> Dictionary:
+	var target: Variant = _share_target()
+	if target == null:
+		return {"handled": false, "error": ""}
+	var resolution := "fresh"
+	if _ie_import_conflict:
+		if _ie_import_resolution == "replace":
+			resolution = "replace"
+		elif _ie_import_resolution == "keepboth":
+			resolution = "keep_both"
+		else:
+			return {"handled": false, "error": ""}
+	if target.has_method("install_import_result"):
+		# Annotate a COPY with the menu-resolved conflict context:
+		# the pipeline may have missed this conflict (the loader
+		# backstop found it), in which case the raw result carries
+		# no existing info and the pipeline could not know WHICH
+		# installed mod Replace targets. The menu's existing_id
+		# (pipeline-provided, or the backstop's find_mod hit) is
+		# the authority here; the stored raw result is untouched.
+		var raw_for_pipeline := _ie_import_raw.duplicate(true)
+		raw_for_pipeline["existing_id"] = _ie_import_existing_id
+		if not _ie_import_existing.is_empty():
+			raw_for_pipeline["existing"] = _ie_import_existing
+		var res: Variant = target.call("install_import_result", raw_for_pipeline, resolution)
+		return _norm_pipeline_install_result(res)
+	if target.has_method("install_imported"):
+		var cand: Dictionary = _ie_import_candidate
+		if resolution == "keep_both" and not _ie_import_keepboth_candidate.is_empty():
+			cand = _ie_import_keepboth_candidate
+		var res2: Variant = target.call("install_imported", cand, resolution, _ie_import_existing_id)
+		return _norm_pipeline_install_result(res2)
+	return {"handled": false, "error": ""}
+
+
+func _norm_pipeline_install_result(res: Variant) -> Dictionary:
+	if res is Dictionary:
+		var d := res as Dictionary
+		if bool(d.get("ok", false)):
+			return {"handled": true, "error": ""}
+		return {"handled": true, "error": str(d.get("error", d.get("reason", "pipeline install failed")))}
+	if res is String:
+		# "" = success, else the error message.
+		return {"handled": true, "error": str(res)}
+	if res is bool:
+		return {"handled": true, "error": "" if bool(res) else "pipeline install failed"}
+	return {"handled": true, "error": "pipeline install returned an unexpected result"}
+
+
+func _refresh_export_picker() -> void:
+	if _ie_export_picker == null:
+		return
+	_ie_export_picker.clear()
+	_ie_export_ids.clear()
+	var mods := ModLoader.get_mods()
+	for m in mods:
+		if not (m is Dictionary):
+			continue
+		var mod := m as Dictionary
+		if str(mod.get("id", "")) == "assets":
+			continue
+		var label := "%s (%s) — v%s" % [
+			str(mod.get("name", mod.get("id", ""))),
+			str(mod.get("id", "")), str(mod.get("version", ""))]
+		if str(mod.get("error", "")) != "":
+			label += " (broken)"
+		_ie_export_picker.add_item(label)
+		_ie_export_ids.append(str(mod.get("id", "")))
+	var empty := _ie_export_ids.is_empty()
+	if empty:
+		_ie_export_picker.add_item("No mods installed")
+	_ie_export_picker.disabled = empty
+	if _ie_export_button != null:
+		_ie_export_button.disabled = empty
+	if not empty:
+		_ie_export_picker.select(0)
+
+
+## EXPORT: picker mod -> block_id -> pipeline export_mod -> code in
+## the copyable field. The picker lists MOD ids; the pipeline takes a
+## BLOCK id, so resolve via the loader record (block_id == mod id for
+## JSON mods; script mods may differ). The lookup is a lookup only —
+## no encoding happens here.
+func _on_export_pressed() -> void:
+	if _ie_export_picker == null or _ie_export_ids.is_empty():
+		_ie_export_status.text = "No mods installed — create one on the CREATE tab first."
+		return
+	var idx := _ie_export_picker.get_selected()
+	if idx < 0 or idx >= _ie_export_ids.size():
+		_ie_export_status.text = "Pick a mod to export."
+		return
+	var mod_id: String = _ie_export_ids[idx]
+	var block_id := mod_id
+	var rec := ModLoader.find_mod(mod_id, false)
+	if not rec.is_empty():
+		var info: Dictionary = rec.get("block_info", {})
+		var bid := str(info.get("block_id", ""))
+		if not bid.is_empty():
+			block_id = bid
+	var result: Variant = _share_call_aliases(_SHARE_EXPORT_NAMES, [block_id])
+	if result == null:
+		_ie_export_status.text = "Mod sharing is not available in this build — the share pipeline did not load."
+		return
+	var code := ""
+	if result is String:
+		# Bare-String export: the string IS the code.
+		code = str(result)
+	elif result is Dictionary:
+		var res := result as Dictionary
+		if res.has("ok") and not bool(res.get("ok", false)):
+			var err := str(res.get("error", res.get("reason", "")))
+			_ie_export_status.text = "Export failed: " + (err if not err.is_empty() else "unknown error")
+			return
+		code = str(res.get("code", res.get("share_code", res.get("data", ""))))
+	else:
+		_ie_export_status.text = "Export failed: the share pipeline returned an unexpected result."
+		return
+	if code.strip_edges().is_empty():
+		_ie_export_status.text = "Export failed: the share pipeline returned an empty code."
+		return
+	_ie_export_code.text = code
+	_ie_export_code.scroll_vertical = 0
+	_ie_export_code.scroll_horizontal = 0
+	_ie_export_status.text = "Code ready — tap COPY, then paste it to a friend."
+
+
+func _on_copy_pressed() -> void:
+	var code := _ie_export_code.text.strip_edges() if _ie_export_code != null else ""
+	if code.is_empty():
+		_ie_export_status.text = "Nothing to copy — export a mod first."
+		return
+	DisplayServer.clipboard_set(code)
+	_ie_export_status.text = "Code copied — paste it to a friend"
+
+
+func _on_import_paste_pressed() -> void:
+	var clip := DisplayServer.clipboard_get().strip_edges()
+	if clip.is_empty():
+		_ie_import_status.text = "Clipboard is empty — copy a share code first."
+		return
+	_ie_import_input.text = clip
+	_ie_import_status.text = "Pasted from clipboard — tap IMPORT to review it."
+
+
+## IMPORT: paste -> strip ALL whitespace (chat apps wrap long codes
+## across lines; base64url has no significant whitespace) -> pipeline
+## import_code -> approval panel. Invalid/tampered codes surface the
+## pipeline's rejection reason; nothing installs here.
+func _on_import_pressed() -> void:
+	var raw := _ie_import_input.text if _ie_import_input != null else ""
+	var code := ""
+	for i in range(raw.length()):
+		var ch := raw[i]
+		if ch != " " and ch != "\t" and ch != "\n" and ch != "\r":
+			code += ch
+	if code.is_empty():
+		_ie_import_status.text = "Paste a share code first."
+		return
+	var result: Variant = _share_call_aliases(_SHARE_IMPORT_NAMES, [code])
+	if result == null:
+		_ie_import_status.text = "Mod sharing is not available in this build — the share pipeline did not load."
+		return
+	if not (result is Dictionary):
+		_ie_import_status.text = "Import failed: the share pipeline returned an unexpected result."
+		return
+	var res := result as Dictionary
+	# Kind-aware: the pipeline shape carries kind ("candidate" /
+	# "conflict" / "error") and may carry NO "ok" key at all, so a
+	# missing "ok" must not reject a kind="candidate"/"conflict"
+	# result. The legacy shape carries "ok" (and no kind).
+	var kind := str(res.get("kind", ""))
+	var err_text := str(res.get("error", res.get("reason", "")))
+	if kind == "error":
+		_ie_import_status.text = "Import rejected: " + (err_text if not err_text.is_empty() else "invalid code")
+		return
+	if res.has("ok") and not bool(res.get("ok", false)):
+		_ie_import_status.text = "Import rejected: " + (err_text if not err_text.is_empty() else "invalid code")
+		return
+	if kind != "" and kind != "candidate" and kind != "conflict" and not res.has("candidate") and not res.has("mod_id"):
+		_ie_import_status.text = "Import rejected: " + (err_text if not err_text.is_empty() else "unrecognized import result")
+		return
+	var candidate: Dictionary = {}
+	var cand_raw: Variant = res.get("candidate", null)
+	if cand_raw is Dictionary:
+		candidate = cand_raw as Dictionary
+	elif res.has("mod_id") and res.has("payload"):
+		# Tolerant shape: the candidate IS the result.
+		candidate = res
+	if candidate.is_empty():
+		_ie_import_status.text = "Import rejected: the share pipeline returned no mod."
+		return
+	var cand_err := str(candidate.get("error", ""))
+	if not cand_err.is_empty():
+		_ie_import_status.text = "Import rejected: " + cand_err
+		return
+	# Conflict: the pipeline flags it via kind == "conflict", a
+	# conflict flag, a non-empty "existing" record, or a non-empty
+	# "resolutions" list — a folder-collision with a DIFFERENT
+	# block_id still carries existing/resolutions, so it is never
+	# missed. The UI ALSO checks the loader, so a pipeline that
+	# misses one can never turn into a silent rename (creator.
+	# install() auto-renames on collision — that must never happen
+	# for an import without the player choosing KEEP BOTH).
+	var existing: Dictionary = {}
+	var existing_raw: Variant = res.get("existing", null)
+	if existing_raw is Dictionary:
+		existing = existing_raw as Dictionary
+	var resolutions: Array = []
+	var res_raw: Variant = res.get("resolutions", null)
+	if res_raw is Array:
+		resolutions = res_raw as Array
+	var keepboth_cand: Dictionary = {}
+	var kb_raw: Variant = res.get("candidate_keep_both", null)
+	if kb_raw is Dictionary:
+		keepboth_cand = kb_raw as Dictionary
+	var conflict := kind == "conflict" or bool(res.get("conflict", false)) or str(res.get("status", "")) == "conflict" or not existing.is_empty() or not resolutions.is_empty()
+	var existing_id := str(res.get("existing_id", res.get("existing_mod_id", "")))
+	if existing_id.is_empty() and not existing.is_empty():
+		existing_id = str(existing.get("mod_id", ""))
+	if existing_id.is_empty() and conflict:
+		existing_id = str(candidate.get("mod_id", ""))
+	if not conflict:
+		# Loader backstop: the candidate's mod id, OR its payload
+		# block_id colliding with a DIFFERENT installed folder
+		# (find_mod matches by mod id OR block_id).
+		var hit: Dictionary = {}
+		var cand_id := str(candidate.get("mod_id", ""))
+		if not cand_id.is_empty():
+			hit = ModLoader.find_mod(cand_id, false)
+		if hit.is_empty():
+			var bid := _block_id_of_candidate(candidate)
+			if not bid.is_empty() and bid != cand_id:
+				hit = ModLoader.find_mod(bid, false)
+		if not hit.is_empty():
+			conflict = true
+			existing_id = str(hit.get("id", existing_id))
+	if conflict and existing.is_empty() and not existing_id.is_empty():
+		var loaded := ModCreator.load_installed(existing_id)
+		if str(loaded.get("error", "")) == "":
+			existing = loaded
+	_ie_import_raw = res
+	_ie_import_candidate = candidate
+	_ie_import_keepboth_candidate = keepboth_cand
+	_ie_import_resolutions = resolutions
+	_ie_import_conflict = conflict
+	_ie_import_existing_id = existing_id
+	_ie_import_existing = existing
+	_show_import_approval(candidate, conflict, existing)
+	_ie_import_status.text = "Code accepted — review it below. Nothing is installed until you tap Install."
+
+
+## Import approval — same CONTENT as the CREATE approval (summary +
+## full payload + invented hooks + hook script source), plus the
+## conflict diff when one exists. Mirrors _show_approval's display
+## rules; it does not share that panel (see the member-var note).
+func _show_import_approval(candidate: Dictionary, conflict: bool, existing: Dictionary) -> void:
+	var lines: Array[String] = []
+	lines.append("Shared mod — imported from a share code.")
+	for key in ["name", "mod_id", "kind"]:
+		var v := str(candidate.get(key, ""))
+		if not v.is_empty():
+			lines.append("%s: %s" % [key.capitalize(), v])
+	var manifest: Variant = candidate.get("manifest", {})
+	if manifest is Dictionary:
+		for key in (manifest as Dictionary).keys():
+			if lines.size() >= 16:
+				break
+			var v: Variant = (manifest as Dictionary)[key]
+			if v is String or v is int or v is float or v is bool:
+				lines.append("%s: %s" % [str(key), str(v)])
+	var school := SpellSchools.normalize(str(candidate.get("spell_school", "")))
+	if school.is_empty():
+		school = SpellSchools.parse_from_payload(str(candidate.get("payload", "")))
+	var school_line := SpellSchools.approval_line(school)
+	if not school_line.is_empty():
+		lines.append(school_line)
+	var summary := str(candidate.get("summary", ""))
+	if not summary.is_empty():
+		lines.append("")
+		lines.append(summary)
+	_ie_import_summary.text = "\n".join(lines)
+	var hooks := ModHook.preview_hooks_for_candidate(candidate)
+	var hook_lines := ModHook.summarize_hooks(hooks)
+	if hook_lines.is_empty():
+		hook_lines = ["No new hooks — this mod uses existing blocks only."]
+	_ie_import_hooks.text = "\n".join(hook_lines)
+	_ie_import_payload.text = str(candidate.get("payload", ""))
+	_ie_import_payload.scroll_vertical = 0
+	_ie_import_payload.scroll_horizontal = 0
+	var script_parts: Array[String] = []
+	for h in hooks:
+		if not (h is Dictionary):
+			continue
+		var hd := h as Dictionary
+		var code := str(hd.get("code", ""))
+		if code.strip_edges().is_empty():
+			continue
+		script_parts.append("--- Hook script: %s (%s) — %s ---\n%s" % [
+			str(hd.get("hook_id", "?")), str(hd.get("hook_point", "?")),
+			str(hd.get("display_name", "")), code])
+	var has_script := not script_parts.is_empty()
+	_ie_import_script_label.visible = has_script
+	_ie_import_script_toggle.visible = has_script
+	_ie_import_script_collapsed = false
+	_ie_import_script_toggle.text = "HIDE HOOK SCRIPT"
+	if has_script:
+		_ie_import_script.text = "\n\n".join(script_parts)
+		_ie_import_script.scroll_vertical = 0
+		_ie_import_script.scroll_horizontal = 0
+	_ie_import_script.visible = has_script
+	# Conflict: show what REPLACE would change vs the installed
+	# version (the EDIT diff), and require an explicit choice.
+	# Availability comes from the pipeline's resolutions when it
+	# offers them (a keep_both resolution with an EMPTY mod_id
+	# means the pipeline cannot offer one) — plus one menu-side
+	# rule: a SCRIPT mod's Keep Both needs a pipeline install
+	# function (only the pipeline can rewrite the block_id literal
+	# in script source); without one, KEEP BOTH is disabled with
+	# the reason, and REPLACE / DISCARD stay available.
+	if conflict:
+		_ie_import_replace_available = _resolution_available(_ie_import_resolutions, "replace")
+		_ie_import_keepboth_available = _resolution_available(_ie_import_resolutions, "keep_both")
+		if _ie_import_keepboth_available and str(candidate.get("kind", "")) == "script" and not _share_has_install():
+			_ie_import_keepboth_available = false
+		var loaded := existing
+		if loaded.is_empty() or str(loaded.get("payload", "")).is_empty():
+			var reloaded := ModCreator.load_installed(_ie_import_existing_id)
+			if str(reloaded.get("error", "")) == "":
+				loaded = reloaded
+		var diff_lines := ModCreator.diff_candidate_vs_installed(candidate, loaded)
+		var diff_text := "CONFLICT — '%s' (v%s) is already installed. REPLACE updates it (old version gone, version bumped). KEEP BOTH installs it as a separate copy. Choose below — nothing is overwritten without your choice.\nWhat changes vs the installed version:\n%s" % [
+			str(loaded.get("name", _ie_import_existing_id)),
+			str(loaded.get("version", "")),
+			"\n".join(diff_lines)]
+		if not _ie_import_replace_available:
+			diff_text += "\nREPLACE is unavailable for this import."
+		if not _ie_import_keepboth_available:
+			diff_text += "\nKEEP BOTH is unavailable for this import — a script mod's block_id lives in its script source, and only the pipeline's rewritten copy can rename it. Use REPLACE or DISCARD."
+		_ie_import_diff.text = diff_text
+		_ie_import_diff.visible = true
+		_ie_conflict_row.visible = true
+		_ie_replace_toggle.button_pressed = false
+		_ie_keepboth_toggle.button_pressed = false
+		_ie_replace_toggle.disabled = not _ie_import_replace_available
+		_ie_keepboth_toggle.disabled = not _ie_import_keepboth_available
+		_ie_import_resolution = ""
+		_ie_import_install_button.disabled = true
+	else:
+		_ie_import_diff.visible = false
+		_ie_conflict_row.visible = false
+		_ie_import_resolution = "fresh"
+		_ie_import_install_button.disabled = false
+	_ie_import_approval_status.text = ""
+	_ie_import_approval.visible = true
+
+
+func _on_import_script_toggle_pressed() -> void:
+	_ie_import_script_collapsed = not _ie_import_script_collapsed
+	_ie_import_script.visible = not _ie_import_script_collapsed
+	_ie_import_script_toggle.text = "SHOW HOOK SCRIPT" if _ie_import_script_collapsed else "HIDE HOOK SCRIPT"
+
+
+## Conflict resolution toggle: tapping the selected choice again
+## clears it (Install goes dead) — the player must hold a choice.
+func _on_import_resolution_toggled(pressed: bool, mode: String) -> void:
+	if pressed:
+		_ie_import_resolution = mode
+		_ie_import_install_button.disabled = false
+		_ie_import_approval_status.text = "Install will REPLACE the installed mod (version bumped)." if mode == "replace" else "Install will keep both — the import installs as a separate copy."
+	else:
+		if _ie_import_resolution == mode:
+			_ie_import_resolution = ""
+		_ie_import_install_button.disabled = true
+		_ie_import_approval_status.text = "Choose REPLACE or KEEP BOTH to enable Install."
+
+
+## INSTALL for an import — the ONLY write path. Pipeline install
+## (install_import_result / install_imported) first when the
+## pipeline exposes it; otherwise ModCreator: Fresh = install as a
+## new mod. Replace = install_update (same id, version bumped, old
+## version gone, rollback on failure). Keep Both = rename the
+## candidate to a collision-free "<id>_copy" (+ " (copy)" on the
+## display name, kept in sync with the manifest so validation's
+## name-match holds) and install it. Script-mod Keep Both never
+## reaches the rename path (the toggle is disabled without a
+## pipeline install function — only the pipeline can rewrite a
+## script's block_id literal). Failures leave the panel up with the
+## reason — never a dead end, never a partial install.
+func _on_import_install_pressed() -> void:
+	if _ie_import_candidate.is_empty():
+		return
+	if _ie_import_conflict and _ie_import_resolution not in ["replace", "keepboth"]:
+		_ie_import_approval_status.text = "Choose REPLACE or KEEP BOTH first."
+		return
+	var creator := _creator_instance()
+	var err := ""
+	var done_msg := ""
+	# Pipeline install first when the pipeline exposes it
+	# (install_import_result / install_imported are its write
+	# path — they own the pre-rewritten script Keep Both
+	# candidate). Otherwise the ModCreator paths below.
+	var via_pipeline := _install_via_pipeline()
+	if bool(via_pipeline.get("handled", false)):
+		err = str(via_pipeline.get("error", ""))
+		if _ie_import_resolution == "replace":
+			var pv := ModCreator.bump_version(str(_ie_import_existing.get("version", "1.0")))
+			done_msg = "Replaced '%s' — now v%s." % [
+				str(_ie_import_existing.get("name", _ie_import_existing_id)), pv]
+		elif _ie_import_resolution == "keepboth":
+			done_msg = "Installed as a separate copy."
+		else:
+			done_msg = "Installed."
+	elif not _ie_import_conflict or _ie_import_resolution == "fresh":
+		err = creator.install(_ie_import_candidate)
+		done_msg = "Installed."
+	elif _ie_import_resolution == "replace":
+		err = creator.install_update(_ie_import_candidate, _ie_import_existing_id)
+		var new_version := ModCreator.bump_version(str(_ie_import_existing.get("version", "1.0")))
+		done_msg = "Replaced '%s' — now v%s." % [
+			str(_ie_import_existing.get("name", _ie_import_existing_id)), new_version]
+	else:  # keepboth
+		var renamed := _ie_import_candidate.duplicate(true)
+		renamed["mod_id"] = _unique_copy_id(str(_ie_import_candidate.get("mod_id", "mod")))
+		var nm := str(renamed.get("name", ""))
+		if not nm.ends_with(" (copy)"):
+			nm += " (copy)"
+			renamed["name"] = nm
+			var m: Dictionary = (renamed.get("manifest", {}) as Dictionary).duplicate(true)
+			m["name"] = nm
+			renamed["manifest"] = m
+		err = creator.install(renamed)
+		done_msg = "Installed as a separate copy ('%s')." % str(renamed.get("mod_id", ""))
+	if err.is_empty():
+		_clear_import_state()
+		_ie_import_approval.visible = false
+		_ie_import_status.text = done_msg
+		_refresh_mods()
+		_refresh_export_picker()
+	else:
+		_ie_import_approval_status.text = "Install failed: " + err
+
+
+func _on_import_discard_pressed() -> void:
+	_clear_import_state()
+	_ie_import_approval.visible = false
+	_ie_import_status.text = "Discarded — nothing installed."
+
+
+func _clear_import_state() -> void:
+	_ie_import_raw = {}
+	_ie_import_candidate = {}
+	_ie_import_keepboth_candidate = {}
+	_ie_import_resolutions = []
+	_ie_import_conflict = false
+	_ie_import_existing_id = ""
+	_ie_import_existing = {}
+	_ie_import_resolution = ""
+	_ie_import_replace_available = true
+	_ie_import_keepboth_available = true
+	_ie_replace_toggle.button_pressed = false
+	_ie_keepboth_toggle.button_pressed = false
+	_ie_replace_toggle.disabled = false
+	_ie_keepboth_toggle.disabled = false
+
+
+## Collision-free copy id: "<base>_copy", then "<base>_copy_2", ...
+## find_mod also matches block_ids, so a copy can never shadow an
+## existing mod OR block id.
+func _unique_copy_id(base: String) -> String:
+	var first := base + "_copy"
+	if ModLoader.find_mod(first, false).is_empty():
+		return first
+	for n in range(2, 100):
+		var cand := "%s_copy_%d" % [base, n]
+		if ModLoader.find_mod(cand, false).is_empty():
+			return cand
+	return first
