@@ -380,8 +380,8 @@ func _static_creator_presence() -> void:
 	_check("creator", _creator_menu_script != null and FileAccess.file_exists("res://scenes/ui/mod_creator_menu.tscn"),
 		"creator: standalone ModCreatorMenu script + scene exist (NOT-LANDED if absent)")
 	var creator_src := _src("res://scripts/ui/mod_creator_menu.gd")
-	_check("creator", creator_src.contains('CREATOR_TABS := ["CREATE", "MODS", "IMPORT/EXPORT"]'),
-		"creator: creator tabs are CREATE / MODS / IMPORT/EXPORT")
+	_check("creator", creator_src.contains('CREATOR_TABS := ["CREATE", "CHAT", "MODS", "IMPORT/EXPORT"]'),
+		"creator: creator tabs are CREATE / CHAT / MODS / IMPORT/EXPORT")
 	_check("creator", _voxel_script != null and _src("res://scripts/mods/voxel_asset_generator.gd").contains("get_or_generate") and _src("res://scripts/mods/voxel_asset_generator.gd").contains("cache_hit"),
 		"creator: VoxelAssetGenerator.get_or_generate exists with cache_hit (NOT-LANDED if absent)")
 	_check("creator", _sandbox_script != null and _src("res://scripts/ui/sandbox_test_room.gd").contains("simulate_test"),
