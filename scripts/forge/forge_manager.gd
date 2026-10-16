@@ -122,15 +122,18 @@ func get_budget() -> int:
 
 ## Cost preview: parses the prompt OFFLINE (no execution, no network, no
 ## budget change) and returns the cost the command would charge.
-## {cost: int, ok: bool, error: String} — ok=false when unparseable.
+## {cost: int, ok: bool, error: String, approximation: String} — ok=false
+## when unparseable. "approximation" is non-empty when the prompt maps to
+## a LABELED approximation (e.g. spiral staircase -> straight stairs):
+## the menu shows it in the COST line before the player confirms.
 func preview_cost(prompt: String) -> Dictionary:
 	var spec := ForgeLLM.parse_offline(prompt)
 	if spec.has("_error"):
-		return {"cost": 0, "ok": false, "error": str(spec["_error"])}
+		return {"cost": 0, "ok": false, "error": str(spec["_error"]), "approximation": ""}
 	var verdict := _validate_spec(spec)
 	if not bool(verdict[0]):
-		return {"cost": 0, "ok": false, "error": "Forge rejected the spec: %s." % str(verdict[1])}
-	return {"cost": int(spec.get("cost", 0)), "ok": true, "error": ""}
+		return {"cost": 0, "ok": false, "error": "Forge rejected the spec: %s." % str(verdict[1]), "approximation": ""}
+	return {"cost": int(spec.get("cost", 0)), "ok": true, "error": "", "approximation": str(spec.get("_approximation", ""))}
 
 
 ## One level of undo: removes the last Forge-built structure (or, for
@@ -272,14 +275,25 @@ func _run_pipeline(prompt: String) -> void:
 		Sfx.play_2d("forge_fail")
 		forge_result.emit(false, ForgeLLM.refusal_message(spec))
 		return
-	_execute_spec(spec)
+	# v0.5.7 Part B: a LABELED approximation ("Closest I can build: ...")
+	# rides on the spec as _approximation. Strip it BEFORE validation —
+	# the strict gate rejects unknown top-level keys by design — and
+	# carry it to _execute_spec, which appends it to the visible result
+	# message. The stored / shared build code holds the stripped spec.
+	var approximation_note := ""
+	if spec.has("_approximation"):
+		approximation_note = str(spec["_approximation"])
+		spec.erase("_approximation")
+	_execute_spec(spec, approximation_note)
 
 
 ## Shared tail of the pipeline (prompt path + build-code path): strict
 ## gate -> [budget gate, OFF while BUDGET_ENABLED = false] -> build ->
 ## undo record + last-build code. Callers set _busy = true first;
-## every exit here clears it.
-func _execute_spec(spec: Dictionary) -> void:
+## every exit here clears it. approximation_note (prompt path only) is
+## appended to the visible success message — the player sees the
+## "Closest I can build: ..." label on the build that used it.
+func _execute_spec(spec: Dictionary, approximation_note: String = "") -> void:
 	# v0.6 STRICT gate: LLM/fallback specs are REJECTED, never repaired.
 	# _validate_spec (lenient clamp/correct) stays for preview_cost and
 	# back-compat only; the pipeline enforces the fixed catalog exactly.
@@ -317,6 +331,9 @@ func _execute_spec(spec: Dictionary) -> void:
 		Sfx.play_2d("forge_fail")
 		forge_result.emit(false, message.trim_prefix(ForgeBuilder.FAIL_PREFIX))
 		return
+	# v0.5.7 Part B: surface the approximation label on the build.
+	if not approximation_note.is_empty():
+		message += " " + approximation_note
 	# Forge batch (Worker C, MP Forge sync): ONE hook — notify NetManager
 	# of the placed structure. After the FAIL check, so failed builds
 	# never sync. Guarded + duck-typed: no-op in single-player (NetManager
