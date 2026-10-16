@@ -357,6 +357,7 @@ static func _build_json_mod(rec: Dictionary, spec: Dictionary, params: Dictionar
 				"hp": info.get("hp", 200.0),
 				"position": params.get("position", "near_player"),
 				"property": str(params.get("property", info.get("property", "standard"))),
+				"rotation_deg": params.get("rotation_deg", 0.0),
 			}
 			if info.has("color"):
 				var col := _mod_color(str(info.get("color", "")))
@@ -367,12 +368,14 @@ static func _build_json_mod(rec: Dictionary, spec: Dictionary, params: Dictionar
 				"shape": str(info.get("shape", "bridge")),
 				"position": params.get("position", "near_player"),
 				"property": str(params.get("property", info.get("property", "standard"))),
+				"rotation_deg": params.get("rotation_deg", 0.0),
 			}, player, root)
 		"turret":
 			var msg := _build_turret({
 				"position": params.get("position", "near_player"),
 				"duration_sec": params.get("duration_sec", info.get("duration_sec", 45.0)),
 				"ammo_type": str(params.get("ammo_type", info.get("ammo_type", "standard"))),
+				"rotation_deg": params.get("rotation_deg", 0.0),
 			}, player, root)
 			# The turret script fires with fixed DAMAGE/RANGE consts, so the
 			# mod's multipliers land as metadata (same precedent as the
@@ -538,6 +541,14 @@ static func _spawn_marker(root: Node, pos: Vector3) -> void:
 
 # --- Target builders ---------------------------------------------------------
 
+## Yaw offset in degrees carried by params.rotation_deg (v0.5.7 Part B):
+## clamped -180..180, 0 = default orientation. Applied AFTER the build's
+## default orientation (player-facing for structures, aim-facing for
+## turrets, 0 for covers), so 0 preserves today's behavior exactly.
+static func _rotation_deg(params: Dictionary) -> float:
+	return clampf(float(params.get("rotation_deg", 0.0)), -180.0, 180.0)
+
+
 static func _build_cover(params: Dictionary, player: Node3D, root: Node) -> String:
 	if not _has_script_class("DestructibleCover"):
 		return FAIL_PREFIX + "cover fabricator offline."
@@ -574,10 +585,13 @@ static func _build_cover(params: Dictionary, player: Node3D, root: Node) -> Stri
 	cover.set_meta("forge_kind", "cover")
 	cover.add_child(ForgeEnemyPressure.new())
 	cover.position = pos
+	cover.rotation.y = deg_to_rad(_rotation_deg(params))
 	root.add_child(cover)
 	_register_build(cover, pos, root, true)
 	var meters := Vector3(size) * COVER_PITCH_M
-	return "Forge fabricated %s (%.1fx%.1fx%.1f m, %d HP%s)." % [shape, meters.x, meters.y, meters.z, int(hp), ", reinforced" if reinforced else ""]
+	var rot := _rotation_deg(params)
+	var rot_note := "" if is_zero_approx(rot) else ", rotated %d°" % int(round(rot))
+	return "Forge fabricated %s (%.1fx%.1fx%.1f m, %d HP%s%s)." % [shape, meters.x, meters.y, meters.z, int(hp), ", reinforced" if reinforced else "", rot_note]
 
 
 # --- Forge structures (all 10 shapes) --------------------------------------
@@ -614,13 +628,23 @@ static func _build_structure(params: Dictionary, player: Node3D, root: Node) -> 
 		fwd.y = 0.0
 		if fwd.length() > 0.1:
 			s.look_at(pos + fwd.normalized(), Vector3.UP)
+	# v0.5.7 Part B: rotation_deg yaw offset, applied AFTER the default
+	# player-facing orientation (0 = today's behavior). This is what
+	# makes a "diagonal ramp" actually diagonal.
+	s.rotation.y += deg_to_rad(_rotation_deg(params))
 	# StructureBody forwards take_damage() to the ForgeStructure — a
 	# plain StaticBody3D would swallow weapon/explosion hits silently.
 	var body := ForgeStructure.StructureBody.new()
 	s.add_child(body)
 	build_shape_geometry(shape, s, body)
 	_register_build(s, pos, root, true)
-	var hp_note := " (reinforced, %d HP)" % int(hp) if reinforced else ""
+	var notes: Array[String] = []
+	if reinforced:
+		notes.append("reinforced, %d HP" % int(hp))
+	var rot := _rotation_deg(params)
+	if not is_zero_approx(rot):
+		notes.append("rotated %d°" % int(round(rot)))
+	var hp_note := "" if notes.is_empty() else " (" + ", ".join(notes) + ")"
 	if shape == "ammo_depot":
 		# The depot stocks itself: one ammo cache at its base.
 		spawn_pickup(root, pos + Vector3(0, 0.6, 2.2), "ammo")
@@ -839,9 +863,14 @@ static func _build_turret(params: Dictionary, player: Node3D, root: Node) -> Str
 			var tr: Vector3 = t.rotation
 			tr.y = atan2(-away.x, -away.z)
 			t.rotation = tr
+	# v0.5.7 Part B: rotation_deg yaw offset after the default aim yaw.
+	t.rotation.y += deg_to_rad(_rotation_deg(params))
 	root.add_child(t)
 	_register_build(t, pos, root, true)
 	var ammo_note := "" if ammo_type == "standard" else " (%s ammo)" % ammo_type
+	var rot := _rotation_deg(params)
+	if not is_zero_approx(rot):
+		ammo_note += ", rotated %d°" % int(round(rot))
 	return "Forge deployed sentry turret (%ds, 15 dmg @ 300 rpm%s)." % [int(ttl), ammo_note]
 
 
