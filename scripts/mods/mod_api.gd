@@ -45,7 +45,8 @@ const HOOK_ALLOWED_API_METHODS := ["get_player", "get_root",
 	"get_player_position", "get_aim_point", "spawn_voxel_box", "spawn_cover",
 	"spawn_pickup", "spawn_turret", "give_weapon", "fire_effect", "announce",
 	"get_player_health", "heal_player", "apply_status_effect", "spawn_projectile",
-	"has_status_effect", "clear_status_effect"]
+	"has_status_effect", "clear_status_effect", "spawn_elemental_emitter",
+	"get_creature_type", "is_creature_immune_to_status", "get_ability_modifier"]
 
 ## Read-only Dictionary methods a hook may call on `ctx`. `ctx` is input:
 ## a hook must never mutate it (no erase / clear / assignment).
@@ -359,9 +360,11 @@ func give_weapon(weapon_id: String, damage_mult: float, range_mult: float, mag_m
 	return true
 
 
-## A one-shot effect. kind: "explosion" (uses radius + damage) or "smoke"
-## (uses duration_sec). Unknown kinds are ignored.
-func fire_effect(kind: String, position: Vector3, radius: float, damage: float, duration_sec: float = 20.0) -> void:
+## A one-shot effect. kind: "explosion" (uses radius + damage), "smoke"
+## (uses duration_sec), or "elemental" (a one-shot ElementalEmitter
+## burst of the `element` at `position`: radius + damage, one hit).
+## Unknown kinds are ignored.
+func fire_effect(kind: String, position: Vector3, radius: float, damage: float, duration_sec: float = 20.0, element: String = "fire") -> void:
 	if not _charge_step():
 		return
 	match kind:
@@ -370,6 +373,28 @@ func fire_effect(kind: String, position: Vector3, radius: float, damage: float, 
 		"smoke":
 			if _root != null:
 				ForgeBuilder.fx_smoke(_root, position, clampf(duration_sec, 5.0, 120.0))
+		"elemental":
+			if _root != null:
+				ElementalEmitter.spawn_burst(_root, element, position, radius, damage)
+
+
+## Spawns a persistent elemental emitter field (see
+## ElementalEmitter): voxel particles + one elemental damage type +
+## radius + duration, damaging ENEMIES ONLY inside the radius on
+## every 0.5 s tick. element: fire|cold|lightning|acid|poison|radiant|
+## necrotic|thunder|force|water. Water slows + extinguishes burn +
+## marks wet (lightning conducts: x1.5 + chain). Returns the emitter
+## node, or null for an unknown element / no root. Usable from
+## ModBlock scripts AND hook scripts (allowlisted).
+func spawn_elemental_emitter(element: String, position: Vector3, radius: float, duration_sec: float, damage_per_sec: float) -> Node:
+	if not _charge_step():
+		return null
+	if _root == null:
+		return null
+	var node := ElementalEmitter.spawn_field(_root, element, position, radius, duration_sec, damage_per_sec)
+	if node != null:
+		_track(node, position)
+	return node
 
 
 ## HUD banner. Silent no-op when no HUD is listening.
@@ -442,6 +467,41 @@ func clear_status_effect(target: Node, kind: String) -> bool:
 	if not _charge_step():
 		return false
 	return ModStatusEffects.clear_status_effect(target, kind)
+
+
+## v0.5.8 D&D: the target's creature type ("" for targets without one,
+## e.g. players, structures, dummies). Hook scripts can branch on it
+## (e.g. don't waste poison on a construct).
+func get_creature_type(target: Node) -> String:
+	if not _charge_step():
+		return ""
+	if target == null or not is_instance_valid(target):
+		return ""
+	var t: Variant = target.get("creature_type")
+	return str(t) if t is String else ""
+
+
+## v0.5.8 D&D: true when the target's creature type is immune to the
+## 5e condition the status `kind` expresses (poison on a construct,
+## sleep on an elemental, ...). False for kinds with no 5e condition.
+func is_creature_immune_to_status(target: Node, kind: String) -> bool:
+	if not _charge_step():
+		return false
+	return DnDTypes.is_status_immune(get_creature_type(target), kind)
+
+
+## v0.5.8 D&D: the target's ability modifier for `ability` (STR/DEX/
+## CON/INT/WIS/CHA, case-insensitive; 10 = +0). 0 for targets without
+## a stat block.
+func get_ability_modifier(target: Node, ability: String) -> int:
+	if not _charge_step():
+		return 0
+	if target == null or not is_instance_valid(target):
+		return 0
+	var scores: Variant = target.get("ability_scores")
+	if not (scores is Dictionary):
+		return 0
+	return DnDTypes.get_ability_modifier(scores as Dictionary, ability)
 
 
 ## Spawns a flying mod projectile (see ModProjectile) at `origin`,
