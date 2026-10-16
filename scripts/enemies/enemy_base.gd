@@ -544,6 +544,9 @@ func _apply_locomotion(delta: float) -> void:
 		hv = hv.move_toward(Vector2.ZERO, 14.0 * delta)
 	else:
 		var sp := wish_speed if wish_speed > 0.0 else speed
+		# v0.5.5: mod status effects (slow / freeze) — the hook system
+		# multiplies the speed the enemy actually moves at.
+		sp *= ModStatusEffects.speed_multiplier(self)
 		var target_v := Vector2(wish_dir.x, wish_dir.z) * sp
 		target_v += Vector2(_separation.x, _separation.z)
 		hv = hv.move_toward(target_v, 30.0 * delta)
