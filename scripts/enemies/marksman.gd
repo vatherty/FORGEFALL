@@ -34,6 +34,8 @@ var _strafe_t := 0.0
 func _configure() -> void:
 	type_id = "marksman"
 	display_name = "Militia Marksman"
+	creature_type = "humanoid"
+	ability_scores = DnDTypes.ability_scores(11, 15, 13, 12, 14, 10)
 	base_hp = 80.0
 	base_speed = 3.4  # was 3.8: holds distance, repositions deliberately
 	base_damage = 22.0  # was 26: one shot chunks ~1/5 HP, never one-taps
