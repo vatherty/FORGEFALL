@@ -83,6 +83,12 @@ var _anim_speed := PROJECTILE_SPEED
 ## v0.5.5: STATUS EFFECTS are exercised too — on_hit slow / freeze /
 ## burn / knockback hooks are parsed and reported (the dummy has a
 ## 4.0 m/s base speed, so a slow visibly drops its speed readout).
+## v0.5.7: the FULL status table is parsed + reported (poison / bleed /
+## regen / haste / restrained / prone / sleep / confusion / blind /
+## weaken / exhaustion / pull / typed_damage) with a per-kind line,
+## and dummy_speed_after folds every speed-affecting kind (poison
+## x0.85, haste, restrained/prone/sleep x0, exhaustion level-1 x0.85,
+## typed_damage cold x0.6 / thunder x0 via its prone rider).
 ## v0.5.6: HOOK SCRIPTS run here too when `live` carries a ModAPI + hit
 ## ctx ({"api": ModAPI, "ctx": Dictionary}): code hooks at the fire
 ## points run at shot time, code hooks at on_hit / on_kill run on the
@@ -102,7 +108,8 @@ var _anim_speed := PROJECTILE_SPEED
 ##  "heal_on_kill": float, "healed": bool, "hooks_run": Array[String],
 ##  "projectile_speed": float, "projectile_damage": float,
 ##  "status_effects": Array[Dictionary] (each {kind, factor,
-##  duration_sec, damage_per_sec, force}),
+##  duration_sec, damage_per_sec, heal_per_sec, force, damage_type,
+##  amount, level}),
 ##  "dummy_speed_before": float, "dummy_speed_after": float,
 ##  "hook_scripts_run": Array[String], "hook_script_reports": Array[String],
 ##  "hook_error": String, "candidate_disabled": bool,
@@ -194,13 +201,17 @@ static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: D
 						hit_explodes = true
 						hit_radius = float((eff as Dictionary).get("radius", EXPLOSION_RADIUS))
 						hit_damage = float((eff as Dictionary).get("damage", EXPLOSION_DAMAGE))
-					elif ek in ["slow", "freeze", "burn", "knockback"]:
+					elif ek in ["slow", "freeze", "burn", "knockback", "pull", "poison", "bleed", "regen", "haste", "restrained", "prone", "sleep", "confusion", "blind", "weaken", "exhaustion", "typed_damage"]:
 						status_effects.append({
 							"kind": ek,
 							"factor": float((eff as Dictionary).get("factor", 1.0)),
 							"duration_sec": float((eff as Dictionary).get("duration_sec", 0.0)),
 							"damage_per_sec": float((eff as Dictionary).get("damage_per_sec", 0.0)),
+							"heal_per_sec": float((eff as Dictionary).get("heal_per_sec", 0.0)),
 							"force": float((eff as Dictionary).get("force", 0.0)),
+							"damage_type": str((eff as Dictionary).get("damage_type", "")),
+							"amount": float((eff as Dictionary).get("amount", 0.0)),
+							"level": 1,
 						})
 				if not hooks_run.has(str(d.get("hook_id", ""))):
 					hooks_run.append(str(d.get("hook_id", "")))
@@ -237,9 +248,23 @@ static func simulate_test(_candidate: Dictionary, asset: Dictionary, behavior: D
 	if spec.has("damage") and (spec["damage"] is int or spec["damage"] is float) and float(spec["damage"]) >= 0.0:
 		proj_damage = float(spec["damage"])
 	var dummy_speed_after := DUMMY_BASE_SPEED
+	var speed_mult := 1.0
 	for st in status_effects:
-		if str((st as Dictionary).get("kind", "")) in ["slow", "freeze"]:
-			dummy_speed_after = minf(dummy_speed_after, DUMMY_BASE_SPEED * float((st as Dictionary).get("factor", 1.0)))
+		var sk := str((st as Dictionary).get("kind", ""))
+		if sk in ["slow", "freeze", "restrained", "prone", "sleep"]:
+			speed_mult *= float((st as Dictionary).get("factor", 1.0))
+		elif sk == "poison":
+			speed_mult *= 0.85
+		elif sk == "haste":
+			speed_mult *= float((st as Dictionary).get("factor", 1.0))
+		elif sk == "exhaustion":
+			speed_mult *= 0.85
+		elif sk == "typed_damage":
+			if str((st as Dictionary).get("damage_type", "")) == "cold":
+				speed_mult *= 0.6
+			elif str((st as Dictionary).get("damage_type", "")) == "thunder":
+				speed_mult *= 0.0
+	dummy_speed_after = DUMMY_BASE_SPEED * clampf(speed_mult, 0.0, 2.5)
 	return {"placed": false, "hit": hit,
 		"explosion_fired": hit and explodes,
 		"projectile_voxels": voxels, "steps": steps,
@@ -607,25 +632,67 @@ func _detonate_visual() -> void:
 		if bool(_result.get("healed", false)):
 			_result_label.text += " On-kill hook healed +%.0f HP." % float(_result.get("heal_on_kill", 0.0))
 		# v0.5.5: report status effects visibly — a status mod must be
-		# verifiable here, not just "HIT".
+		# verifiable here, not just "HIT". v0.5.7: every kind reports.
 		var st_eff: Variant = _result.get("status_effects", [])
 		if st_eff is Array:
 			for st in (st_eff as Array):
 				if not (st is Dictionary):
 					continue
 				var sk := str((st as Dictionary).get("kind", ""))
-				if sk in ["slow", "freeze"]:
+				if sk in ["slow", "freeze", "restrained", "prone", "sleep"]:
+					var lbl: String = {"slow": "SLOWED", "freeze": "FROZEN", "restrained": "RESTRAINED", "prone": "PRONE", "sleep": "ASLEEP"}[sk]
 					_result_label.text += " %s: dummy speed %.1f → %.1f m/s for %.1fs." % [
-						"SLOWED" if sk == "slow" else "FROZEN",
+						lbl,
 						float(_result.get("dummy_speed_before", DUMMY_BASE_SPEED)),
 						float(_result.get("dummy_speed_after", DUMMY_BASE_SPEED)),
 						float((st as Dictionary).get("duration_sec", 0.0))]
+					if sk == "sleep":
+						_result_label.text += " (wakes on damage)"
+					if sk == "restrained":
+						_result_label.text += " (can still act, can be shoved)"
 				elif sk == "burn":
 					_result_label.text += " BURNING: %.0f damage/s for %.1fs." % [
 						float((st as Dictionary).get("damage_per_sec", 0.0)),
 						float((st as Dictionary).get("duration_sec", 0.0))]
+				elif sk == "poison":
+					_result_label.text += " POISONED: %.0f damage/s + slow x0.85 for %.1fs." % [
+						float((st as Dictionary).get("damage_per_sec", 0.0)),
+						float((st as Dictionary).get("duration_sec", 0.0))]
+				elif sk == "bleed":
+					_result_label.text += " BLEEDING: %.0f damage/s for %.1fs (ticks faster while moving)." % [
+						float((st as Dictionary).get("damage_per_sec", 0.0)),
+						float((st as Dictionary).get("duration_sec", 0.0))]
+				elif sk == "regen":
+					_result_label.text += " REGENERATING: +%.0f HP/s for %.1fs." % [
+						float((st as Dictionary).get("heal_per_sec", 0.0)),
+						float((st as Dictionary).get("duration_sec", 0.0))]
+				elif sk == "haste":
+					_result_label.text += " HASTED: speed x%.2f for %.1fs (movement only)." % [
+						float((st as Dictionary).get("factor", 1.0)),
+						float((st as Dictionary).get("duration_sec", 0.0))]
+				elif sk == "confusion":
+					_result_label.text += " CONFUSED: stumbling (force %.0f) for %.1fs." % [
+						float((st as Dictionary).get("force", 0.0)),
+						float((st as Dictionary).get("duration_sec", 0.0))]
+				elif sk == "blind":
+					_result_label.text += " BLINDED: accuracy x%.2f for %.1fs." % [
+						float((st as Dictionary).get("factor", 1.0)),
+						float((st as Dictionary).get("duration_sec", 0.0))]
+				elif sk == "weaken":
+					_result_label.text += " WEAKENED: damage dealt x%.2f for %.1fs." % [
+						float((st as Dictionary).get("factor", 1.0)),
+						float((st as Dictionary).get("duration_sec", 0.0))]
+				elif sk == "exhaustion":
+					_result_label.text += " EXHAUSTED: +1 level, speed x0.85 for %.1fs (6 levels = death)." % [
+						float((st as Dictionary).get("duration_sec", 0.0))]
 				elif sk == "knockback":
 					_result_label.text += " KNOCKBACK: force %.0f." % float((st as Dictionary).get("force", 0.0))
+				elif sk == "pull":
+					_result_label.text += " PULLED: force %.0f toward origin." % float((st as Dictionary).get("force", 0.0))
+				elif sk == "typed_damage":
+					_result_label.text += " %s DAMAGE: %.0f instant + rider." % [
+						str((st as Dictionary).get("damage_type", "?")).to_upper(),
+						float((st as Dictionary).get("amount", 0.0))]
 		var hooks_run: Variant = _result.get("hooks_run", [])
 		if hooks_run is Array and not (hooks_run as Array).is_empty():
 			var names: Array[String] = []
