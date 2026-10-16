@@ -30,14 +30,15 @@
 # blind (not blinded), poison (not poisoned).
 # FAMILIES (explicit, per the v0.5.7 brief):
 #   D&D 5e conditions: A implemented 5 — blind (blinded), poison
-#     (poisoned), restrained, prone, exhaustion. The other 8 named
+#     (poisoned), restrained, prone, exhaustion — and v0.5.9 added a
+#     6th, petrified, via the take_damage hook. The other 7 named
 #     conditions (charmed, frightened, grappled, paralyzed, stunned,
-#     deafened, unconscious, petrified) are DELIBERATELY OMITTED: they
-#     are on BOTH prompts' do-not-invent lists, must NOT be in
-#     EFFECT_KINDS, must NOT be offered as kinds by either prompt, and
-#     the validator must reject them. incapacitated / invisible are
-#     neither implemented nor named in the do-not-invent lists — the
-#     suite reports them as INFO (prompt-gap note), not FAIL.
+#     deafened, unconscious) are DELIBERATELY OMITTED: they are on
+#     BOTH prompts' do-not-invent lists, must NOT be in EFFECT_KINDS,
+#     must NOT be offered as kinds by either prompt, and the validator
+#     must reject them. incapacitated / invisible are neither
+#     implemented nor named in the do-not-invent lists — the suite
+#     reports them as INFO (prompt-gap note), not FAIL.
 #   Damage types: the 9 in ModStatusEffects.TYPED_DAMAGE_TYPES (acid,
 #     cold, fire, lightning, necrotic, poison, psychic, radiant,
 #     thunder) via the typed_damage kind. Physical types (bludgeoning /
@@ -51,10 +52,10 @@
 #     damage-resistance system by design — the rider is what makes the
 #     type real.
 #   Classic RPG effects: A implemented pull / bleed / weaken / sleep /
-#     confusion / regen / haste. shield / lifesteal / thorns are
-#     DELIBERATELY OMITTED (on the prompts' do-not-invent lists, with
-#     translation guidance: "shield" = regen or heal, "thorns" = a
-#     damage_mult / typed_damage on_damage_taken hook).
+#     confusion / regen / haste; v0.5.9 added shield / vulnerable /
+#     thorns (damage-interception states via the take_damage hook).
+#     lifesteal is DELIBERATELY OMITTED (on the prompts' do-not-invent
+#     lists — no damage-dealt hook exists to implement it genuinely).
 # STRUCTURES (Worker B):
 #   - The Forge prompt (SYSTEM_PROMPT) contains the full structure
 #     catalog (all 10 shapes) + documents the diagonal ramp.
@@ -121,17 +122,17 @@ class TestDummy extends CharacterBody3D:
 
 const LEGACY_KINDS := ["heal", "explosion", "smoke", "announce", "damage_mult", "slow", "freeze", "burn", "knockback"]
 ## D&D 5e condition name -> Worker A's kind (the 5 A implemented).
-const CONDITION_IMPLEMENTED := {"blinded": "blind", "poisoned": "poison", "restrained": "restrained", "prone": "prone", "exhaustion": "exhaustion"}
+const CONDITION_IMPLEMENTED := {"blinded": "blind", "poisoned": "poison", "restrained": "restrained", "prone": "prone", "exhaustion": "exhaustion", "petrified": "petrified"}
 ## D&D 5e conditions on BOTH prompts' do-not-invent lists.
-const CONDITION_OMITTED := ["stunned", "paralyzed", "unconscious", "petrified", "grappled", "frightened", "charmed", "deafened"]
+const CONDITION_OMITTED := ["stunned", "paralyzed", "unconscious", "grappled", "frightened", "charmed", "deafened"]
 ## 5e conditions neither implemented nor named in the do-not-invent lists.
 const CONDITION_UNLISTED := ["incapacitated", "invisible"]
 ## The prompts' full do-not-invent list (ForgeLLM + creator, verbatim).
-const DO_NOT_INVENT := ["stunned", "paralyzed", "unconscious", "petrified", "grappled", "frightened", "charmed", "deafened", "silence", "shield", "vulnerable", "thorns", "lifesteal", "curse"]
+const DO_NOT_INVENT := ["stunned", "paralyzed", "unconscious", "grappled", "frightened", "charmed", "deafened", "silence", "lifesteal", "curse"]
 ## D&D damage types Worker A implemented (ModStatusEffects.TYPED_DAMAGE_TYPES).
 const DAMAGE_TYPES := ["acid", "cold", "fire", "lightning", "necrotic", "poison", "psychic", "radiant", "thunder"]
 ## Classic RPG effects Worker A implemented.
-const CLASSIC_IMPLEMENTED := ["pull", "bleed", "weaken", "sleep", "confusion", "regen", "haste"]
+const CLASSIC_IMPLEMENTED := ["pull", "bleed", "weaken", "sleep", "confusion", "regen", "haste", "shield", "vulnerable", "thorns"]
 const STRUCTURE_SHAPES := ["bridge", "bunker", "watchtower", "ammo_depot", "stairs", "ramp", "wall", "jump_pad", "cover_piece", "sniper_nest"]
 const ROTATION_KEYS := ["rotation_deg", "rotation", "yaw", "angle"]
 const APPROX_WORDS := ["approximat", "closest", "instead", "similar", "not exact", "straight", "square", "rectangular"]
@@ -325,6 +326,14 @@ func _probes_for(kind: String) -> Array:
 			return [{"force": 5.0, "duration_sec": 5.0}]
 		"blind", "weaken":
 			return [{"factor": 0.5, "duration_sec": 5.0}]
+		"shield":
+			return [{"amount": 50.0, "duration_sec": 5.0}]
+		"vulnerable":
+			return [{"factor": 2.0, "duration_sec": 5.0}]
+		"thorns":
+			return [{"reflect_mult": 0.5, "duration_sec": 5.0}]
+		"petrified":
+			return [{"duration_sec": 5.0}]
 		"typed_damage":
 			return [{"damage_type": "fire", "amount": 20.0, "duration_sec": 5.0}]
 	return []
@@ -371,6 +380,14 @@ func _gameplay_for(kind: String) -> String:
 			return "weaken"
 		"exhaustion":
 			return "exhaustion"
+		"shield":
+			return "shield_pool"
+		"vulnerable":
+			return "vuln_mult"
+		"thorns":
+			return "thorns_state"
+		"petrified":
+			return "petrified"
 	return "active_only"
 
 
@@ -651,6 +668,21 @@ func _check_gameplay(kind: String, effect: Dictionary, dummy: TestDummy, hp_befo
 				label + ": first application is level 1 (got %s)" % str(entry.get("level", "?")))
 			_check(is_equal_approx(_speed_of(dummy), 0.85),
 				label + ": level 1 speed is 0.85 (got %.2f)" % _speed_of(dummy))
+		"shield_pool":
+			_check(is_equal_approx(float(_ModStatus.call("get_shield_remaining", dummy)), float(effect.get("amount", 0.0))),
+				label + ": shield pool %.0f (got %.1f)" % [float(effect.get("amount", 0.0)), float(_ModStatus.call("get_shield_remaining", dummy))])
+		"vuln_mult":
+			_check(is_equal_approx(float(_ModStatus.call("get_damage_taken_multiplier", dummy)), float(effect.get("factor", 1.0))),
+				label + ": damage-taken multiplier %.2f (got %.2f)" % [float(effect.get("factor", 1.0)), float(_ModStatus.call("get_damage_taken_multiplier", dummy))])
+		"thorns_state":
+			var th_entry := _active_entry(dummy, "thorns")
+			_check(is_equal_approx(float(th_entry.get("reflect_mult", -1.0)), float(effect.get("reflect_mult", 0.0))),
+				label + ": thorns reflect_mult %.2f (got %.2f)" % [float(effect.get("reflect_mult", 0.0)), float(th_entry.get("reflect_mult", -1.0))])
+		"petrified":
+			_check(is_equal_approx(_speed_of(dummy), 0.0),
+				label + ": petrified speed 0 (got %.2f)" % _speed_of(dummy))
+			_check(is_equal_approx(float(_ModStatus.call("get_damage_taken_multiplier", dummy)), 0.0),
+				label + ": petrified damage-taken multiplier 0 (got %.2f)" % float(_ModStatus.call("get_damage_taken_multiplier", dummy)))
 		"active_only":
 			_check(_is_wired(kind, GAMEPLAY_FILES),
 				label + ": wired into a gameplay consumer (not decorative)")
@@ -678,6 +710,17 @@ func _check_wearoff(kind: String, dummy: TestDummy, label: String) -> void:
 		"exhaustion":
 			_check(is_equal_approx(_speed_of(dummy), 1.0),
 				label + ": speed fully restored after expiry (got %.2f)" % _speed_of(dummy))
+		"shield_pool":
+			_check(is_equal_approx(float(_ModStatus.call("get_shield_remaining", dummy)), 0.0),
+				label + ": shield pool gone after expiry (got %.1f)" % float(_ModStatus.call("get_shield_remaining", dummy)))
+		"vuln_mult":
+			_check(is_equal_approx(float(_ModStatus.call("get_damage_taken_multiplier", dummy)), 1.0),
+				label + ": damage-taken multiplier restored to 1.0 (got %.2f)" % float(_ModStatus.call("get_damage_taken_multiplier", dummy)))
+		"petrified":
+			_check(is_equal_approx(_speed_of(dummy), 1.0),
+				label + ": speed fully restored after expiry (got %.2f)" % _speed_of(dummy))
+			_check(is_equal_approx(float(_ModStatus.call("get_damage_taken_multiplier", dummy)), 1.0),
+				label + ": damage-taken multiplier restored to 1.0 (got %.2f)" % float(_ModStatus.call("get_damage_taken_multiplier", dummy)))
 
 
 func _test_instant_kind(kind: String, effect: Dictionary, label: String) -> void:
@@ -733,9 +776,8 @@ func _test_conditions() -> void:
 ## offered as a kind by either prompt, validator rejects them. The
 ## "offered" check uses the catalog shapes ("kind": "x" in the creator
 ## table, `x {` in the ForgeLLM status catalog) — NOT a bare quoted
-## token, because both prompts quote "shield" / "thorns" in their
-## translation guidance ("shield" = regen or heal), which is not an
-## offer.
+## token, because prompts may mention a token in prose (e.g. "lifesteal
+## is not a kind") without offering it.
 func _test_omitted() -> void:
 	for tok_v in DO_NOT_INVENT:
 		var tok := str(tok_v)
@@ -865,7 +907,7 @@ func _test_classic_rpg() -> void:
 		var kind := str(kind_v)
 		_check(kind in _effect_kinds,
 			"classic %s: implemented (end-to-end covered by per-kind loop)" % kind)
-	_info("classic omitted-by-design: shield / lifesteal / thorns (on the prompts' do-not-invent lists; covered by _test_omitted)")
+	_info("classic omitted-by-design: lifesteal (on the prompts' do-not-invent lists; covered by _test_omitted)")
 
 
 # --- ForgeLLM prompts (coordinator fix #2) ------------------------------------
