@@ -169,12 +169,31 @@ func get_forge_preset_options() -> Array[Array]:
 	return out
 
 
-## All known weapon ids (Arsenal.WEAPONS keys when Arsenal loads, else
-## the mirror). Sorted; the picker builds its dropdowns from this.
+## All known weapon ids (Arsenal.all_weapon_ids() when Arsenal loads:
+## base ids + live mod-weapon ids "mod:<mod_id>", else the WEAPONS const,
+## else the mirror). Sorted; the picker builds its dropdowns from this.
+## A mod id listed here passes _has_weapon, so create/update_loadout
+## accept it and it persists in user://loadouts.json exactly like a base
+## weapon id; a mod that later goes stale is sanitized to the fallback
+## by _sanitize_entry on the next load.
 func get_weapon_ids() -> Array[String]:
 	var ids: Array[String] = []
 	var script: GDScript = _arsenal()
 	if script != null:
+		# Same defensive method-list check forge_menu.gd uses for
+		# ModLoader: call all_weapon_ids() only when it exists.
+		var has_all := false
+		for m in script.get_script_method_list():
+			if str(m.get("name", "")) == "all_weapon_ids":
+				has_all = true
+				break
+		if has_all:
+			var all_ids: Variant = script.call("all_weapon_ids")
+			if all_ids is Array:
+				for wid: Variant in all_ids:
+					ids.append(str(wid))
+				ids.sort()
+				return ids
 		var consts: Dictionary = script.get_script_constant_map()
 		if consts.has("WEAPONS") and consts.get("WEAPONS") is Dictionary:
 			for key: Variant in (consts.get("WEAPONS") as Dictionary).keys():
