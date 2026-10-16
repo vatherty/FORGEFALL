@@ -684,6 +684,16 @@ func _show_approval(candidate: Dictionary) -> void:
 			var v: Variant = (manifest as Dictionary)[key]
 			if v is String or v is int or v is float or v is bool:
 				lines.append("%s: %s" % [str(key), str(v)])
+	# v0.5.8 spell schools (tag only): show the school in approval so
+	# nothing about the mod is hidden. Fall back to the payload
+	# (block wrapper / script comment) when the candidate predates
+	# the top-level school field.
+	var school := SpellSchools.normalize(str(candidate.get("spell_school", "")))
+	if school.is_empty():
+		school = SpellSchools.parse_from_payload(str(candidate.get("payload", "")))
+	var school_line := SpellSchools.approval_line(school)
+	if not school_line.is_empty():
+		lines.append(school_line)
 	var summary := str(candidate.get("summary", ""))
 	if not summary.is_empty():
 		lines.append("")
