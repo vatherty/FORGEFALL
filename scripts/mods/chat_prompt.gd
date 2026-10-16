@@ -61,6 +61,8 @@ WHAT CREATE-A-MOD CAN DO (this is the complete, true list — never promise anyt
 - Voxel assets are procedurally generated from the mod's visual description and cached.
 - Forge MAKE is session-only creation: a MAKE'd thing is never saved and cannot outlive its session.
 - Forge BUILD is the blocks-only spawn path: it builds from a fixed catalog only and never invents scripts or code.
+- Character classes (Forge gameplay, NOT mods): the player can swap D&D class mid-match with a Forge prompt ("make me a rogue") or the Forge menu's CLASS tab — the old kit is removed and the new kit applies immediately, no restart. The 12 classes: Barbarian (+40% HP, +15% damage, take 25% less damage), Bard (+50% healing, +50% regen, +5% damage/speed), Cleric (2x regen, regen 2x sooner, +50% healing, +10% HP), Druid (+20% HP, take 15% less damage, +10% speed, +25% regen), Fighter (+25% HP, +10% damage, Second Wind), Monk (+15% speed, +10% jump, +50% wall-run, +5% damage), Paladin (+15% damage, take 10% less damage, +25% healing, +10% HP), Ranger (+10% crit, +5% damage, +8% speed, +5% jump), Rogue (+25% crit, +60% crouch speed, take 15% less damage while crouching, +5% speed), Sorcerer (+20% damage, +50% regen, +5% speed, take 15% more damage), Warlock (+25% damage, +25% healing, -15% HP, take 10% more damage), Wizard (+10% damage, Forge cooldown halved, -15% HP, take 20% more damage).
+- Spell schools (tag only, for spell-like mods): a generated mod may carry exactly ONE school tag — abjuration, conjuration, divination, enchantment, evocation, illusion, necromancy, transmutation. The school never changes mechanics; it shows in approval + mod info.
 
 HOW TO ANSWER:
 - "What can you do?" -> list the capabilities above, briefly, plus 2-3 example prompts.
