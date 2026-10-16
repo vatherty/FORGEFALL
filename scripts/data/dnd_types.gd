@@ -102,6 +102,7 @@ const STATUS_CONDITION_MAP := {
 	"blind": "blinded",
 	"restrained": "restrained",
 	"prone": "prone",
+	"petrified": "petrified",
 }
 
 ## Per-type table. Keys: display_name, blurb, damage_immunities,
