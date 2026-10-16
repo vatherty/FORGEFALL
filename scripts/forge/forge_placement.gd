@@ -225,7 +225,10 @@ func _update_preview() -> void:
 	_preview_valid = valid
 	_ghost.global_position = snapped
 	if _player != null:
-		_ghost.rotation.y = _player.rotation.y
+		# v0.5.7 Part B: the ghost shows the same yaw the build will
+		# get — player facing + the spec's rotation_deg offset — so a
+		# diagonal ramp previews diagonal.
+		_ghost.rotation.y = _player.rotation.y + deg_to_rad(clampf(float(_preview_params.get("rotation_deg", 0.0)), -180.0, 180.0))
 	_ghost.set_valid(valid)
 
 
