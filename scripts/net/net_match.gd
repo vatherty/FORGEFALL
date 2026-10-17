@@ -224,6 +224,11 @@ var _result: Dictionary = {}
 ## peer_id -> {name, team, hp, alive, kills, deaths, puppet: Node}
 var _players: Dictionary = {}
 var _team_scores: Array[int] = [0, 0]
+## Bot-fill kills (MP TDM, MPModes): kills by filler bots, kept
+## SEPARATE from the NetManager scoreboard mirror so a later NM score
+## broadcast (which recomputes team scores from the player board)
+## cannot wipe them. _team_scores = board kills + bot kills.
+var _bot_scores: Array[int] = [0, 0]
 var _respawn_timers: Dictionary = {}  # peer_id -> seconds left (host only, standalone mode)
 var _snap_t := 0.0
 var _hp_sync_t := 0.0
@@ -254,7 +259,28 @@ func _ensure_scoreboard() -> void:
 # it is online — and headless tests (no NetManager) stay standalone.
 
 func _nm() -> Node:
-	return get_node_or_null("/root/NetManager") as Node
+	# The LIVE NetManager: prefer /root/NetManager when it is online.
+	# When the autoload is offline (headless / single-player), a second
+	# ONLINE node exposing the NetManager API is the live manager — a
+	# test double cannot take the autoload name (Godot renames the
+	# collision to @Node@N), so the name alone cannot identify it.
+	# Production has exactly one NetManager (the autoload), so the scan
+	# only ever fires for doubles.
+	var direct := get_node_or_null("/root/NetManager") as Node
+	if direct != null and direct.has_method("is_online") \
+			and bool(direct.call("is_online")):
+		return direct
+	var tree: SceneTree = get_tree()
+	var root_node: Node = tree.root if tree != null else null
+	if root_node != null:
+		for child in root_node.get_children():
+			if child == direct:
+				continue
+			if child.has_method("is_online") \
+					and child.has_method("create_network_player") \
+					and bool(child.call("is_online")):
+				return child
+	return direct
 
 
 func _using_nm() -> bool:
@@ -357,6 +383,31 @@ func _recompute_team_scores_from_board() -> void:
 	for r in _scoreboard.get_rows_sorted():
 		var t := clampi(int(r["team"]), 0, 1)
 		_team_scores[t] += int(r["kills"])
+	# Bot-fill kills are not on the NetManager board (bots are not
+	# peers) — preserve them across the recompute.
+	_team_scores[0] += _bot_scores[0]
+	_team_scores[1] += _bot_scores[1]
+
+
+## MP TDM bot-fill scoring (MPModes). A filler bot's kill counts
+## toward its team's score exactly like a PvP kill (killfeed +
+## score_changed + win check), but it is NOT routed through
+## NetManager: bots are not peers, they have no scoreboard row, and
+## the host's bot kills are local to each peer's filler simulation
+## (the match winner is still decided by the host's _finish_match
+## broadcast). Friendly bot kills score nothing. In standalone mode
+## this is the same scoring path as a PvP kill.
+func record_bot_kill(killer_team: int, victim_team: int, killer_name: String, victim_name: String) -> void:
+	if not match_active:
+		return
+	if killer_team == victim_team or killer_team < 0 or killer_team > 1:
+		return
+	_bot_scores[killer_team] += 1
+	_team_scores[killer_team] += 1
+	kill_confirmed.emit(killer_name, victim_name, "BOT", killer_team, victim_team, false, false)
+	score_changed.emit(_team_scores.duplicate())
+	if _team_scores[killer_team] >= score_limit:
+		_finish_match(killer_team, "score_limit")
 
 
 ## NetManager respawn broadcast: mirror alive/HP; respawn the LOCAL
@@ -460,6 +511,7 @@ func start_match(peer_ids: Array, names: Dictionary, mode: String = "tdm",
 	winner_team = -1
 	_result = {}
 	_team_scores = [0, 0]
+	_bot_scores = [0, 0]
 	_respawn_timers.clear()
 	_players.clear()
 	# Balanced teams: sorted ids, each new player joins the smaller team
@@ -512,16 +564,23 @@ func _apply_roster_local(roster: Array) -> void:
 
 
 func _spawn_puppet(peer_id: int, team: int) -> void:
-	# Worker A factory first (duck-typed: never a hard dependency).
-	var factory := _net_manager()
-	if factory != null and factory.has_method("create_network_player"):
-		var node: Variant = factory.call("create_network_player", peer_id, false)
-		if node is Node:
-			(node as Node).name = "NetPlayer_%d" % peer_id
-			add_child(node as Node)
-			if _players.has(peer_id):
-				_players[peer_id]["puppet"] = node
-			return
+	# The NetManager factory is the DELEGATED-mode path only: it is
+	# used when NetManager is actually online. An offline autoload
+	# (headless tests, single-player, lobby-before-connect) must NOT
+	# win the factory race — standalone matches get real NetPuppets
+	# (NetPuppet_2 etc.), which the damage / snapshot paths expect.
+	# (Was: factory preferred whenever the autoload existed, so the
+	# always-present autoload swallowed every standalone puppet.)
+	if _using_nm():
+		var factory := _net_manager()
+		if factory != null and factory.has_method("create_network_player"):
+			var node: Variant = factory.call("create_network_player", peer_id, false)
+			if node is Node:
+				(node as Node).name = "NetPlayer_%d" % peer_id
+				add_child(node as Node)
+				if _players.has(peer_id):
+					_players[peer_id]["puppet"] = node
+				return
 	var puppet := NetPuppet.new(peer_id, team, self)
 	add_child(puppet)
 	if _players.has(peer_id):
@@ -546,9 +605,9 @@ func _spawn_local_shim() -> void:
 
 
 func _net_manager() -> Node:
-	# Canonical name is /root/NetManager (project.godot autoload); /root/Net
-	# is a fallback if the autoload was registered under that name instead.
-	var nm := get_node_or_null("/root/NetManager")
+	# Online-resolved (see _nm): the factory must come from the LIVE
+	# manager, not a dead autoload placeholder.
+	var nm := _nm()
 	if nm != null:
 		return nm
 	return get_node_or_null("/root/Net") as Node
@@ -642,6 +701,7 @@ func stop_match() -> void:
 	_local_shim = null
 	_players.clear()
 	_team_scores = [0, 0]
+	_bot_scores = [0, 0]
 	winner_team = -1
 	_result = {}
 	_local_hp = PLAYER_MAX_HP
@@ -1025,6 +1085,7 @@ func _rpc_begin_match(roster: Array, config: Dictionary) -> void:
 	winner_team = -1
 	_result = {}
 	_team_scores = [0, 0]
+	_bot_scores = [0, 0]
 	_respawn_timers.clear()
 	_players.clear()
 	for entry in roster:
