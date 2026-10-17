@@ -247,8 +247,17 @@ func _check_fix6_fix7() -> void:
 			_check(false, "fix 6: Forge prompt LineEdit exists")
 		var vp := root.get_viewport()
 		var focused = vp.gui_get_focus_owner() if vp != null else null
-		_check(focused == null,
-			"fix 6: no control has keyboard focus after Forge open")
+		# v0.6.1 (Workstream A): the no-focus rule is narrowed to its
+		# INTENT — no TEXT field may hold focus (that pops the phone
+		# keyboard and routes WASD into the prompt). The tab bar IS
+		# focused now, so a gamepad can switch Forge tabs with no
+		# mouse; a TabBar is not editable, so it cannot pop the
+		# keyboard or swallow prompt text.
+		_check(not (focused is LineEdit) and not (focused is TextEdit),
+			"fix 6: no text field has focus after Forge open (no keyboard pop)")
+		var tabs = _menu.get("_tabs") as TabContainer
+		_check(tabs != null and focused == tabs.get_tab_bar(),
+			"fix 6: Forge tab bar holds focus after open (controller nav)")
 		if _menu.has_method("close"):
 			_menu.call("close")
 	else:
