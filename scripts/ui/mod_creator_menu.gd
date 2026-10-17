@@ -269,6 +269,7 @@ static func projectile_description_for(categories: Array, logic: String, payload
 
 
 func _ready() -> void:
+	StencilStyle.install_menu(self)
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	_build()
 	_refresh_mods()
@@ -294,12 +295,8 @@ func _restore_edit_state() -> void:
 
 
 func _build() -> void:
-	var dim := ColorRect.new()
-	dim.name = "Dim"
-	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	dim.color = Color(0.0, 0.0, 0.0, 0.55)
-	dim.mouse_filter = Control.MOUSE_FILTER_STOP
-	add_child(dim)
+	StencilStyle.cinematic_background(self, "workshop", 0.18, false)
+
 	var panel := PanelContainer.new()
 	panel.name = "Panel"
 	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -307,18 +304,21 @@ func _build() -> void:
 	add_child(panel)
 	var vb := VBoxContainer.new()
 	vb.name = "CreatorStack"
-	vb.add_theme_constant_override("separation", 8)
+	vb.add_theme_constant_override("separation", 14)
 	panel.add_child(vb)
+	panel.resized.connect(func() -> void: panel.add_theme_stylebox_override("panel", _workshop_panel_style()))
+	panel.add_theme_stylebox_override("panel", _workshop_panel_style())
+	StencilStyle.eyebrow(vb, "MOD WORKSHOP")
 	var head_row := HBoxContainer.new()
 	vb.add_child(head_row)
 	var head := Label.new()
-	StencilStyle.apply_title(head, 30, StencilStyle.ORANGE, 4)
+	StencilStyle.apply_title(head, 40, StencilStyle.TEXT, 0)
 	head.text = "CREATE A MOD"
 	head.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head_row.add_child(head)
 	var close := Button.new()
 	close.name = "CloseButton"
-	close.text = "X"
+	close.text = "BACK"
 	StencilStyle.style_button(close)
 	close.pressed.connect(_on_close_pressed)
 	head_row.add_child(close)
@@ -359,8 +359,8 @@ func _build_create_tab() -> void:
 	box.add_theme_constant_override("separation", 8)
 	scroll.add_child(box)
 	# (1) CATEGORIES — MULTI-CHOICE checkboxes, never single-select.
-	box.add_child(_section_label("CATEGORIES — pick all that apply"))
-	var cat_row := HBoxContainer.new()
+	box.add_child(_section_label("TYPE — choose any"))
+	var cat_row := HFlowContainer.new()
 	cat_row.name = "CategoryRow"
 	box.add_child(cat_row)
 	for cat in CATEGORIES:
@@ -381,7 +381,7 @@ func _build_create_tab() -> void:
 	_name_input.focus_mode = Control.FOCUS_CLICK
 	box.add_child(_name_input)
 	# (3) VISUAL DESCRIPTION.
-	box.add_child(_section_label("VISUAL DESCRIPTION — what it looks like"))
+	box.add_child(_section_label("APPEARANCE"))
 	_visual_input = TextEdit.new()
 	_visual_input.name = "VisualInput"
 	_visual_input.placeholder_text = "e.g. a green watermelon with dark stripes and a red interior"
@@ -389,7 +389,7 @@ func _build_create_tab() -> void:
 	_visual_input.custom_minimum_size = Vector2(0, 90)
 	box.add_child(_visual_input)
 	# (4) LOGIC.
-	box.add_child(_section_label("LOGIC — what it does"))
+	box.add_child(_section_label("BEHAVIOR"))
 	_logic_input = TextEdit.new()
 	_logic_input.name = "LogicInput"
 	_logic_input.placeholder_text = "e.g. an LMG that shoots watermelons. The watermelons explode on impact."
@@ -399,7 +399,7 @@ func _build_create_tab() -> void:
 	_generate_button = Button.new()
 	_generate_button.name = "GenerateButton"
 	_generate_button.text = "GENERATE"
-	StencilStyle.style_button(_generate_button)
+	StencilStyle.primary_button(_generate_button)
 	_generate_button.pressed.connect(_on_generate_pressed)
 	box.add_child(_generate_button)
 	_status = Label.new()
@@ -488,7 +488,7 @@ func _build_create_tab() -> void:
 	_install_button = Button.new()
 	_install_button.name = "ApprovalInstallButton"
 	_install_button.text = "INSTALL"
-	StencilStyle.style_button(_install_button)
+	StencilStyle.primary_button(_install_button)
 	_install_button.pressed.connect(_on_install_pressed)
 	btn_row.add_child(_install_button)
 	_discard_button = Button.new()
@@ -830,7 +830,7 @@ func _build_import_export_tab() -> void:
 	_ie_import_install_button = Button.new()
 	_ie_import_install_button.name = "ImportApprovalInstallButton"
 	_ie_import_install_button.text = "INSTALL"
-	StencilStyle.style_button(_ie_import_install_button)
+	StencilStyle.primary_button(_ie_import_install_button)
 	_ie_import_install_button.pressed.connect(_on_import_install_pressed)
 	approval_btn_row.add_child(_ie_import_install_button)
 	_ie_import_discard_button = Button.new()
@@ -1908,3 +1908,12 @@ func _unique_copy_id(base: String) -> String:
 		if ModLoader.find_mod(cand, false).is_empty():
 			return cand
 	return first
+
+
+func _workshop_panel_style() -> StyleBoxFlat:
+	var style := StencilStyle.panel(Color.TRANSPARENT, Color.TRANSPARENT, 0)
+	style.content_margin_left = 48
+	style.content_margin_right = maxf(48, size.x * 0.38) if size.x >= 1000 else 32
+	style.content_margin_top = 32
+	style.content_margin_bottom = 32
+	return style
