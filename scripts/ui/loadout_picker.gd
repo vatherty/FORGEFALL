@@ -48,6 +48,8 @@ var _name_input: LineEdit
 var _primary_select: OptionButton
 var _secondary_select: OptionButton
 var _forge_select: OptionButton
+var _traversal_select: OptionButton
+var _traversal_ids: Array[String] = []
 var _save_button: Button
 var _cancel_button: Button
 var _editing_name: String = ""
@@ -178,6 +180,13 @@ func _build_editor(parent: VBoxContainer) -> void:
 	_primary_select = _weapon_row("PRIMARY")
 	_secondary_select = _weapon_row("SECONDARY")
 	_forge_select = _forge_row()
+	_traversal_select = _traversal_row()
+	var trav_hint := Label.new()
+	trav_hint.name = "TraversalHint"
+	trav_hint.text = "Exactly ONE traversal tool is active in the run. Jetpack (fuel-based thrust) lands with the movement worker — your choice is stored and applies once it lands."
+	trav_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	StencilStyle.apply_body(trav_hint, 16, StencilStyle.TEXT_DIM, 2)
+	_editor.add_child(trav_hint)
 
 	var btn_row := HBoxContainer.new()
 	btn_row.name = "EditorButtons"
@@ -232,6 +241,26 @@ func _forge_row() -> OptionButton:
 	return sel
 
 
+## Traversal dropdown row (Gameplay Rework): exactly one tool —
+## Grapple Hook / Jetpack / Portal Gun. Options come from the
+## Loadouts store so the picker can never offer a stale id.
+func _traversal_row() -> OptionButton:
+	var row := HBoxContainer.new()
+	row.name = "TraversalRow"
+	_editor.add_child(row)
+	var lbl := Label.new()
+	lbl.text = "TRAVERSAL"
+	StencilStyle.apply_body(lbl, 18, StencilStyle.TEXT_DIM, 2)
+	row.add_child(lbl)
+	var sel := OptionButton.new()
+	sel.name = "TraversalSelect"
+	StencilStyle.style_button(sel)
+	sel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sel.tooltip_text = "Exactly one traversal tool is active in the run."
+	row.add_child(sel)
+	return sel
+
+
 func _vp_size() -> Vector2:
 	var vp := get_viewport()
 	if vp == null:
@@ -272,7 +301,7 @@ func _apply_scale() -> void:
 	if _name_input != null:
 		_name_input.custom_minimum_size = Vector2(0, UiScale.scaled_size(56, vp))
 		_name_input.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
-	for sel: OptionButton in [_primary_select, _secondary_select, _forge_select]:
+	for sel: OptionButton in [_primary_select, _secondary_select, _forge_select, _traversal_select]:
 		if sel != null:
 			sel.custom_minimum_size = Vector2(0, UiScale.scaled_size(56, vp))
 			sel.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
@@ -436,7 +465,10 @@ func _add_row(entry: Dictionary, active_name: String, store: Node, only_one: boo
 	elif secondary_id.begins_with(MOD_PREFIX):
 		secondary_txt += " (MOD)"
 	var forge_txt: String = str(store.call("get_forge_preset_label", str(entry.get("forge_preset", ""))))
-	detail.text = "%s  /  %s   ·   Forge: %s" % [primary_txt, secondary_txt, forge_txt]
+	var trav_txt: String = str(store.call("get_traversal_display_name", str(entry.get("traversal", "grapple"))))
+	if trav_txt.is_empty():
+		trav_txt = str(entry.get("traversal", "grapple"))
+	detail.text = "%s  /  %s   ·   Forge: %s   ·   Traversal: %s" % [primary_txt, secondary_txt, forge_txt, trav_txt]
 	detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	StencilStyle.apply_body(detail, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
 	wrap.add_child(detail)
@@ -476,6 +508,26 @@ func _refresh_editor_options() -> void:
 				if pair is Array and (pair as Array).size() >= 2:
 					_forge_select.add_item(str((pair as Array)[0]))
 					_editor_forge_prompts.append(str((pair as Array)[1]))
+
+	# Traversal options (exactly one tool) from the store.
+	_traversal_ids = []
+	if _traversal_select != null:
+		_traversal_select.clear()
+		var store_t: Node = _store()
+		if store_t != null and store_t.has_method("get_traversal_options"):
+			var opts_t: Array = store_t.call("get_traversal_options")
+			for pair_t: Variant in opts_t:
+				if pair_t is Array and (pair_t as Array).size() >= 2:
+					_traversal_ids.append(str((pair_t as Array)[0]))
+					_traversal_select.add_item(str((pair_t as Array)[1]))
+
+
+func _select_traversal(tool: String) -> void:
+	if _traversal_select == null:
+		return
+	var idx: int = _traversal_ids.find(tool)
+	_traversal_select.selected = idx if idx >= 0 else 0
+
 
 
 func _select_weapon(sel: OptionButton, weapon_id: String) -> void:
@@ -518,6 +570,7 @@ func _on_edit_pressed(loadout_name: String) -> void:
 	_select_weapon(_primary_select, str(entry.get("primary", "")))
 	_select_weapon(_secondary_select, str(entry.get("secondary", "")))
 	_select_forge(str(entry.get("forge_preset", "")))
+	_select_traversal(str(entry.get("traversal", "grapple")))
 	_editor.visible = true
 	_apply_scale()
 
@@ -529,6 +582,7 @@ func _on_new_pressed() -> void:
 	_select_weapon(_primary_select, "ar7")
 	_select_weapon(_secondary_select, "p9")
 	_select_forge("")
+	_select_traversal("grapple")
 	_editor.visible = true
 	_apply_scale()
 
@@ -550,12 +604,13 @@ func _on_save_pressed() -> void:
 	var primary_id: String = _weapon_ids[_primary_select.selected] if _primary_select != null and _primary_select.selected >= 0 and _primary_select.selected < _weapon_ids.size() else ""
 	var secondary_id: String = _weapon_ids[_secondary_select.selected] if _secondary_select != null and _secondary_select.selected >= 0 and _secondary_select.selected < _weapon_ids.size() else ""
 	var forge_prompt: String = _editor_forge_prompts[_forge_select.selected] if _forge_select != null and _forge_select.selected >= 0 and _forge_select.selected < _editor_forge_prompts.size() else ""
+	var traversal_id: String = _traversal_ids[_traversal_select.selected] if _traversal_select != null and _traversal_select.selected >= 0 and _traversal_select.selected < _traversal_ids.size() else "grapple"
 	if primary_id.is_empty() or secondary_id.is_empty():
 		_set_status("Pick a weapon for both slots.")
 		return
 	if _editing_name.is_empty():
 		# CREATE path.
-		if bool(store.call("create_loadout", new_name, primary_id, secondary_id, forge_prompt)):
+		if bool(store.call("create_loadout", new_name, primary_id, secondary_id, forge_prompt, traversal_id)):
 			_editor.visible = false
 			_editing_name = ""
 			_set_status("%s created." % new_name)
@@ -571,7 +626,7 @@ func _on_save_pressed() -> void:
 			_set_status("Could not rename — that name is taken.")
 			return
 		target_name = new_name
-	if bool(store.call("update_loadout", target_name, primary_id, secondary_id, forge_prompt)):
+	if bool(store.call("update_loadout", target_name, primary_id, secondary_id, forge_prompt, traversal_id)):
 		_editor.visible = false
 		_editing_name = ""
 		_set_status("%s saved." % target_name)
