@@ -90,6 +90,10 @@ var _refresh_button: Button
 var _ip_edit: LineEdit
 var _port_spin: SpinBox
 var _join_button: Button
+var _menu_margin: MarginContainer
+var _network_tabs: HBoxContainer
+var _host_panel: PanelContainer
+var _join_panel: PanelContainer
 var _browse_panel: Control
 var _lobby_panel: Control
 var _lobby_list: ItemList
@@ -102,6 +106,7 @@ var _status_label: Label
 
 
 func _ready() -> void:
+	StencilStyle.install_menu(self)
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	_host_id = "%s-%d" % [str(OS.get_unique_id()), get_instance_id()]
 	_discovery = LanDiscovery.new()
@@ -181,16 +186,14 @@ func get_discovered_games() -> Array:
 # --- UI construction (main_menu.gd conventions: StencilStyle + code-built) --
 
 func _build() -> void:
-	var bg := ColorRect.new()
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bg.color = Color(0.02, 0.025, 0.03, 1.0)
-	add_child(bg)
+	StencilStyle.cinematic_background(self, "staging", 0.18, false)
 
 	var margin := MarginContainer.new()
+	_menu_margin = margin
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 24)
-	margin.add_theme_constant_override("margin_right", 24)
-	margin.add_theme_constant_override("margin_top", 20)
+	margin.add_theme_constant_override("margin_left", 48)
+	margin.add_theme_constant_override("margin_right", int(size.x * 0.43) if size.x >= 1100 else 32)
+	margin.add_theme_constant_override("margin_top", 48)
 	margin.add_theme_constant_override("margin_bottom", 20)
 	add_child(margin)
 
@@ -199,21 +202,11 @@ func _build() -> void:
 	margin.add_child(scroll)
 	var root := VBoxContainer.new()
 	root.add_theme_constant_override("separation", 12)
-	root.custom_minimum_size = Vector2(680, 0)
+	root.custom_minimum_size = Vector2.ZERO
 	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(root)
 
-	var title := Label.new()
-	StencilStyle.apply_title(title, 44, StencilStyle.ORANGE, 4)
-	title.text = "MULTIPLAYER"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	root.add_child(title)
-
-	var sub := Label.new()
-	StencilStyle.apply_body(sub, 18, StencilStyle.TEXT_DIM, 2)
-	sub.text = "HOST-AUTHORITATIVE ENet  //  LAN OR DIRECT IP  //  NO CENTRAL SERVER"
-	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	root.add_child(sub)
+	StencilStyle.section_header(root, "MULTIPLAYER")
 
 	# --- Player name row ---
 	var name_row := HBoxContainer.new()
@@ -235,12 +228,25 @@ func _build() -> void:
 	_name_edit.text_submitted.connect(func(_t: String) -> void: _save_player_name())
 	name_row.add_child(_name_edit)
 
+	_network_tabs = HBoxContainer.new()
+	root.add_child(_network_tabs)
+	for choice in ["HOST GAME", "JOIN GAME"]:
+		var tab := Button.new()
+		tab.text = choice
+		StencilStyle.navigation_button(tab, choice == "HOST GAME")
+		tab.pressed.connect(func() -> void:
+			_host_panel.visible = choice == "HOST GAME"
+			_join_panel.visible = choice == "JOIN GAME"
+			for child in _network_tabs.get_children():
+				StencilStyle.navigation_button(child, child.text == choice))
+		_network_tabs.add_child(tab)
 	# --- Browse view: HOST + JOIN panels ---
 	_browse_panel = VBoxContainer.new()
 	_browse_panel.add_theme_constant_override("separation", 12)
 	root.add_child(_browse_panel)
 	_build_host_panel(_browse_panel)
 	_build_join_panel(_browse_panel)
+	_join_panel.visible = false
 
 	# --- Lobby view (hidden until hosted/joined) ---
 	_lobby_panel = VBoxContainer.new()
@@ -264,6 +270,7 @@ func _build() -> void:
 
 func _build_host_panel(parent: Control) -> void:
 	var panel := PanelContainer.new()
+	_host_panel = panel
 	panel.add_theme_stylebox_override("panel", StencilStyle.panel_accent())
 	parent.add_child(panel)
 	var vb := VBoxContainer.new()
@@ -286,6 +293,7 @@ func _build_host_panel(parent: Control) -> void:
 	_map_select = OptionButton.new()
 	for key in MAP_KEYS:
 		_map_select.add_item(key.to_upper())
+	_map_select.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	StencilStyle.style_button(_map_select)
 	_map_select.item_selected.connect(func(_i: int) -> void: _save_last_choices())
 	map_row.add_child(_map_select)
@@ -301,17 +309,20 @@ func _build_host_panel(parent: Control) -> void:
 	_mode_select = OptionButton.new()
 	for label in MODE_LABELS:
 		_mode_select.add_item(label)
+	_mode_select.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	StencilStyle.style_button(_mode_select)
 	_mode_select.item_selected.connect(func(_i: int) -> void: _save_last_choices())
 	mode_row.add_child(_mode_select)
 
 	_host_button = _menu_button("HOST GAME  —  PORT %d" % DEFAULT_PORT)
+	StencilStyle.primary_button(_host_button)
 	_host_button.pressed.connect(_on_host_pressed)
 	vb.add_child(_host_button)
 
 
 func _build_join_panel(parent: Control) -> void:
 	var panel := PanelContainer.new()
+	_join_panel = panel
 	panel.add_theme_stylebox_override("panel", StencilStyle.panel())
 	parent.add_child(panel)
 	var vb := VBoxContainer.new()
@@ -349,7 +360,7 @@ func _build_join_panel(parent: Control) -> void:
 	ip_row.add_child(ip_label)
 	_ip_edit = LineEdit.new()
 	_ip_edit.placeholder_text = "192.168.1.10"
-	_ip_edit.custom_minimum_size = Vector2(260, 54)
+	_ip_edit.custom_minimum_size = Vector2(160, 54)
 	_ip_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	StencilStyle.style_lineedit(_ip_edit)
 	ip_row.add_child(_ip_edit)
@@ -362,7 +373,7 @@ func _build_join_panel(parent: Control) -> void:
 	_port_spin.max_value = 65535
 	_port_spin.step = 1
 	_port_spin.value = DEFAULT_PORT
-	_port_spin.custom_minimum_size = Vector2(140, 54)
+	_port_spin.custom_minimum_size = Vector2(100, 54)
 	_port_spin.editable = true
 	ip_row.add_child(_port_spin)
 
@@ -410,6 +421,7 @@ func _build_lobby_panel(parent: Control) -> void:
 	_start_button = _menu_button("START MATCH")
 	_start_button.custom_minimum_size = Vector2(0, 56)
 	_start_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.primary_button(_start_button)
 	_start_button.pressed.connect(_on_start_pressed)
 	btn_row.add_child(_start_button)
 
@@ -917,6 +929,8 @@ func _server_entry_text(info: Dictionary) -> String:
 # --- View switching / input ---------------------------------------------------
 
 func _show_browse() -> void:
+	if _network_tabs != null:
+		_network_tabs.visible = true
 	_state = STATE_BROWSE
 	if _browse_panel != null:
 		_browse_panel.visible = true
@@ -929,6 +943,8 @@ func _show_browse() -> void:
 
 
 func _show_lobby() -> void:
+	if _network_tabs != null:
+		_network_tabs.visible = false
 	if _browse_panel != null:
 		_browse_panel.visible = false
 	if _lobby_panel != null:
@@ -971,3 +987,8 @@ func _exit_tree() -> void:
 		_discovery.stop_all()
 	if _state == STATE_LOBBY or _connecting:
 		_disconnect_peer()
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_RESIZED and _menu_margin != null:
+		_menu_margin.add_theme_constant_override("margin_right", int(size.x * 0.43) if size.x >= 1100 else 32)
