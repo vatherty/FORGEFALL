@@ -262,8 +262,18 @@ func _poll_damage_taken() -> void:
 ## replacement logic give_weapon used for primary (disconnect, unequip,
 ## queue_free old, build new, equip if it is the current slot). No budget
 ## is touched here — loadouts are free gear, never Forge builds.
+## v0.5.12 UNIFIED GIVE PATH: a SCRIPT-mod weapon id ("mod:<id>" for a
+## kind="script" weapon mod) does NOT go through Arsenal.make_weapon
+## (Arsenal has no declarative stats for it) — it routes through
+## ForgeBuilder.build_weapon_mod, the SAME path Forge uses for a
+## mod_block weapon spec, so Forge / Arsenal / Loadouts all construct a
+## script-mod weapon identically. The script's apply() grants the base
+## weapon via the nested give_weapon -> set_slot(base) call below.
 func set_slot(slot: String, weapon_id: String) -> void:
 	if not slot in SLOT_ORDER or not Arsenal.has_weapon(weapon_id):
+		return
+	if Arsenal.is_mod_weapon(weapon_id) and _is_script_mod_weapon(weapon_id):
+		_set_script_mod_slot(slot, weapon_id)
 		return
 	var old: WeaponBase = _weapons.get(slot)
 	if old != null:
@@ -277,6 +287,53 @@ func set_slot(slot: String, weapon_id: String) -> void:
 		_current.on_equip()
 		_current.set_ads(_ads_active)
 		weapon_changed.emit(_current.display_name)
+
+
+## True when `weapon_id` is a live SCRIPT-mod weapon id.
+static func _is_script_mod_weapon(weapon_id: String) -> bool:
+	var mod_id := Arsenal.mod_id_of(weapon_id)
+	if mod_id.is_empty():
+		return false
+	var rec := ModLoader.find_mod(mod_id, false)
+	if rec.is_empty() or not bool(rec.get("enabled", false)) or str(rec.get("error", "")) != "":
+		return false
+	return str(rec.get("kind", "")) == "script" and str((rec.get("block_info", {}) as Dictionary).get("target", "")) == "weapon"
+
+
+## Script-mod slot fill (see set_slot): frees the old weapon in the
+## slot, then builds the mod through ForgeBuilder. The script's
+## apply() grants the base weapon via a nested give_weapon -> set_slot
+## call, which fills _weapons[slot] with the base weapon + attached
+## mod hooks (the two find_mod calls below satisfy the registry's
+## pending-attach pair rule — a direct ForgeBuilder call bypasses the
+## ForgeManager gate that normally makes them). If apply() grants no
+## weapon (mod misbehaved), the slot falls back to its base default —
+## a script mod must never leave an empty slot. NOTE on disable: the
+## built node is a BASE weapon with the mod's hooks attached (its
+## weapon_id is the base id, not "mod:..."), so prune_stale_mod_weapons
+## cannot see it — but the registry gates every hook on the mod's live
+## record, so disabling the mod stops the hooks and the weapon degrades
+## to its plain base form instead of vanishing.
+func _set_script_mod_slot(slot: String, weapon_id: String) -> void:
+	var old: WeaponBase = _weapons.get(slot)
+	if old != null:
+		old.ammo_changed.disconnect(_on_weapon_ammo)
+		old.on_unequip()
+		old.queue_free()
+	_weapons[slot] = null
+	var mod_id := Arsenal.mod_id_of(weapon_id)
+	ModLoader.find_mod(mod_id)
+	ModLoader.find_mod(mod_id)
+	var player := _player as Node3D
+	var root: Node = null
+	if is_inside_tree():
+		var tree := get_tree()
+		if tree != null:
+			root = tree.current_scene
+	var msg := ForgeBuilder.build_weapon_mod(mod_id, player, root, slot)
+	if _weapons.get(slot) == null:
+		push_warning("WeaponManager: script mod '%s' granted no weapon (%s) — slot falls back." % [mod_id, msg])
+		set_slot(slot, str(DEFAULT_LOADOUT.get(slot, "")))
 
 
 ## v0.5.9 MOD WEAPONS: drop equipped mod weapons whose mod is no longer
@@ -325,6 +382,13 @@ func get_slot_weapon_id(slot: String) -> String:
 	if w == null:
 		return ""
 	return w.weapon_id
+
+
+## The weapon node in a slot (null when the slot is empty). Used by
+## ModAPI for non-primary give slots (pending-attach on the fresh
+## weapon). Duck-typed callers must check has_method first.
+func get_slot_weapon(slot: String) -> WeaponBase:
+	return _weapons.get(slot)
 
 
 ## Pickups call this: +n reserve to every ballistic weapon.
