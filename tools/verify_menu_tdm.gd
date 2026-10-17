@@ -245,66 +245,35 @@ func _check_loadouts() -> void:
 # --- Phase 2: menu --------------------------------------------------------------
 
 func _check_menu() -> void:
-	_check("menu instantiated", _menu != null and is_instance_valid(_menu))
-	_check("SINGLE PLAYER top entry exists",
-		_menu.get_node_or_null("MenuScroll/MenuStack/SinglePlayerButton") != null)
-	_check("MULTIPLAYER top entry exists",
-		_menu.get_node_or_null("MenuScroll/MenuStack/MultiplayerButton") != null)
-	_check("no legacy DEPLOY button",
-		_menu.get_node_or_null("MenuScroll/MenuStack/DeployButton") == null)
-	_check("no legacy MODE row",
-		_menu.get_node_or_null("MenuScroll/MenuStack/ModeRow") == null)
-	_check("mode-select overlay exists, hidden",
-		_menu.get_node_or_null("ModeSelectOverlay") != null
-		and not (_menu.get_node_or_null("ModeSelectOverlay") as Control).visible)
-	# SP select.
+	_check("menu instantiated", is_instance_valid(_menu))
+	_check("PLAY top entry exists", _menu.find_child("SinglePlayerButton", true, false) != null)
+	_check("MULTIPLAYER top entry exists", _menu.find_child("MultiplayerButton", true, false) != null)
+	var overlay := _menu.get_node("ModeSelectOverlay") as Control
+	_check("mode overlay initially hidden", not overlay.visible)
 	_menu.call("_open_mode_select", "sp")
-	var overlay := _menu.get_node_or_null("ModeSelectOverlay") as Control
-	_check("SP mode select opens", overlay != null and overlay.visible)
-	_check("SP lists Tower Defense AVAILABLE",
-		_menu.get_node_or_null("ModeSelectOverlay/ModeSelectScroll/ModeSelectRoot/ModeRows/ModeRow_tower_defense/ModeRowInner_tower_defense/ModeStatus_tower_defense") != null
-		and (_menu.get_node_or_null("ModeSelectOverlay/ModeSelectScroll/ModeSelectRoot/ModeRows/ModeRow_tower_defense/ModeRowInner_tower_defense/ModeStatus_tower_defense") as Label).text == "AVAILABLE")
-	var tdm_btn := _menu.get_node_or_null("ModeSelectOverlay/ModeSelectScroll/ModeSelectRoot/ModeRows/ModeRow_tdm/ModeRowInner_tdm/ModeStart_tdm") as Button
-	_check("SP lists TDM with enabled START MATCH",
-		tdm_btn != null and tdm_btn.text == "START MATCH" and not tdm_btn.disabled)
-	var tdm_label := _menu.get_node_or_null("ModeSelectOverlay/ModeSelectScroll/ModeSelectRoot/ModeRows/ModeRow_tdm/TdmLoadoutRow/TdmLoadoutLabel") as Label
-	_check("TDM row shows active loadout + traversal",
-		tdm_label != null and tdm_label.text.contains("LOADOUT:") and tdm_label.text.contains("Traversal:"))
-	_check("TDM row has CHANGE LOADOUT",
-		_menu.get_node_or_null("ModeSelectOverlay/ModeSelectScroll/ModeSelectRoot/ModeRows/ModeRow_tdm/TdmLoadoutRow/ModeLoadoutChange") != null)
-	var z_btn := _menu.get_node_or_null("ModeSelectOverlay/ModeSelectScroll/ModeSelectRoot/ModeRows/ModeRow_zombies/ModeRowInner_zombies/ModeStart_zombies") as Button
-	_check("SP lists Zombies AVAILABLE (worker landed it)",
-		z_btn != null and not z_btn.disabled and z_btn.text == "START")
-	# Pressing Zombies with no Main (menu under test, not current
-	# scene) fails gracefully with a status line, never a crash.
+	_check("SP mode select opens", overlay.visible)
+	for id in ["tdm", "tower_defense", "zombies"]:
+		var button := _menu.find_child("ModeStart_" + id, true, false) as Button
+		_check("SP mode selectable: " + id, button != null and not button.disabled)
+	_menu.call("_on_mode_start_pressed", "tdm")
+	_check("TDM continues to deployment", _menu.get("_deploy_panel").visible)
+	_check("deployment shows active loadout", not str(_menu.get("_deploy_loadout").text).is_empty())
+	_check("deployment has traversal", not _menu.get("_deploy_tool").disabled)
+	_menu.call("_close_deploy")
 	_menu.call("_on_mode_start_pressed", "zombies")
-	var status := _menu.get_node_or_null("ModeSelectOverlay/ModeSelectScroll/ModeSelectRoot/ModeStatus") as Label
-	_check("pressing Zombies with no Main shows MAIN MISSING status (no crash)",
-		status != null and status.text == "COULD NOT START ZOMBIES — MAIN MISSING.")
-	# TD setup opens from the TD row and backs out (setup has no cancel
-	# of its own — the menu's BACK button is the way out).
+	_check("Zombies reaches deployment without Main", _menu.get("_deploy_panel").visible)
+	_menu.call("_launch_mode", "zombies")
+	_check("launch without Main reports error", _menu.get("_deploy_status").text.contains("MAIN MISSING"))
+	_menu.call("_close_deploy")
 	_menu.call("_on_mode_start_pressed", "tower_defense")
-	_check("TD START opens TowerDefenseSetup",
-		_menu.get_node_or_null("TDSetup") != null)
-	_check("TD setup BACK button exists",
-		_menu.get_node_or_null("TDSetupBackButton") != null)
-	_menu.call("_on_td_setup_back")
-	_check("TD setup BACK closes setup (member refs cleared at once)",
-		_menu.get("_td_setup") == null and _menu.get("_td_setup_back") == null)
+	_check("TD has traversal selection", not _menu.get("_deploy_tool").disabled)
+	_menu.call("_close_deploy")
 	_menu.call("_close_mode_select")
-	_check("mode select closes", not overlay.visible)
-	# MP select.
+	_check("mode selection closes", not overlay.visible)
 	_menu.call("_open_mode_select", "mp")
-	_check("MP mode select opens", overlay.visible)
-	var mp_td_btn := _menu.get_node_or_null("ModeSelectOverlay/ModeSelectScroll/ModeSelectRoot/ModeRows/ModeRow_mp_tower_defense/ModeRowInner_mp_tower_defense/ModeStart_mp_tower_defense") as Button
-	_check("MP lists TD (MP) AVAILABLE (MP worker landed it)",
-		mp_td_btn != null and not mp_td_btn.disabled)
-	var mp_tdm_btn := _menu.get_node_or_null("ModeSelectOverlay/ModeSelectScroll/ModeSelectRoot/ModeRows/ModeRow_mp_tdm/ModeRowInner_mp_tdm/ModeStart_mp_tdm") as Button
-	_check("MP lists TDM (MP) AVAILABLE",
-		mp_tdm_btn != null and not mp_tdm_btn.disabled)
-	var mp_z_btn := _menu.get_node_or_null("ModeSelectOverlay/ModeSelectScroll/ModeSelectRoot/ModeRows/ModeRow_mp_zombies/ModeRowInner_mp_zombies/ModeStart_mp_zombies") as Button
-	_check("MP lists Zombies (MP) AVAILABLE (MP worker landed it)",
-		mp_z_btn != null and not mp_z_btn.disabled)
+	for id in ["mp_tdm", "mp_tower_defense", "mp_zombies"]:
+		var button := _menu.find_child("ModeStart_" + id, true, false) as Button
+		_check("MP mode selectable: " + id, button != null and not button.disabled)
 	_menu.call("_close_mode_select")
 	_menu.queue_free()
 	_menu = null
