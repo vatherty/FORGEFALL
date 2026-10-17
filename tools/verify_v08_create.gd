@@ -985,17 +985,24 @@ func _stage_persist() -> void:
 		"v08create(5): discarded mod still absent after rescan()")
 	_check(_mod_by_id(mods, _id_c).is_empty(),
 		"v08create(5): forbidden mod still absent after rescan()")
-	# Menu: IMPORT/EXPORT tab is present but placeholder-only by design
-	# (directive B) — its buttons are disabled, no functionality wired.
+	# Menu: IMPORT/EXPORT tab is REAL since v0.5.10 (mod sharing):
+	# Export any installed mod to a MOD1- code, Import one from a
+	# friend — both buttons enabled, no placeholder.
 	if _menu_live:
 		var ie_tab := _find_named(_menu, "ImportExportTab") as Control
 		_check(ie_tab != null, "v08create(7): IMPORT/EXPORT tab present in the creator menu")
 		var imp_b := _find_named(_menu, "ImportButton") as Button
 		var exp_b := _find_named(_menu, "ExportButton") as Button
-		_check(imp_b != null and imp_b.disabled and exp_b != null and exp_b.disabled,
-			"v08create(7): IMPORT/EXPORT is placeholder-only (both buttons disabled)")
+		# Import is always live; Export disables only when the export
+		# picker is empty (no installed mods) — correct empty-state,
+		# not a placeholder. Real widgets prove the tab is wired.
+		_check(imp_b != null and not imp_b.disabled,
+			"v08create(7): IMPORT/EXPORT is real (IMPORT enabled)")
+		_check(exp_b != null and _find_named(_menu, "ExportPicker") != null \
+				and _find_named(_menu, "ImportExportHowTo") != null,
+			"v08create(7): IMPORT/EXPORT is real (EXPORT + picker + HowTo exist, no placeholder)")
 	else:
-		_skip("v08create(7): IMPORT/EXPORT placeholder tab", "menu not instantiated headless")
+		_skip("v08create(7): IMPORT/EXPORT tab", "menu not instantiated headless")
 	_finish()
 
 
