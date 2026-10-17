@@ -997,7 +997,13 @@ static func _element_in_prompt(p: String) -> String:
 ## spaces) appears in the prompt, or {} when nothing matches. The cost is
 ## the mod's declared cost; validate_modspec recomputes it as truth.
 ## Single-word names never match (see _fallback_spec).
+## LONGEST match wins (v0.5.12): when two mods' names both appear
+## ("Taquito Launcher" and "Taquito Launcher Script"), the longer name
+## is the more specific request — first-match-wins would make the
+## longer-named mod unreachable by name.
 static func _mod_spec_for_prompt(p: String) -> Dictionary:
+	var best: Dictionary = {}
+	var best_len := -1
 	for m in ModLoader.get_enabled_mods():
 		if not (m is Dictionary):
 			continue
@@ -1018,12 +1024,13 @@ static func _mod_spec_for_prompt(p: String) -> Dictionary:
 			var norm := _normalize_mod_name(raw_name)
 			if norm.is_empty() or not norm.contains(" "):
 				continue
-			if p.contains(norm):
+			if p.contains(norm) and norm.length() > best_len:
+				best_len = norm.length()
 				var params := {"mod_block": str((m as Dictionary).get("id", ""))}
 				if target in ["cover", "structure", "turret", "pickup"]:
 					params["position"] = "near_player"
-				return _spec("spawn", target, params, int(info.get("cost", 0)))
-	return {}
+				best = _spec("spawn", target, params, int(info.get("cost", 0)))
+	return best
 
 
 ## Lowercase, underscores/hyphens -> spaces, collapsed whitespace.
