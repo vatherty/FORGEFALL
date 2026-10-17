@@ -16,64 +16,51 @@ func _ready() -> void:
 	add_to_group("pause_menu")
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	set_anchors_preset(Control.PRESET_FULL_RECT)
-	visible = false
+	visible = true
 	_build()
 
 
 func _build() -> void:
 	var dim := ColorRect.new()
-	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	dim.color = Color(0.0, 0.0, 0.0, 0.72)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	dim.color = Color(0.015, 0.025, 0.035, 0.95)
 	add_child(dim)
-
-	var title := Label.new()
-	title.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	title.offset_left = -400
-	title.offset_right = 400
-	title.offset_top = 120
-	title.offset_bottom = 200
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.text = "PAUSED"
-	StencilStyle.apply_title(title, 72, StencilStyle.TEXT, 8)
-	add_child(title)
-
-	var sub := Label.new()
-	sub.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	sub.offset_left = -400
-	sub.offset_right = 400
-	sub.offset_top = 205
-	sub.offset_bottom = 240
-	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	StencilStyle.apply_body(sub, 20, StencilStyle.ORANGE, 4)
-	sub.text = "CATCH YOUR BREATH, OPERATOR"
-	sub.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(sub)
-
+	var margin := MarginContainer.new()
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for edge in ["left", "right", "top", "bottom"]:
+		margin.add_theme_constant_override("margin_" + edge, 32)
+	add_child(margin)
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	margin.add_child(scroll)
 	var buttons := VBoxContainer.new()
-	buttons.set_anchors_preset(Control.PRESET_CENTER)
-	buttons.offset_left = -170
-	buttons.offset_right = 170
-	buttons.offset_top = -80
-	buttons.offset_bottom = 200
+	buttons.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	buttons.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
 	buttons.add_theme_constant_override("separation", 12)
-	add_child(buttons)
-
-	var resume := _menu_button("RESUME")
-	_resume_button = resume
-	resume.pressed.connect(toggle_pause)
-	buttons.add_child(resume)
+	scroll.add_child(buttons)
+	var title := Label.new()
+	title.text = "PAUSED"
+	title.add_theme_font_override("font", preload("res://assets/ui/fonts/BarlowCondensed-Bold.ttf"))
+	title.add_theme_font_size_override("font_size", 64)
+	title.add_theme_color_override("font_color", StencilStyle.ORANGE)
+	buttons.add_child(title)
+	var sub := Label.new()
+	sub.text = "CATCH YOUR BREATH, OPERATOR"
+	sub.add_theme_color_override("font_color", StencilStyle.TEXT_DIM)
+	buttons.add_child(sub)
+	_resume_button = _menu_button("RESUME")
+	_resume_button.pressed.connect(toggle_pause)
+	buttons.add_child(_resume_button)
 	var restart := _menu_button("RESTART RUN")
 	restart.pressed.connect(_on_restart)
 	buttons.add_child(restart)
-	var options := _menu_button("OPTIONS")
+	var options := _menu_button("SETTINGS")
 	options.pressed.connect(_on_options)
 	buttons.add_child(options)
 	var quit := _menu_button("QUIT TO MENU")
 	quit.pressed.connect(_on_quit_to_menu)
 	buttons.add_child(quit)
-
-	# Quick options: sensitivity + master volume, collapsed by default.
 	_options_box = VBoxContainer.new()
 	_options_box.visible = false
 	_options_box.add_theme_constant_override("separation", 8)
@@ -81,19 +68,21 @@ func _build() -> void:
 	_sens = _slider_row("SENSITIVITY", 0.5, 3.0, 0.05, _read_setting("sensitivity", 1.0))
 	_master = _slider_row("MASTER VOL", 0.0, 1.0, 0.01, _read_setting("master_vol", 0.9))
 	_master.value_changed.connect(_on_master_vol)
-	# CONTROLS (v0.6.1): full keyboard + gamepad remapping, reachable
-	# from pause so a Deck player never needs the main menu mid-run.
 	var controls := _menu_button("CONTROLS...")
 	controls.pressed.connect(_on_controls)
 	_options_box.add_child(controls)
+	_resume_button.grab_focus()
 
 
 func _menu_button(text: String) -> Button:
 	var b := Button.new()
 	b.text = text
-	b.custom_minimum_size = Vector2(340, 60)
+	b.custom_minimum_size = Vector2(0, 56)
+	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	StencilStyle.style_button(b)
-	b.add_theme_font_size_override("font_size", 24)
+	b.add_theme_font_override("font", preload("res://assets/ui/fonts/BarlowCondensed-Bold.ttf"))
+	b.add_theme_font_size_override("font_size", 26)
+	b.add_theme_stylebox_override("focus", StencilStyle.panel(Color(0, 0, 0, 0), StencilStyle.ORANGE, 2))
 	return b
 
 
@@ -128,14 +117,13 @@ func _input(event: InputEvent) -> void:
 
 
 func toggle_pause() -> void:
-	if get_tree().paused:
-		get_tree().paused = false
-		visible = false
+	var main := get_tree().get_first_node_in_group("game_root")
+	if main != null and main.has_method("resume"):
+		main.resume()
 	else:
-		get_tree().paused = true
-		visible = true
-		# Controller: focus RESUME so D-pad + Confirm work with no mouse.
-		if _resume_button != null:
+		get_tree().paused = not get_tree().paused
+		visible = get_tree().paused
+		if visible:
 			_resume_button.grab_focus()
 
 
@@ -169,7 +157,11 @@ func _on_rebind_closed() -> void:
 func _on_quit_to_menu() -> void:
 	_click()
 	get_tree().paused = false
-	get_tree().change_scene_to_file("res://scenes/ui/main_menu.tscn")
+	var main := get_tree().get_first_node_in_group("game_root")
+	if main != null and main.has_method("quit_to_menu"):
+		main.quit_to_menu()
+	else:
+		get_tree().change_scene_to_file("res://scenes/main.tscn")
 
 
 func _on_master_vol(v: float) -> void:
