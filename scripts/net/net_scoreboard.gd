@@ -34,6 +34,7 @@ var _visible_scoreboard := false
 
 
 func _ready() -> void:
+	StencilStyle.install_menu(self)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_build_ui()
 	visible = false
@@ -211,6 +212,7 @@ func _viewport_size() -> Vector2:
 
 
 func _build_ui() -> void:
+	StencilStyle.cinematic_background(self, "staging", 0.18, get_viewport().get_camera_3d() != null)
 	_panel = PanelContainer.new()
 	_panel.set_anchors_preset(Control.PRESET_CENTER)
 	_panel.offset_left = -340
@@ -226,14 +228,14 @@ func _build_ui() -> void:
 	_panel.add_child(vb)
 	var title := Label.new()
 	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	StencilStyle.apply_title(title, UiScale.scaled_font(30, _viewport_size()),
+	StencilStyle.apply_title(title, StencilStyle.menu_font(30, _viewport_size()),
 		StencilStyle.ORANGE, 4)
 	title.text = "SCOREBOARD"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(title)
 	_team_label = Label.new()
 	_team_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	StencilStyle.apply_body(_team_label, UiScale.scaled_font(24, _viewport_size()),
+	StencilStyle.apply_body(_team_label, StencilStyle.menu_font(24, _viewport_size()),
 		StencilStyle.TEXT, 2)
 	_team_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(_team_label)
@@ -243,7 +245,7 @@ func _build_ui() -> void:
 	vb.add_child(_rows_box)
 	var hint := Label.new()
 	hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	StencilStyle.apply_body(hint, UiScale.scaled_font(16, _viewport_size()),
+	StencilStyle.apply_body(hint, StencilStyle.menu_font(16, _viewport_size()),
 		StencilStyle.TEXT_DIM, 2)
 	hint.text = "TAB TO CLOSE"
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -270,7 +272,7 @@ func _rebuild() -> void:
 		var team := int(r["team"])
 		var name_l := Label.new()
 		name_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		StencilStyle.apply_body(name_l, UiScale.scaled_font(22, _viewport_size()),
+		StencilStyle.apply_body(name_l, StencilStyle.menu_font(22, _viewport_size()),
 			TEAM_COLORS[team], 2)
 		var dead_tag := "" if bool(r["alive"]) else "  [DOWN]"
 		name_l.text = (str(r["name"]) + dead_tag).to_upper()
@@ -279,7 +281,7 @@ func _rebuild() -> void:
 		for key in ["kills", "deaths", "score"]:
 			var col := Label.new()
 			col.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			StencilStyle.apply_body(col, UiScale.scaled_font(22, _viewport_size()),
+			StencilStyle.apply_body(col, StencilStyle.menu_font(22, _viewport_size()),
 				StencilStyle.TEXT, 2)
 			col.text = str(int(r[key]))
 			col.custom_minimum_size = Vector2(64, 0)
