@@ -107,6 +107,7 @@ var _speech: SpeechInput
 # never saved). The MAKE panel below holds the status line + history
 # for what this match made — it has NO input of its own anymore.
 var _spawn_label: Label
+var _advanced_details: VBoxContainer
 var _make_panel: PanelContainer
 var _make_title: Label
 var _make_explainer: Label
@@ -166,6 +167,7 @@ var _mods_rows: Array[Control] = []
 
 
 func _ready() -> void:
+	StencilStyle.install_menu(self)
 	add_to_group("forge_menu")
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -180,12 +182,7 @@ func _ready() -> void:
 
 
 func _build() -> void:
-	var dim := ColorRect.new()
-	dim.name = "Dim"
-	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	dim.color = Color(0.0, 0.0, 0.0, 0.55)
-	dim.mouse_filter = Control.MOUSE_FILTER_STOP
-	add_child(dim)
+	StencilStyle.cinematic_background(self, "industrial", 0.18, get_viewport().get_camera_3d() != null)
 
 	var panel := PanelContainer.new()
 	panel.name = "Panel"
@@ -201,6 +198,8 @@ func _build() -> void:
 	var root := VBoxContainer.new()
 	root.name = "Root"
 	panel.add_child(root)
+	root.add_theme_constant_override("separation", 12)
+	StencilStyle.eyebrow(root, "FIELD FABRICATOR")
 	_root_box = root
 
 	# Header: title + live budget + close.
@@ -209,7 +208,7 @@ func _build() -> void:
 	root.add_child(header)
 	_header_box = header
 	var title := Label.new()
-	title.text = "FORGE MENU"
+	title.text = "FORGE"
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title)
 	_title_label = title
@@ -223,7 +222,7 @@ func _build() -> void:
 	header.add_child(_budget_label)
 	var close_btn := Button.new()
 	close_btn.name = "CloseButton"
-	close_btn.text = "X"
+	close_btn.text = "BACK"
 	StencilStyle.style_button(close_btn)
 	close_btn.pressed.connect(close)
 	header.add_child(close_btn)
@@ -249,7 +248,7 @@ func _build() -> void:
 	# catalog" / "MAKE" split is gone — one box, one flow.)
 	_spawn_label = Label.new()
 	_spawn_label.name = "SpawnSectionLabel"
-	_spawn_label.text = "FORGE — type anything: if it exists, it spawns; if not, it's made for this match"
+	_spawn_label.text = "Choose a preset, or describe what you want to forge."
 	content.add_child(_spawn_label)
 
 	# Category tabs with preset buttons.
@@ -263,7 +262,7 @@ func _build() -> void:
 		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 		_tabs.add_child(scroll)
 		var grid := GridContainer.new()
-		grid.columns = 2
+		grid.columns = 3
 		grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		scroll.add_child(grid)
 		_grids.append(grid)
@@ -276,6 +275,14 @@ func _build() -> void:
 			b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			StencilStyle.style_button(b)
 			b.set_meta("forge_prompt", prompt)
+			if tab_name == "Build":
+				var icon_key := label_text.to_lower()
+				if icon_key not in ["wall", "tower", "turret", "bridge"]:
+					icon_key = "wall"
+				b.icon = load("res://assets/ui/icons/" + icon_key + ".svg")
+				b.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+				b.vertical_icon_alignment = VERTICAL_ALIGNMENT_TOP
+				b.set_meta("forge_tile", true)
 			b.pressed.connect(_on_preset_pressed.bind(prompt, label_text))
 			grid.add_child(b)
 			_menu_buttons.append(b)
@@ -312,7 +319,7 @@ func _build() -> void:
 	_prompt_row = prompt_row
 	_prompt_input = LineEdit.new()
 	_prompt_input.name = "PromptInput"
-	_prompt_input.placeholder_text = "Type anything — existing things spawn, new ones are made for this match"
+	_prompt_input.placeholder_text = "Describe what to forge…"
 	_prompt_input.clear_button_enabled = true
 	_prompt_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	StencilStyle.style_lineedit(_prompt_input)
@@ -326,7 +333,7 @@ func _build() -> void:
 	_confirm_button = Button.new()
 	_confirm_button.name = "ConfirmButton"
 	_confirm_button.text = "FORGE IT"
-	StencilStyle.style_button(_confirm_button)
+	StencilStyle.primary_button(_confirm_button)
 	_confirm_button.pressed.connect(_on_confirm_pressed)
 	prompt_row.add_child(_confirm_button)
 	# v0.6.0 MIC: voice input inside the Forge menu. Same path as the
@@ -467,6 +474,24 @@ func _build() -> void:
 	_toast_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	footer.add_child(_toast_label)
 
+	# Keep the first view focused on selection and the prompt. History,
+	# codes, API-key setup and placed-item controls remain one click away.
+	_advanced_details = VBoxContainer.new()
+	_advanced_details.name = "AdvancedDetails"
+	_advanced_details.visible = false
+	content.add_child(_advanced_details)
+	for node in [_make_panel, placed_title, _placed_list, _history_search_input, _hist_title, _hist_scroll, code_row, key_row, _key_status]:
+		node.reparent(_advanced_details)
+	var more := Button.new()
+	more.name = "ForgeDetailsButton"
+	more.text = "HISTORY & TOOLS  +"
+	more.toggle_mode = true
+	StencilStyle.navigation_button(more)
+	more.add_theme_font_size_override("font_size", 20)
+	more.toggled.connect(func(pressed: bool) -> void: _advanced_details.visible = pressed)
+	content.add_child(more)
+	content.move_child(more, _preview_label.get_index() + 1)
+	content.move_child(_advanced_details, more.get_index() + 1)
 	# Apply resolution-scaled sizes/fonts to everything built above.
 	_apply_scale()
 
@@ -490,7 +515,7 @@ func _build_make_section() -> void:
 	panel.name = "MakePanel"
 	# Gold border + warm dark fill: visually distinct from the preset
 	# tabs (orange accent) and from Create-a-Mod (standalone menu).
-	panel.add_theme_stylebox_override("panel", StencilStyle.panel(Color(0.09, 0.07, 0.03, 0.94), StencilStyle.GOLD, 2))
+	panel.add_theme_stylebox_override("panel", StencilStyle.glass_panel())
 	_content_box.add_child(panel)
 	_make_panel = panel
 	var box := VBoxContainer.new()
@@ -546,7 +571,7 @@ func _apply_scale() -> void:
 	var vp := _vp_size()
 	var m := UiScale.panel_margin(vp)
 	_panel.offset_left = m.x
-	_panel.offset_right = -m.x
+	_panel.offset_right = -maxf(m.x, vp.x * 0.27) if vp.x >= 1100 else -m.x
 	_panel.offset_top = m.y
 	_panel.offset_bottom = -m.y
 	if _root_box != null:
@@ -556,55 +581,56 @@ func _apply_scale() -> void:
 	if _header_box != null:
 		_header_box.add_theme_constant_override("separation", int(UiScale.scaled_size(12, vp)))
 	if _title_label != null:
-		StencilStyle.apply_title(_title_label, UiScale.scaled_font(26, vp), StencilStyle.ORANGE, 3)
+		StencilStyle.apply_title(_title_label, maxi(32, StencilStyle.menu_font(44, vp)), StencilStyle.TEXT, 0)
 	if _budget_label != null:
-		StencilStyle.apply_body(_budget_label, UiScale.scaled_font(20, vp), StencilStyle.TEXT, 2)
+		StencilStyle.apply_body(_budget_label, StencilStyle.menu_font(20, vp), StencilStyle.TEXT, 2)
 	if _close_button != null:
 		_close_button.custom_minimum_size = Vector2(UiScale.scaled_size(56, vp), UiScale.scaled_size(56, vp))
-		_close_button.add_theme_font_size_override("font_size", UiScale.scaled_font(22, vp))
+		_close_button.add_theme_font_size_override("font_size", StencilStyle.menu_font(22, vp))
 	if _spawn_label != null:
-		StencilStyle.apply_body(_spawn_label, UiScale.scaled_font(20, vp), StencilStyle.ORANGE, 2)
+		StencilStyle.apply_body(_spawn_label, StencilStyle.menu_font(18, vp), StencilStyle.TEXT_DIM, 2)
 	if _tabs != null:
-		_tabs.custom_minimum_size = Vector2(0, UiScale.scaled_size(250, vp))
+		_tabs.custom_minimum_size = Vector2(0, maxf(300, UiScale.scaled_size(300, vp)))
 	if _make_title != null:
-		StencilStyle.apply_title(_make_title, UiScale.scaled_font(22, vp), StencilStyle.GOLD, 3)
+		StencilStyle.apply_title(_make_title, StencilStyle.menu_font(22, vp), StencilStyle.GOLD, 3)
 	if _make_explainer != null:
-		StencilStyle.apply_body(_make_explainer, UiScale.scaled_font(17, vp), StencilStyle.TEXT_DIM, 2)
+		StencilStyle.apply_body(_make_explainer, StencilStyle.menu_font(17, vp), StencilStyle.TEXT_DIM, 2)
 	if _make_status != null:
-		StencilStyle.apply_body(_make_status, UiScale.scaled_font(17, vp), StencilStyle.TEXT, 2)
+		StencilStyle.apply_body(_make_status, StencilStyle.menu_font(17, vp), StencilStyle.TEXT, 2)
 	if _make_history_title != null:
-		StencilStyle.apply_body(_make_history_title, UiScale.scaled_font(17, vp), StencilStyle.GOLD, 2)
+		StencilStyle.apply_body(_make_history_title, StencilStyle.menu_font(17, vp), StencilStyle.GOLD, 2)
 	for grid in _grids:
+		grid.columns = 3 if vp.x >= 1100 else 2
 		grid.add_theme_constant_override("h_separation", int(UiScale.scaled_size(10, vp)))
 		grid.add_theme_constant_override("v_separation", int(UiScale.scaled_size(10, vp)))
 	for b in _menu_buttons:
-		b.custom_minimum_size = Vector2(0, UiScale.scaled_size(64, vp))
-		b.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+		b.custom_minimum_size = Vector2(0, 104 if b.has_meta("forge_tile") else UiScale.scaled_size(64, vp))
+		b.add_theme_font_size_override("font_size", StencilStyle.menu_font(20, vp))
 	if _prompt_row != null:
 		_prompt_row.add_theme_constant_override("separation", int(UiScale.scaled_size(10, vp)))
 	if _prompt_input != null:
 		_prompt_input.custom_minimum_size = Vector2(0, UiScale.scaled_size(56, vp))
-		_prompt_input.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+		_prompt_input.add_theme_font_size_override("font_size", StencilStyle.menu_font(20, vp))
 	if _confirm_button != null:
 		_confirm_button.custom_minimum_size = Vector2(UiScale.scaled_size(200, vp), UiScale.scaled_size(56, vp))
-		_confirm_button.add_theme_font_size_override("font_size", UiScale.scaled_font(22, vp))
+		_confirm_button.add_theme_font_size_override("font_size", StencilStyle.menu_font(22, vp))
 	if _mic_button != null:
 		_mic_button.custom_minimum_size = Vector2(UiScale.scaled_size(96, vp), UiScale.scaled_size(56, vp))
-		_mic_button.add_theme_font_size_override("font_size", UiScale.scaled_font(22, vp))
+		_mic_button.add_theme_font_size_override("font_size", StencilStyle.menu_font(22, vp))
 	if _preview_label != null:
-		StencilStyle.apply_body(_preview_label, UiScale.scaled_font(19, vp), StencilStyle.ORANGE, 2)
+		StencilStyle.apply_body(_preview_label, StencilStyle.menu_font(19, vp), StencilStyle.ORANGE, 2)
 	if _history_search_input != null:
 		_history_search_input.custom_minimum_size = Vector2(0, UiScale.scaled_size(56, vp))
-		_history_search_input.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+		_history_search_input.add_theme_font_size_override("font_size", StencilStyle.menu_font(20, vp))
 	if _code_input != null:
 		_code_input.custom_minimum_size = Vector2(0, UiScale.scaled_size(56, vp))
-		_code_input.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+		_code_input.add_theme_font_size_override("font_size", StencilStyle.menu_font(20, vp))
 	for _cb in [_code_build_button, _code_copy_button]:
 		if _cb != null:
 			(_cb as Button).custom_minimum_size = Vector2(UiScale.scaled_size(200, vp), UiScale.scaled_size(56, vp))
-			(_cb as Button).add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+			(_cb as Button).add_theme_font_size_override("font_size", StencilStyle.menu_font(20, vp))
 	if _hist_title != null:
-		StencilStyle.apply_body(_hist_title, UiScale.scaled_font(18, vp), StencilStyle.TEXT_DIM, 2)
+		StencilStyle.apply_body(_hist_title, StencilStyle.menu_font(18, vp), StencilStyle.TEXT_DIM, 2)
 	if _hist_scroll != null:
 		_hist_scroll.custom_minimum_size = Vector2(0, UiScale.scaled_size(92, vp))
 	if _history_list != null:
@@ -612,32 +638,32 @@ func _apply_scale() -> void:
 		for child in _history_list.get_children():
 			if child is Button:
 				(child as Button).custom_minimum_size = Vector2(0, UiScale.scaled_size(48, vp))
-				(child as Button).add_theme_font_size_override("font_size", UiScale.scaled_font(18, vp))
+				(child as Button).add_theme_font_size_override("font_size", StencilStyle.menu_font(18, vp))
 			elif child is Label:
-				StencilStyle.apply_body(child as Label, UiScale.scaled_font(17, vp), StencilStyle.TEXT_DIM, 2)
+				StencilStyle.apply_body(child as Label, StencilStyle.menu_font(17, vp), StencilStyle.TEXT_DIM, 2)
 	if _key_row != null:
 		_key_row.add_theme_constant_override("separation", int(UiScale.scaled_size(10, vp)))
 	if _key_label != null:
-		StencilStyle.apply_body(_key_label, UiScale.scaled_font(18, vp), StencilStyle.TEXT_DIM, 2)
+		StencilStyle.apply_body(_key_label, StencilStyle.menu_font(18, vp), StencilStyle.TEXT_DIM, 2)
 	if _key_input != null:
 		_key_input.custom_minimum_size = Vector2(0, UiScale.scaled_size(56, vp))
-		_key_input.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+		_key_input.add_theme_font_size_override("font_size", StencilStyle.menu_font(20, vp))
 	if _save_key_button != null:
 		_save_key_button.custom_minimum_size = Vector2(UiScale.scaled_size(180, vp), UiScale.scaled_size(56, vp))
-		_save_key_button.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+		_save_key_button.add_theme_font_size_override("font_size", StencilStyle.menu_font(20, vp))
 	if _clear_key_button != null:
 		_clear_key_button.custom_minimum_size = Vector2(UiScale.scaled_size(140, vp), UiScale.scaled_size(56, vp))
-		_clear_key_button.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+		_clear_key_button.add_theme_font_size_override("font_size", StencilStyle.menu_font(20, vp))
 	if _key_status != null:
-		StencilStyle.apply_body(_key_status, UiScale.scaled_font(17, vp), StencilStyle.TEXT_DIM, 2)
+		StencilStyle.apply_body(_key_status, StencilStyle.menu_font(17, vp), StencilStyle.TEXT_DIM, 2)
 	_scale_mods_rows(vp)
 	if _footer_box != null:
 		_footer_box.add_theme_constant_override("separation", int(UiScale.scaled_size(10, vp)))
 	if _undo_button != null:
 		_undo_button.custom_minimum_size = Vector2(UiScale.scaled_size(180, vp), UiScale.scaled_size(56, vp))
-		_undo_button.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+		_undo_button.add_theme_font_size_override("font_size", StencilStyle.menu_font(20, vp))
 	if _toast_label != null:
-		StencilStyle.apply_body(_toast_label, UiScale.scaled_font(18, vp), StencilStyle.TEXT, 2)
+		StencilStyle.apply_body(_toast_label, StencilStyle.menu_font(18, vp), StencilStyle.TEXT, 2)
 
 
 func _wire_forge() -> void:
@@ -991,7 +1017,7 @@ func _refresh_make_history() -> void:
 		var lbl := Label.new()
 		lbl.text = "%s — %s" % [str(d.get("prompt", "?")), str(d.get("label", ""))]
 		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		StencilStyle.apply_body(lbl, UiScale.scaled_font(16, _vp_size()), StencilStyle.TEXT_DIM, 2)
+		StencilStyle.apply_body(lbl, StencilStyle.menu_font(16, _vp_size()), StencilStyle.TEXT_DIM, 2)
 		_make_history_list.add_child(lbl)
 
 
@@ -999,7 +1025,8 @@ func _show_make_status(text: String) -> void:
 	if _make_status == null:
 		return
 	_make_status.text = text
-	StencilStyle.apply_body(_make_status, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT, 2)
+	_show_toast(text)
+	StencilStyle.apply_body(_make_status, StencilStyle.menu_font(17, _vp_size()), StencilStyle.TEXT, 2)
 
 
 func _show_make_error(text: String) -> void:
@@ -1007,7 +1034,7 @@ func _show_make_error(text: String) -> void:
 		_show_toast(text)
 		return
 	_make_status.text = text
-	StencilStyle.apply_body(_make_status, UiScale.scaled_font(17, _vp_size()), StencilStyle.RED, 2)
+	StencilStyle.apply_body(_make_status, StencilStyle.menu_font(17, _vp_size()), StencilStyle.RED, 2)
 	_show_toast(text)
 	_play("forge_fail")
 
@@ -1233,7 +1260,7 @@ func _refresh_history() -> void:
 		entries = _filter_history(_local_history.duplicate(), query)
 	if entries.is_empty():
 		var empty := Label.new()
-		StencilStyle.apply_body(empty, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
+		StencilStyle.apply_body(empty, StencilStyle.menu_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
 		empty.text = "No recent requisitions yet."
 		_history_list.add_child(empty)
 		return
@@ -1246,7 +1273,7 @@ func _refresh_history() -> void:
 		b.custom_minimum_size = Vector2(0, UiScale.scaled_size(48, _vp_size()))
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		StencilStyle.style_button(b)
-		b.add_theme_font_size_override("font_size", UiScale.scaled_font(18, _vp_size()))
+		b.add_theme_font_size_override("font_size", StencilStyle.menu_font(18, _vp_size()))
 		b.set_meta("forge_prompt", entry)
 		b.pressed.connect(_on_history_pressed.bind(entry))
 		_history_list.add_child(b)
@@ -1382,14 +1409,14 @@ func _build_class_tab() -> void:
 	_class_label.text = "CLASS: FIGHTER"
 	_class_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_class_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	StencilStyle.apply_body(_class_label, UiScale.scaled_font(20, _vp_size()), StencilStyle.TEXT_DIM, 2)
+	StencilStyle.apply_body(_class_label, StencilStyle.menu_font(20, _vp_size()), StencilStyle.TEXT_DIM, 2)
 	box.add_child(_class_label)
 	_class_detail_label = Label.new()
 	_class_detail_label.name = "ClassDetailLabel"
 	_class_detail_label.text = PlayerClasses.summary("fighter")
 	_class_detail_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_class_detail_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	StencilStyle.apply_body(_class_detail_label, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
+	StencilStyle.apply_body(_class_detail_label, StencilStyle.menu_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
 	box.add_child(_class_detail_label)
 	var grid := GridContainer.new()
 	grid.columns = 2
@@ -1472,7 +1499,7 @@ func _build_loadouts_tab() -> void:
 	mod_label.name = "LoadoutsModLabel"
 	mod_label.text = "MOD WEAPONS"
 	mod_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	StencilStyle.apply_body(mod_label, UiScale.scaled_font(20, _vp_size()), StencilStyle.ORANGE, 2)
+	StencilStyle.apply_body(mod_label, StencilStyle.menu_font(20, _vp_size()), StencilStyle.ORANGE, 2)
 	box.add_child(mod_label)
 	var mod_weapons: Array = Arsenal.get_mod_weapons()
 	if mod_weapons.is_empty():
@@ -1480,7 +1507,7 @@ func _build_loadouts_tab() -> void:
 		none_lbl.name = "LoadoutsModNoneLabel"
 		none_lbl.text = "No weapon mods installed — install one to equip it here."
 		none_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		StencilStyle.apply_body(none_lbl, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
+		StencilStyle.apply_body(none_lbl, StencilStyle.menu_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
 		box.add_child(none_lbl)
 	else:
 		var mod_grid := GridContainer.new()
@@ -1580,7 +1607,7 @@ func _build_mods_tab() -> void:
 	_mods_path_label.name = "ModsPathLabel"
 	_mods_path_label.text = "Mods folder: " + OS.get_user_data_dir() + "/mods"
 	_mods_path_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	StencilStyle.apply_body(_mods_path_label, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
+	StencilStyle.apply_body(_mods_path_label, StencilStyle.menu_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
 	box.add_child(_mods_path_label)
 	var rescan_row := HBoxContainer.new()
 	rescan_row.name = "ModsRescanRow"
@@ -1600,11 +1627,12 @@ func _build_mods_tab() -> void:
 	# tall wrapped), rendering one character per line and squeezing
 	# the mod list to 0px tall. It was already present here — kept.
 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	StencilStyle.apply_body(hint, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
+	StencilStyle.apply_body(hint, StencilStyle.menu_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
 	rescan_row.add_child(hint)
 	# Create-Mod lives in the standalone Mod Creator menu (main menu -> CREATE A MOD).
 	_mods_scroll = ScrollContainer.new()
 	_mods_scroll.name = "ModsScroll"
+	_mods_scroll.custom_minimum_size.y = 120
 	_mods_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_mods_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	box.add_child(_mods_scroll)
@@ -1656,7 +1684,7 @@ func _add_mods_note(node_name: String, text: String) -> void:
 	lbl.name = node_name
 	lbl.text = text
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	StencilStyle.apply_body(lbl, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
+	StencilStyle.apply_body(lbl, StencilStyle.menu_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
 	_mods_list.add_child(lbl)
 
 
@@ -1675,12 +1703,12 @@ func _add_mod_row(mod: Dictionary, idx: int) -> void:
 	name_lbl.name = "ModName"
 	name_lbl.text = str(mod.get("name", mod_id if not mod_id.is_empty() else "unknown"))
 	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	StencilStyle.apply_body(name_lbl, UiScale.scaled_font(19, _vp_size()), StencilStyle.TEXT, 2)
+	StencilStyle.apply_body(name_lbl, StencilStyle.menu_font(19, _vp_size()), StencilStyle.TEXT, 2)
 	row.add_child(name_lbl)
 	var kind_lbl := Label.new()
 	kind_lbl.name = "ModKind"
 	kind_lbl.text = "Script" if str(mod.get("kind", "")) == "script" else "Block"
-	StencilStyle.apply_body(kind_lbl, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
+	StencilStyle.apply_body(kind_lbl, StencilStyle.menu_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
 	row.add_child(kind_lbl)
 	# v0.5.8 spell schools (tag only): show the school in mod info.
 	var school := str(mod.get("spell_school", ""))
@@ -1688,12 +1716,12 @@ func _add_mod_row(mod: Dictionary, idx: int) -> void:
 		var school_lbl := Label.new()
 		school_lbl.name = "ModSchool"
 		school_lbl.text = school.capitalize()
-		StencilStyle.apply_body(school_lbl, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
+		StencilStyle.apply_body(school_lbl, StencilStyle.menu_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
 		row.add_child(school_lbl)
 	var status_lbl := Label.new()
 	status_lbl.name = "ModStatus"
 	status_lbl.text = "ENABLED" if enabled else "DISABLED"
-	StencilStyle.apply_body(status_lbl, UiScale.scaled_font(17, _vp_size()),
+	StencilStyle.apply_body(status_lbl, StencilStyle.menu_font(17, _vp_size()),
 		StencilStyle.GREEN if enabled else StencilStyle.TEXT_DIM, 2)
 	row.add_child(status_lbl)
 	var toggle := Button.new()
@@ -1707,7 +1735,7 @@ func _add_mod_row(mod: Dictionary, idx: int) -> void:
 		err_lbl.name = "ModError"
 		err_lbl.text = "Error: " + error
 		err_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		StencilStyle.apply_body(err_lbl, UiScale.scaled_font(16, _vp_size()), StencilStyle.RED, 2)
+		StencilStyle.apply_body(err_lbl, StencilStyle.menu_font(16, _vp_size()), StencilStyle.RED, 2)
 		wrap.add_child(err_lbl)
 
 
@@ -1782,7 +1810,7 @@ func _mod_call(loader: GDScript, method: String, args: Array) -> Variant:
 func _scale_mods_rows(vp: Vector2) -> void:
 	if _mods_rescan_button != null:
 		_mods_rescan_button.custom_minimum_size = Vector2(UiScale.scaled_size(180, vp), UiScale.scaled_size(56, vp))
-		_mods_rescan_button.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+		_mods_rescan_button.add_theme_font_size_override("font_size", StencilStyle.menu_font(20, vp))
 	if _mods_list == null:
 		return
 	for wrap in _mods_rows:
@@ -1793,12 +1821,12 @@ func _scale_mods_rows(vp: Vector2) -> void:
 				for cell in (child as HBoxContainer).get_children():
 					if cell is Button:
 						(cell as Button).custom_minimum_size = Vector2(UiScale.scaled_size(140, vp), UiScale.scaled_size(56, vp))
-						(cell as Button).add_theme_font_size_override("font_size", UiScale.scaled_font(18, vp))
+						(cell as Button).add_theme_font_size_override("font_size", StencilStyle.menu_font(18, vp))
 					elif cell is Label and (cell as Label).name == "ModName":
-						(cell as Label).add_theme_font_size_override("font_size", UiScale.scaled_font(19, vp))
+						(cell as Label).add_theme_font_size_override("font_size", StencilStyle.menu_font(19, vp))
 					elif cell is Label:
-						(cell as Label).add_theme_font_size_override("font_size", UiScale.scaled_font(17, vp))
+						(cell as Label).add_theme_font_size_override("font_size", StencilStyle.menu_font(17, vp))
 			elif child is Label and (child as Label).name == "ModError":
-				(child as Label).add_theme_font_size_override("font_size", UiScale.scaled_font(16, vp))
+				(child as Label).add_theme_font_size_override("font_size", StencilStyle.menu_font(16, vp))
 
 
