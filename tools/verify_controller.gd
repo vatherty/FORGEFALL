@@ -449,7 +449,7 @@ func _check_main_menu_nav() -> void:
 	_menu = (load("res://scenes/ui/main_menu.tscn") as PackedScene).instantiate() as Control
 	root.add_child(_menu)
 	var focus := root.get_viewport().gui_get_focus_owner()
-	_check(focus != null and focus is Button and (focus as Button).text == "SINGLE PLAYER",
+	_check(focus != null and focus is Button and focus.name == "SinglePlayerButton",
 		"main menu opens with SINGLE PLAYER focused (controller-ready)")
 
 
@@ -458,7 +458,7 @@ func _check_main_menu_nav_dpad() -> void:
 	_push(_joy_button_event(12, true))
 	_push(_joy_button_event(12, false))
 	var focus := root.get_viewport().gui_get_focus_owner()
-	_check(focus != null and focus is Button and (focus as Button).text == "MULTIPLAYER",
+	_check(focus != null and focus is Button and focus.name == "MultiplayerButton",
 		"D-pad Down moves focus to MULTIPLAYER")
 	# Confirm (A) opens the mode select.
 	_push(_joy_button_event(0, true))
@@ -470,7 +470,7 @@ func _check_main_menu_nav_dpad() -> void:
 	_push(_joy_button_event(1, false))
 	_check(overlay != null and not overlay.visible, "gamepad Back closes mode select")
 	focus = root.get_viewport().gui_get_focus_owner()
-	_check(focus != null and focus is Button and (focus as Button).text == "MULTIPLAYER",
+	_check(focus != null and focus is Button and focus.name == "MultiplayerButton",
 		"focus returns to MULTIPLAYER after Back")
 
 
@@ -486,7 +486,7 @@ func _check_main_menu_nav2() -> void:
 	_push(_joy_button_event(1, false))
 	_check(opts != null and not opts.visible, "gamepad Back closes Options")
 	focus = root.get_viewport().gui_get_focus_owner()
-	_check(focus != null and focus is Button and (focus as Button).text == "OPTIONS",
+	_check(focus != null and focus is Button and focus.name == "OptionsButton",
 		"focus returns to OPTIONS after Back")
 	# Rebind screen opens, has focus, closes on gamepad Back
 	# (queue_free is deferred: the freed-assert runs next phase).
