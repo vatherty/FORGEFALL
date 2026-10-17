@@ -134,6 +134,9 @@ var _wall_normal := Vector3.ZERO
 var _wall_side := 0
 var _wallrun_time := 0.0
 var _can_wallrun := true
+var _wallrun_blocked_normal := Vector3.ZERO
+var _wallrun_detach_cooldown := 0.0
+var _wall_contact_grace := 0.0
 var _coyote := 0.0
 var _jump_buf := 0.0
 var _just_jumped := false  # jump fired this tick: horizontal uses the air branch (is_on_floor() is stale-true pre-move_and_slide)
@@ -365,10 +368,12 @@ func _physics_process(delta: float) -> void:
 		_hp = minf(_hp + REGEN_RATE * class_regen_rate_mult() * delta, get_max_hp())
 		health_changed.emit(_hp, get_max_hp())
 
+	_wallrun_detach_cooldown = maxf(_wallrun_detach_cooldown - delta, 0.0)
 	# --- coyote time + jump buffering ---
 	if is_on_floor():
 		_coyote = COYOTE_TIME
 		_can_wallrun = true
+		_wallrun_blocked_normal = Vector3.ZERO
 	else:
 		_coyote = maxf(_coyote - delta, 0.0)
 	if Input.is_action_just_pressed("jump"):
@@ -457,11 +462,24 @@ func _update_wallrun(delta: float, wish: Vector3) -> void:
 	# deflection for the whole run — nearly impossible on a phone. Airborne +
 	# fast + moving + a wall within reach is the real trigger, Titanfall-style.
 	if _wallrunning:
-		var ray := _wall_ray_for_side()
-		var keep := ray != null and not is_on_floor() \
-			and _wallrun_time < WALLRUN_MAX_TIME * class_wallrun_mult() and wish.length() > 0.1
+		# Track the physical wall in world space rather than camera-relative
+		# side rays, so looking around while running cannot detach the player.
+		var from := global_position + Vector3.UP
+		var query := PhysicsRayQueryParameters3D.create(from, from - _wall_normal * 1.25, 1, [get_rid()])
+		var hit := get_world_3d().direct_space_state.intersect_ray(query)
+		var contact := not hit.is_empty()
+		if contact:
+			var normal: Vector3 = hit["normal"]
+			contact = absf(normal.y) < 0.35 and normal.dot(_wall_normal) > 0.5
+			if contact:
+				_wall_normal = normal
+				_wall_contact_grace = 0.08
+		else:
+			_wall_contact_grace = maxf(0.0, _wall_contact_grace - delta)
+		var keep := (contact or _wall_contact_grace > 0.0) and not is_on_floor() \
+			and not grapple.is_active() and wish.length() > 0.1 \
+			and _wallrun_time + delta < WALLRUN_MAX_TIME * class_wallrun_mult()
 		if keep:
-			_wall_normal = ray.get_collision_normal()
 			_wallrun_time += delta
 			# Stick to the wall, hold vertical speed near zero so the run
 			# stays level (v0.6.0: was maxf(..., -2.0), which let a jump's
@@ -471,7 +489,7 @@ func _update_wallrun(delta: float, wish: Vector3) -> void:
 		else:
 			_end_wallrun()
 		return
-	if is_on_floor() or grapple.is_active() or not _can_wallrun:
+	if is_on_floor() or grapple.is_active() or not _can_wallrun or _wallrun_detach_cooldown > 0.0:
 		return
 	if Vector2(velocity.x, velocity.z).length() < WALLRUN_MIN_SPEED:
 		return
@@ -493,7 +511,7 @@ func _update_wallrun(delta: float, wish: Vector3) -> void:
 	if ray == null:
 		return
 	var n := ray.get_collision_normal()
-	if absf(n.y) > 0.35:
+	if absf(n.y) > 0.35 or n.dot(_wallrun_blocked_normal) > 0.95:
 		return
 	# GAMEPLAY REWORK attach gate (Colin's spec): speed >= full walk AND
 	# (aimed at the wall OR moving parallel to it). No more attaching at
@@ -501,14 +519,16 @@ func _update_wallrun(delta: float, wish: Vector3) -> void:
 	# while looking away, no longer attaches.
 	if not _wallrun_attach_allowed(n):
 		return
-	# Wall-run entry: redirect momentum along the wall tangent + 50% boost
-	# (WALLRUN_ENTRY_BOOST; see the "BOOST READING" note at the const).
+	# Wall-run entry: redirect momentum along the wall with a bounded boost
+	# (up to 1.25x sprint; faster incoming momentum is preserved, not multiplied).
 	# The tangent is flipped to match travel direction, so a head-on
 	# (forward-ray) entry runs along the wall the way the player was moving.
 	_wallrunning = true
 	_wall_side = side
 	_wall_normal = n
 	_wallrun_time = 0.0
+	_wall_contact_grace = 0.08
+	_wallrun_blocked_normal = Vector3.ZERO
 	_walljump_cut_armed = false
 	# Goal 2: wall-run scrape — a 2.8 s ONE-SHOT fired once on entry.
 	# Deliberately not a loop (wall runs last <= 3 s, so the sample
@@ -518,7 +538,7 @@ func _update_wallrun(delta: float, wish: Vector3) -> void:
 	var hv := Vector3(velocity.x, 0.0, velocity.z)
 	if tangent.dot(hv) < 0.0:
 		tangent = -tangent
-	var nspeed := hv.length() * WALLRUN_ENTRY_BOOST
+	var nspeed := minf(hv.length() * WALLRUN_ENTRY_BOOST, maxf(hv.length(), SPRINT_SPEED * class_speed_mult() * 1.25))
 	velocity.x = tangent.x * nspeed
 	velocity.z = tangent.z * nspeed
 	# Level entry (v0.6.0): a jump's upward velocity must NOT survive into
@@ -537,7 +557,10 @@ func _update_wallrun(delta: float, wish: Vector3) -> void:
 func _wallrun_attach_allowed(n: Vector3) -> bool:
 	if Vector2(velocity.x, velocity.z).length() < WALLRUN_MIN_SPEED:
 		return false
-	var hv := Vector3(velocity.x, 0.0, velocity.z).normalized()
+	var horizontal := Vector3(velocity.x, 0.0, velocity.z)
+	if horizontal.dot(n) > 1.0:
+		return false
+	var hv := horizontal.normalized()
 	var tangent := n.cross(Vector3.UP).normalized()
 	if absf(hv.dot(tangent)) > WALLRUN_PARALLEL_DOT:
 		return true
@@ -565,6 +588,9 @@ func _wall_ray_for_side() -> RayCast3D:
 
 
 func _end_wallrun() -> void:
+	if _wallrunning:
+		_wallrun_blocked_normal = _wall_normal
+		_wallrun_detach_cooldown = 0.2
 	_wallrunning = false
 	_wallrun_time = 0.0
 
@@ -644,10 +670,12 @@ func _update_jump() -> void:
 	if _jump_buf <= 0.0:
 		return
 	if _wallrunning:
-		# Wall kick: away from the wall + up, momentum preserved.
-		velocity = _wall_normal * WALL_JUMP_AWAY + Vector3.UP * WALL_JUMP_UP
+		# Keep the along-wall component and add the outward/upward kick.
+		var along_wall := velocity.slide(_wall_normal)
+		along_wall.y = 0.0
+		velocity = along_wall + _wall_normal * WALL_JUMP_AWAY + Vector3.UP * WALL_JUMP_UP
 		_end_wallrun()
-		_can_wallrun = false
+		_can_wallrun = true
 		_jump_buf = 0.0
 		_just_jumped = true
 		_walljump_cut_armed = true
@@ -687,9 +715,22 @@ func _update_horizontal(delta: float, wish: Vector3) -> void:
 		velocity.z = dir.y * speed
 		return
 	if _wallrunning:
-		var rate := ACCEL_GROUND * AIR_CONTROL
-		velocity.x = move_toward(velocity.x, wish.x * SPRINT_SPEED * class_speed_mult(), rate * delta)
-		velocity.z = move_toward(velocity.z, wish.z * SPRINT_SPEED * class_speed_mult(), rate * delta)
+		# Input is projected onto the wall; camera yaw cannot steer into it
+		# or brake a fast entry back to sprint speed. Opposing input brakes
+		# deliberately, while strafing away releases the wall.
+		if wish.dot(_wall_normal) > 0.5:
+			_end_wallrun()
+			return
+		var tangent := _wall_normal.cross(Vector3.UP).normalized()
+		var along := Vector3(velocity.x, 0.0, velocity.z).dot(tangent)
+		var intent := wish.dot(tangent)
+		if along * intent < -0.1:
+			along = move_toward(along, 0.0, ACCEL_GROUND * AIR_CONTROL * delta)
+		elif absf(intent) > 0.1 and absf(along) < SPRINT_SPEED * class_speed_mult():
+			along = move_toward(along, signf(intent) * SPRINT_SPEED * class_speed_mult(), 12.0 * delta)
+		var horizontal := tangent * along - _wall_normal * 1.5
+		velocity.x = horizontal.x
+		velocity.z = horizontal.z
 		return
 	if grapple.is_active():
 		velocity = grapple.apply_grapple(delta, velocity, wish)
@@ -1038,6 +1079,8 @@ func respawn(pos: Vector3) -> void:
 	_sprinting = false
 	_end_wallrun()
 	_can_wallrun = true
+	_wallrun_blocked_normal = Vector3.ZERO
+	_wallrun_detach_cooldown = 0.0
 	_walljump_cut_armed = false
 	_jetpack_fuel = JETPACK_FUEL_MAX
 	_jetpack_burn = 0.0
