@@ -413,29 +413,32 @@ static func _build_dummy(root: Node3D, at: Vector3, shirt: Color) -> Node3D:
 
 
 func _ready() -> void:
+	StencilStyle.install_menu(self)
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	_build()
 
 
 func _build() -> void:
-	var dim := ColorRect.new()
-	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	dim.color = Color(0.0, 0.0, 0.0, 0.7)
-	dim.mouse_filter = Control.MOUSE_FILTER_STOP
-	add_child(dim)
+	StencilStyle.cinematic_background(self, "workshop", 0.18, false)
+
 	var panel := PanelContainer.new()
 	panel.name = "SandboxPanel"
-	panel.set_anchors_preset(Control.PRESET_CENTER)
-	panel.offset_left = -420
-	panel.offset_right = 420
-	panel.offset_top = -320
-	panel.offset_bottom = 320
+	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	panel.offset_left = 24
+	panel.offset_right = -24
+	panel.offset_top = 24
+	panel.offset_bottom = -24
 	panel.add_theme_stylebox_override("panel", StencilStyle.panel_accent())
 	add_child(panel)
 	var vb := VBoxContainer.new()
 	vb.name = "SandboxStack"
 	vb.add_theme_constant_override("separation", 8)
-	panel.add_child(vb)
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(scroll)
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vb)
+	StencilStyle.eyebrow(vb, "MOD PROVING GROUND")
 	var head := Label.new()
 	StencilStyle.apply_title(head, 26, StencilStyle.ORANGE, 4)
 	head.text = "SANDBOX TEST"
@@ -457,7 +460,7 @@ func _build() -> void:
 	vb.add_child(hint)
 	var vpc := SubViewportContainer.new()
 	vpc.name = "SandboxViewportContainer"
-	vpc.custom_minimum_size = Vector2(780, 380)
+	vpc.custom_minimum_size = Vector2(0, 320)
 	vpc.stretch = true
 	vb.add_child(vpc)
 	_viewport = SubViewport.new()
@@ -490,7 +493,7 @@ func _build() -> void:
 	_fire_button = Button.new()
 	_fire_button.name = "SandboxFireButton"
 	_fire_button.text = "FIRE TEST SHOT"
-	StencilStyle.style_button(_fire_button)
+	StencilStyle.primary_button(_fire_button)
 	_fire_button.pressed.connect(_on_fire_pressed)
 	row.add_child(_fire_button)
 	var close := Button.new()
