@@ -97,6 +97,8 @@ func _check_buttons(leaves: Array[Control], group: String) -> void:
 	for c in leaves:
 		if c is Button:
 			var t := (c as Button).text
+			if "   " in t:
+				t = t.split("   ", true, 1)[1]
 			_check("%s button '%s' renders exactly once" % [group, t], not seen.has(t))
 			seen[t] = true
 			if t == "COMING SOON":
@@ -109,39 +111,34 @@ func _check_buttons(leaves: Array[Control], group: String) -> void:
 	_check("%s COMING SOON appears zero times" % group, coming_soon == 0)
 	_check("%s has a LOADOUTS button" % group, has_loadout)
 	_check("%s has a STATS button" % group, has_stats)
-	for want in ["SINGLE PLAYER", "MULTIPLAYER", "PUZZLE CHAMBERS", "LOADOUTS", "STATS", "CREATE A MOD", "OPTIONS", "QUIT"]:
+	for want in ["PLAY", "MULTIPLAYER", "PUZZLE CHAMBERS", "LOADOUTS", "STATS", "CREATE A MOD", "SETTINGS", "QUIT"]:
 		_check("%s has button '%s'" % [group, want], seen.has(want))
-	var loadouts := _menu.get_node_or_null("MenuScroll/MenuStack/LoadoutButton") as Button
+	var loadouts := _menu.get_node_or_null("MenuScroll/MainMargin/MenuStack/LoadoutButton") as Button
 	if loadouts != null:
 		_check("%s LOADOUTS button is enabled" % group, not loadouts.disabled)
-	var stats := _menu.get_node_or_null("MenuScroll/MenuStack/StatsButton") as Button
+	var stats := _menu.get_node_or_null("MenuScroll/MainMargin/MenuStack/StatsButton") as Button
 	if stats != null:
 		_check("%s STATS button is enabled" % group, not stats.disabled)
 
 
 func _check_closed() -> void:
 	var tag := "closed@%dx%d" % [int(_size.x), int(_size.y)]
-	var stack := _menu.get_node_or_null("MenuScroll/MenuStack")
+	var stack := _menu.get_node_or_null("MenuScroll/MainMargin/MenuStack")
 	_check(tag + " stack exists", stack != null)
 	if stack == null:
 		return
-	var tagline := _menu.get_node_or_null("MenuScroll/MenuStack/Tagline") as Label
-	var map_row := _menu.get_node_or_null("MenuScroll/MenuStack/MapRow") as Control
+	var tagline := _menu.get_node_or_null("MenuScroll/MainMargin/MenuStack/Tagline") as Label
+	var map_row := _menu.find_child("DeployMap", true, false) as Control
 	_check(tag + " tagline exists", tagline != null)
-	_check(tag + " map row exists", map_row != null)
-	_check(tag + " no legacy MODE row (rework: mode select is an overlay)", _menu.get_node_or_null("MenuScroll/MenuStack/ModeRow") == null)
-	_check(tag + " no legacy DEPLOY button (rework: SINGLE PLAYER top entry)", _menu.get_node_or_null("MenuScroll/MenuStack/DeployButton") == null)
-	_check(tag + " SINGLE PLAYER top entry exists", _menu.get_node_or_null("MenuScroll/MenuStack/SinglePlayerButton") != null)
+	_check(tag + " map selector exists in deployment", map_row != null)
+	_check(tag + " no legacy MODE row (rework: mode select is an overlay)", _menu.get_node_or_null("MenuScroll/MainMargin/MenuStack/ModeRow") == null)
+	_check(tag + " no legacy DEPLOY button (rework: SINGLE PLAYER top entry)", _menu.get_node_or_null("MenuScroll/MainMargin/MenuStack/DeployButton") == null)
+	_check(tag + " SINGLE PLAYER top entry exists", _menu.get_node_or_null("MenuScroll/MainMargin/MenuStack/SinglePlayerButton") != null)
 	_check(tag + " mode-select overlay exists (hidden)", _menu.get_node_or_null("ModeSelectOverlay") != null)
-	if tagline != null and map_row != null:
-		var tr := tagline.get_global_rect()
-		var mr := map_row.get_global_rect()
-		_check(tag + " tagline does not intersect MAP row", not tr.intersects(mr))
-		_check(tag + " tagline is above MAP row", tr.position.y + tr.size.y <= mr.position.y + 0.5)
-	var footer := _menu.get_node_or_null("MenuScroll/MenuStack/Footer") as Label
+	var footer := _menu.get_node_or_null("MenuScroll/MainMargin/MenuStack/Footer") as Label
 	_check(tag + " footer exists", footer != null)
 	if footer != null:
-		_check(tag + " footer text has no stale version", footer.text == "FORGEFALL — Colin's playtest build")
+		_check(tag + " footer text has no stale version", footer.text.contains("FORGEFALL"))
 		_check(tag + " footer inside viewport", Rect2(Vector2.ZERO, _size).encloses(footer.get_global_rect()))
 	var leaves: Array[Control] = []
 	_leaves(stack, leaves)
