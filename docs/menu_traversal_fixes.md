@@ -29,3 +29,32 @@ Some existing headless suites emit resource-in-use warnings during engine shutdo
 ## Artwork
 
 The main backdrop is decorative generated art. Map previews are actual map geometry, captured under neutral thumbnail lighting; see `assets/ui/README.md`. The screenshot tool requires a display and is not part of the normal test suite.
+
+## Consistent menu styling follow-up
+
+The shared `StencilStyle.menu_theme()` now supplies bundled heading typography, flat dark surfaces, orange actions, clear keyboard/controller focus, readable body text, tabs, dropdowns, text fields, lists and progress bars. Screens install the theme at their roots so dynamic content inherits it.
+
+Updated screens: loadout picker and editor, settings, input remapping, service record, multiplayer browser/lobby, mod creator (Create/Chat/Mods/Import-Export and approval flows), in-game Forge and its tabs, puzzle selector, sandbox, update dialogs, legacy TD/Zombies setup, and network scoreboard. The main menu, mode selection, deployment and pause screens retain their reference layouts. Gameplay HUD body text keeps its contrast outline.
+
+Loadouts and stats use cards; puzzle selection uses responsive cards; the loadout editor has a dedicated scroll area; dense menus retain scrolling rather than reducing text to tiny sizes. Settings has an input-blocking dimmer. Corrected invisible slider tracks and initial sizing for script-created menu roots. Existing signals and menu entry points are preserved.
+
+Follow-up validation on Godot 4.6.3: 203 scripts compile; controller 895/895; main menu layout 926/926; menu/TDM 121/121; Forge Mods layout 29/29; progression/stats/loadouts 67/67; creator redesign 56/56. The creator test has a documented early-autoload compile diagnostic in its `--script` startup, then reloads dependencies and completes all assertions. No script errors were found while rendering the actual screens. Shutdown resource warnings remain in some existing test harnesses.
+
+Rendered menu screenshots at 1280x800 and 960x540, including creator tabs, chat, import/export, the loadout editor, update dialog and sandbox. Physical Steam Deck/Android and live network play still need device testing. Changes are source-only; no release or remote push has been performed.
+
+## Cinematic concept implementation
+
+This pass supersedes the earlier opaque card and sand-panel styling. Secondary screens now use full-screen scenery with dark readability gradients, translucent controls, thin orange selection markers, and restrained primary actions.
+
+- Mode selection and puzzle selection are navigation lists with a description and a separate Continue/Enter action.
+- Deployment uses compact map, mode, loadout and traversal rows over the industrial scene.
+- Loadout selection and editing use an armory backdrop; active gear details, edit/delete, and new-loadout actions remain available. The dedicated editor still scrolls on short screens.
+- Settings separates Audio, Display and Controls. Values retain immediate application and persistence. Multiplayer separates Host/Join while retaining LAN discovery, direct IP and the lobby.
+- Service Record shows real kills, wins and accuracy prominently, with the full existing statistics available through expandable sections.
+- Creator and chat use a workshop scene. Forge shows build icons, category tabs and its prompt first; History & Tools expands the existing history, build codes, API-key setup, made-item status and placed-structure controls.
+- Pause and Forge darken the actual match view when a gameplay camera is active. Decorative art is used only as a standalone fallback.
+- Rebinding, legacy setup screens, scoreboard, sandbox and update dialogs share the same translucent visual system.
+
+New `tools/verify_cinematic_ui.gd` exercises the revised navigation, settings tabs, loadout editor/cancel/back behavior, expandable Forge controls, Host/Join switching, live stat values and live pause background. Broad existing controller, layout, TDM, session, creator, progression and Forge checks are also run. Background illustrations are decorative; they do not replace gameplay maps or selected models. The main menu retains its approved composition.
+
+Cinematic-pass validation (Godot 4.6.3, Linux): 204 scripts compile; 895 controller checks, 626 main/settings layout checks, 121 menu/TDM checks, 29 Forge Mods layout checks, 67 progression/loadout/stats checks, 56 creator checks, and 43 creator-chat checks pass (2 chat checks skipped by the existing harness). The new cinematic interaction suite passes all 14 checks, including actual-match pause behavior. Responsive mode/deployment checks and repeated match-exit sessions also pass. Actual screens were rendered at 1280x800 and dense secondary forms at 960x540. Some existing harnesses report shutdown resource warnings and startup autoload diagnostics; the screenshot probes report no script errors, though the environment cannot complete automatic updater connections. No device exports, remote push, or public release is included.
