@@ -1,20 +1,23 @@
 # FORGEFALL — scripts/enemies/rusher.gd
 # Worker 4 (enemy AI + waves).
 #
-# RUSHER — shotgun breacher. Sprints at the player in a slight zigzag,
-# unloads a 6-pellet shotgun blast at close range, then strafes tight while
-# the shotgun cycles. Falls back to hunting the last known position when
+# RUSHER — shotgun breacher. Sprints at the player in a zigzag with
+# sudden FEINT JUKES (a hard 90-degree cut every 1–2s), then a TELEGRAPHED
+# BLAST: a 0.35s wind-up (shotgun raised, lamp lit) before the 6-pellet
+# blast — the old instant blast is gone. Then strafes tight while the
+# shotgun cycles. Falls back to hunting the last known position when
 # sight is lost. Throws grenades like a grunt at wave >= 4.
 
 class_name Rusher
 extends EnemyBase
 
-enum State { SPAWN, CHARGE, BLAST, HUNT }
+enum State { SPAWN, CHARGE, WINDUP, BLAST, HUNT }
 
 const BLAST_RANGE := 6.5
 const BLAST_PELLETS := 6
 const PELLET_SPREAD := 9.5  # was 7.0: rushers are sloppy up close, not lasers
 const BLAST_COOLDOWN := 2.0  # was 1.7: more breathing room after each blast
+const WINDUP_TIME := 0.35   # rework: telegraphed blast wind-up
 const LOST_SIGHT_TIMEOUT := 4.0
 const GRENADE_MIN_WAVE := 4
 
@@ -26,6 +29,9 @@ var _strafe_dir := 1.0
 var _strafe_t := 0.0
 var _lost_t := 0.0
 var _grenade_t := 0.0
+var _windup_t := 0.0    # rework: blast wind-up countdown
+var _juke_t := 0.0      # rework: time to the next feint juke
+var _juke_active_t := 0.0  # rework: remaining juke cut time
 
 
 func _configure() -> void:
@@ -42,6 +48,10 @@ func _configure() -> void:
 	body_height = 1.7
 
 
+func behaviour_tags() -> Array:
+	return ["shotgun", "zigzag_charge", "juke", "telegraphed_blast", "strafe", "grenade"]
+
+
 func _debris_colors() -> Array:
 	return [Color(0.54, 0.29, 0.16), Color(0.14, 0.15, 0.16), Color(1.0, 0.25, 0.15)]
 
@@ -54,11 +64,17 @@ func _on_activated() -> void:
 	_strafe_t = 0.0
 	_lost_t = 0.0
 	_grenade_t = randf_range(5.0, 9.0)
+	_windup_t = 0.0
+	_juke_t = 0.0  # jukes on the first charge tick, then every 1.2–2.0s
+	_juke_active_t = 0.0
 	aiming = false
 
 
 func _ai_physics(delta: float) -> void:
 	if is_flinching():
+		# A hit mid-windup cancels the blast — shooting it saves you.
+		if state == State.WINDUP:
+			_set_state(State.CHARGE)
 		wish_dir = Vector3.ZERO
 		aiming = false
 		return
@@ -83,27 +99,53 @@ func _ai_physics(delta: float) -> void:
 		State.CHARGE:
 			aiming = false
 			face_target = pp
-			# Zigzag sprint: nav direction plus a sinusoidal perpendicular weave.
+			# Zigzag sprint: nav direction plus a sinusoidal perpendicular
+			# weave, interrupted by sudden feint jukes (hard lateral cut).
 			var dir := nav_direction_to(pp, delta)
 			_zig_phase += delta * 3.2
 			var perp := Vector3(-dir.z, 0, dir.x)
-			wish_dir = (dir + perp * sin(_zig_phase) * 0.45).normalized()
+			var weave := sin(_zig_phase) * 0.45
+			_juke_t -= delta
+			if _juke_t <= 0.0:
+				_juke_t = randf_range(1.2, 2.0)
+				_juke_active_t = 0.3
+				_strafe_dir = -_strafe_dir
+			if _juke_active_t > 0.0:
+				_juke_active_t -= delta
+				weave = _strafe_dir * 2.2
+			wish_dir = (dir + perp * weave).normalized()
 			wish_speed = speed
 			if see and dist <= BLAST_RANGE:
-				_set_state(State.BLAST)
+				_windup_t = WINDUP_TIME
+				begin_telegraph(WINDUP_TIME, "blast")
+				_set_state(State.WINDUP)
 			elif not see and _lost_t > LOST_SIGHT_TIMEOUT:
 				_set_state(State.HUNT)
 
-		State.BLAST:
+		State.WINDUP:
+			# Planted, shotgun raised: the readable blast telegraph.
+			aiming = true
+			wish_dir = Vector3.ZERO
 			face_target = pp
-			_fire_t -= delta
-			if _fire_t <= 0.0 and see and dist < BLAST_RANGE + 2.0:
-				_fire_t = BLAST_COOLDOWN
-				aiming = true
+			_windup_t -= delta
+			if _windup_t <= 0.0:
+				trigger_strike()
 				for i in BLAST_PELLETS:
 					fire_hitscan(damage, PELLET_SPREAD, "shot_shotgun", Color(1.0, 0.6, 0.2))
-			elif _fire_t < BLAST_COOLDOWN - 0.3:
-				aiming = false
+				_fire_t = BLAST_COOLDOWN
+				_set_state(State.BLAST)
+			elif not see:
+				# Lost sight mid-windup: abort, re-approach.
+				_set_state(State.CHARGE)
+
+		State.BLAST:
+			face_target = pp
+			aiming = false
+			_fire_t -= delta
+			if _fire_t <= 0.0 and see and dist < BLAST_RANGE + 2.0:
+				_windup_t = WINDUP_TIME
+				begin_telegraph(WINDUP_TIME, "blast")
+				_set_state(State.WINDUP)
 			# Tight circle-strafe while the shotgun cycles.
 			_strafe_t -= delta
 			if _strafe_t <= 0.0:
