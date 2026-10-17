@@ -115,7 +115,9 @@ func _process(_delta: float) -> void:
 		if ads_now != _ads_active:
 			_ads_active = ads_now
 			_current.set_ads(_ads_active)
-	# Slot switching.
+	# Slot switching: direct slots, then cycle (weapon_next/prev:
+	# mouse wheel by default; gamepad users have the D-pad slots and
+	# can rebind these to any button in Options > CONTROLS).
 	if not _switching:
 		if _slot_pressed(0):
 			switch_to("primary")
@@ -123,6 +125,10 @@ func _process(_delta: float) -> void:
 			switch_to("secondary")
 		elif _slot_pressed(2):
 			switch_to("prototype")
+		elif InputMap.has_action("weapon_next") and Input.is_action_just_pressed("weapon_next"):
+			_cycle_slot(1)
+		elif InputMap.has_action("weapon_prev") and Input.is_action_just_pressed("weapon_prev"):
+			_cycle_slot(-1)
 	# Fire / reload routing.
 	if not _switching:
 		if InputMap.has_action("fire"):
@@ -134,6 +140,20 @@ func _process(_delta: float) -> void:
 				_current.trigger_released()
 		if InputMap.has_action("reload") and Input.is_action_just_pressed("reload"):
 			_current.try_reload()
+
+
+## Cycle to the next (+1) / previous (-1) weapon slot that actually
+## holds a weapon, wrapping around. No-op with fewer than two weapons.
+func _cycle_slot(dir: int) -> void:
+	var order: Array[String] = ["primary", "secondary", "prototype"]
+	var cur := order.find(_current_slot)
+	if cur < 0:
+		cur = 0
+	for i in range(1, order.size() + 1):
+		var nxt := order[(cur + dir * i) % order.size()] if dir >= 0 else order[(cur + dir * i + order.size() * 3) % order.size()]
+		if _weapons.has(nxt):
+			switch_to(nxt)
+			return
 
 
 func _slot_pressed(idx: int) -> bool:
