@@ -1447,8 +1447,10 @@ func _apply_ui_scale() -> void:
 		_style_pip(i, _pip_unlocked[i])
 	StencilStyle.apply_body(_topbar, _scaled_font(26), StencilStyle.TEXT, 3)
 	StencilStyle.apply_body(_uav_label, _scaled_font(24), StencilStyle.ORANGE, 3)
-	StencilStyle.apply_body(_forge_budget_label, _scaled_font(20), StencilStyle.TEXT, 2)
-	_forge_feed.add_theme_font_size_override("normal_font_size", _scaled_font(17))
+	if _forge_budget_label != null:
+		StencilStyle.apply_body(_forge_budget_label, _scaled_font(20), StencilStyle.TEXT, 2)
+	if _forge_feed != null:
+		_forge_feed.add_theme_font_size_override("normal_font_size", _scaled_font(17))
 	StencilStyle.apply_body(_touch_hints, _scaled_font(18), StencilStyle.TEXT_DIM, 2)
 	_update_health_display()
 
