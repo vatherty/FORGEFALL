@@ -31,6 +31,12 @@ Colin's upload on top of v0.6.1 ("Menu, session, and traversal fixes", `docs/men
 - **No on-device verification claimed** — Colin is QA on S23 + Deck. Install link (Pages): https://vatherty.github.io/Forgefall-updates/forgefall-v0.6.2-debug.apk
 - **NOT bundled:** the Donny MOD1- / LAN weekend test. Not part of this release.
 
+## v0.6.2 source sync
+
+Synced local source tree to `vatherty/FORGEFALL` main via contents API (diff by git blob SHA). Uploaded 41 files in the first pass, then `BUILD_LOG.md` once more with this section.
+Changed set: v0.6.2 menu / session / traversal fixes — new files: `docs/menu_traversal_fixes.md` (upload notes), `assets/ui/` (industrial_backdrop.png, 7 map previews, BarlowCondensed-Bold.ttf + OFL.txt, README.md), new suites `verify_menu_session.gd` + `.uid`, `verify_industrial_menu.gd` + `.uid`, `verify_grapple_pull.gd` + `.uid`, `verify_wallrun_momentum.gd` + `.uid`, `tools/capture_map_previews.gd` + `.uid`. Modified: `main.gd` (state-machine pause/resume/quit + sync hide + teardown), `main_menu.gd` (industrial rewrite), `pause_menu.gd` (container layout), `player.gd` (wall-run rework), `grapple_hook.gd` (radial pull + reel), `hud.gd` (Forge label null guards), `game_mode.gd` (typed mode lists), suite updates (`verify_city_maps`, `verify_controller`, `verify_creator_redesign`, `verify_fixes`, `verify_menu_layout`, `verify_menu_tdm`, `verify_movement_rework`, `verify_windows`), `tuning.gd` (FALLBACK 41), `verify_updater_pc.gd` (manifest expectations 0.6.2 / code 41), `export_presets.cfg` (sanitized copy uploaded: version 0.6.2 / code 41, Windows export_path → v0.6.2, keystore debug password as a quoted `"<redacted>"` placeholder — never a real credential; the working file's export-time value is the public Android debug default, see the keystore note in the entry above), `BUILD_LOG.md` (this entry + publish details).
+Exclusions (never pushed): builds/, updates/, .godot/, staging dirs, *.apk/*.zip/*.pck/*.keystore/*.import, top-level android/ only (NOT scripts/android/ — top-level exclusions at depth 0 only), `tools/_sync/` + `__pycache__` + `*.pyc` (local sync tooling), any credentials. Zero-diff verified after sync: 548 local files == 548 repo blobs, all blob SHAs match. No keystore/secrets/binaries landed (the new PNG/TTF assets are source assets the menu loads: generated backdrop, map-geometry previews, OFL font).
+
 ## v0.6.1 — Controller + Maps (2026-10-17)
 
 Five workers landed; this entry is the integration + publish pass. No gameplay balance, prices, or rules changed.
