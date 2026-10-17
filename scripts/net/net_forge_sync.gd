@@ -85,6 +85,25 @@ var _provisional: Array = []  # {entry: Dictionary, node: Node} awaiting host ac
 var _next_id := 1
 var _poll_t := 0.0
 var _builder_script: GDScript = null
+var _forge_gate_script: GDScript = null  # runtime load (see _forge_allowed)
+
+
+## MP worker: remote Forge specs are gated by the SAME allowlist as
+## the local pipeline (ForgeGate). No live run -> permit (menus /
+## tools / the existing NetForgeSync suites, which run with no mode
+## manager). Live MP Zombies / MP TDM -> host_place / apply_place
+## refuse the spec, so a peer cannot smuggle a build into a
+## no-Forge match over the wire. Runtime load (not a bare ForgeGate
+## reference): this file is preloaded by the NetManager autoload, and
+## a bare reference would drag the GameModeManager chain into the
+## autoload compile.
+func _forge_allowed() -> bool:
+	if _forge_gate_script == null:
+		if ResourceLoader.exists("res://scripts/forge/forge_gate.gd"):
+			_forge_gate_script = load("res://scripts/forge/forge_gate.gd") as GDScript
+		if _forge_gate_script == null:
+			return true  # gate script missing: fail open (legacy behaviour)
+	return bool(_forge_gate_script.call("can_build"))
 # Explicit peer context (tests). When unset, resolved from the parent.
 var _peer_ctx_set := false
 var _peer_online := false
@@ -315,6 +334,8 @@ func clear() -> void:
 
 func host_place(spec: Dictionary, owner: int, pos: Vector3, rot: Vector3,
 		node: Node = null) -> Dictionary:
+	if not _forge_allowed():
+		return {}  # MP worker: Forge building is TD-only, incl. remote specs.
 	var preset_id := preset_id_for_spec(spec)
 	if preset_id.is_empty():
 		return {}
@@ -383,6 +404,8 @@ func host_update(instance_id: int, pos: Vector3, rot: Vector3) -> Dictionary:
 ## matching provisional node (client's own just-placed build), else spawns.
 ## Returns the live node or null when ignored / spawn failed.
 func apply_place(raw_entry: Dictionary) -> Node:
+	if not _forge_allowed():
+		return null  # MP worker: refuse remote specs in a no-Forge match.
 	var entry := sanitize_entry(raw_entry)
 	if entry.is_empty():
 		return null
