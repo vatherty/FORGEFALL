@@ -47,13 +47,23 @@ const PLAYER_SLIDE_MIN_SPEED := 5.0
 const PLAYER_SLIDE_END_SPEED := 2.0
 const PLAYER_SLIDE_MAX_TIME := 2.5
 const PLAYER_SLIDE_HOP := 5.5
+const PLAYER_HEAD_SLIDE := 0.85  # slide camera: lowest stance (stand 1.6 / crouch 1.05)
 const PLAYER_WALLRUN_MAX_TIME := 3.0
-const PLAYER_WALLRUN_ENTRY_BOOST := 1.25
-const PLAYER_WALLRUN_MIN_SPEED := 4.0
+const PLAYER_WALLRUN_ENTRY_BOOST := 1.5  # +50% on attach (see player.gd BOOST READING note)
+const PLAYER_WALLRUN_MIN_SPEED := 6.0  # full walking speed
+const PLAYER_WALLRUN_AIM_DOT := 0.5  # aimed-at-wall gate
+const PLAYER_WALLRUN_PARALLEL_DOT := 0.7  # moving-parallel gate
 const PLAYER_WALLRUN_GRAVITY_SCALE := 0.12
 const PLAYER_WALLRUN_ROLL_DEG := 12.0
 const PLAYER_WALL_JUMP_AWAY := 8.0
-const PLAYER_WALL_JUMP_UP := 6.5
+const PLAYER_WALL_JUMP_UP := 6.5  # full (hold) wall-jump height
+const PLAYER_WALL_JUMP_TAP_UP := 4.0  # tap wall-jump = small hop
+const PLAYER_JETPACK_THRUST_ACCEL := 45.0
+const PLAYER_JETPACK_MAX_RISE := 7.0
+const PLAYER_JETPACK_FUEL_MAX := 100.0
+const PLAYER_JETPACK_FUEL_DRAIN := 35.0
+const PLAYER_JETPACK_FUEL_REGEN := 25.0
+const PLAYER_JETPACK_MAX_BURN := 2.5
 const PLAYER_MAX_HP := 100.0
 const PLAYER_REGEN_DELAY := 5.0
 const PLAYER_REGEN_RATE := 25.0
@@ -215,5 +225,5 @@ const UPDATE_BASE_URL := "https://vatherty.github.io/Forgefall-updates/"
 const UPDATE_TIMEOUT_SEC := 8
 ## Installed version code used when the ForgeUpdater Android plugin is absent
 ## (desktop/editor builds). KEEP IN SYNC with export_presets.cfg version/code.
-const FALLBACK_VERSION_CODE := 38
+const FALLBACK_VERSION_CODE := 39
 #endregion
