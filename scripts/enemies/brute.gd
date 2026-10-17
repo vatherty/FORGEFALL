@@ -3,12 +3,16 @@
 #
 # BRUTE ("Juggernaut") — spawns on every 5th wave. 12x grunt HP, LMG with
 # long sustained bursts, slow inexorable advance, IMMUNE to flinch/knockback,
-# never takes cover. The wave manager announces "JUGGERNAUT INBOUND".
+# never takes cover. NEW (rework): a telegraphed ground SLAM — when the
+# player gets within 3.2m it winds up 0.8s (both arms overhead, lamp lit),
+# then detonates a 4m shockwave for up to 30 damage with falloff to 0 at
+# the edge. Back off during the wind-up to dodge it. The wave manager
+# announces "JUGGERNAUT INBOUND".
 
 class_name Brute
 extends EnemyBase
 
-enum State { SPAWN, ADVANCE, BARRAGE }
+enum State { SPAWN, ADVANCE, BARRAGE, SLAM, RECOVER }
 
 const BURST_COUNT := 8  # was 10: 8 x 9 = 72 max per barrage, never instant-kill
 const BURST_GAP := 0.10
@@ -16,6 +20,12 @@ const FIRE_COOLDOWN := 1.8  # was 1.2: a real gap between barrages to punish/rel
 const AIM_TELEGRAPH := 0.5
 const BARRAGE_RANGE := 15.0
 const ADVANCE_RESUME := 19.0
+const SLAM_TRIGGER := 3.2    # rework: ground-slam trigger range
+const SLAM_WINDUP := 0.8     # rework: readable slam telegraph
+const SLAM_RADIUS := 4.0     # rework: shockwave radius
+const SLAM_DAMAGE := 30.0    # rework: max slam damage (centre), 0 at edge
+const SLAM_COOLDOWN := 5.0   # rework: seconds between slams
+const SLAM_RECOVER := 1.2    # rework: breathing room after a slam
 
 var state: int = State.SPAWN
 var _t := 0.0
@@ -23,6 +33,8 @@ var _fire_t := 0.0
 var _aim_t := 0.0
 var _strafe_dir := 1.0
 var _strafe_t := 0.0
+var _slam_t := 0.0
+var _slam_cooldown := 0.0
 
 
 func _configure() -> void:
@@ -41,6 +53,10 @@ func _configure() -> void:
 	body_scale = Vector3(1.28, 1.18, 1.32)
 
 
+func behaviour_tags() -> Array:
+	return ["ranged_lmg", "tank", "flinch_immune", "slam_aoe", "slow_advance"]
+
+
 func _debris_colors() -> Array:
 	return [Color(0.23, 0.25, 0.27), Color(0.14, 0.15, 0.16), Color(0.54, 0.29, 0.16)]
 
@@ -51,6 +67,8 @@ func _on_activated() -> void:
 	_fire_t = 1.2
 	_aim_t = 0.0
 	_strafe_t = 0.0
+	_slam_t = 0.0
+	_slam_cooldown = 2.0  # no instant slam on spawn — the player gets a look first
 	aiming = false
 
 
@@ -59,6 +77,8 @@ func _ai_physics(delta: float) -> void:
 	var pp := player_pos()
 	var dist := global_position.distance_to(pp)
 	var see := can_see_player()
+	if _slam_cooldown > 0.0:
+		_slam_cooldown -= delta
 
 	match state:
 		State.SPAWN:
@@ -74,6 +94,8 @@ func _ai_physics(delta: float) -> void:
 			face_target = pp
 			wish_dir = nav_direction_to(pp, delta)
 			wish_speed = speed
+			if _try_slam(see, dist):
+				return
 			if see and dist <= BARRAGE_RANGE:
 				_set_state(State.BARRAGE)
 
@@ -92,9 +114,40 @@ func _ai_physics(delta: float) -> void:
 				close = to_p.normalized() * 0.8
 			wish_dir = perp * 0.35 + close
 			wish_speed = speed
+			if _try_slam(see, dist):
+				return
 			_update_lmg(delta, pp, dist, see)
 			if dist > ADVANCE_RESUME:
 				_set_state(State.ADVANCE)
+
+		State.SLAM:
+			# Planted, both arms overhead — the 0.8s dodge window.
+			aiming = true
+			wish_dir = Vector3.ZERO
+			face_target = pp
+			_slam_t -= delta
+			if _slam_t <= 0.0:
+				melee_blast(SLAM_RADIUS, SLAM_DAMAGE)
+				_slam_cooldown = SLAM_COOLDOWN
+				_set_state(State.RECOVER)
+
+		State.RECOVER:
+			aiming = false
+			wish_dir = Vector3.ZERO
+			face_target = pp
+			_t += delta
+			if _t >= SLAM_RECOVER:
+				_set_state(State.ADVANCE)
+
+
+func _try_slam(see: bool, dist: float) -> bool:
+	# Close-in, LOS, cooldown respected.
+	if _slam_cooldown > 0.0 or not see or dist > SLAM_TRIGGER:
+		return false
+	_slam_t = SLAM_WINDUP
+	begin_telegraph(SLAM_WINDUP, "slam")
+	_set_state(State.SLAM)
+	return true
 
 
 func _set_state(s: int) -> void:
@@ -117,9 +170,11 @@ func _update_lmg(delta: float, pp: Vector3, dist: float, see: bool) -> void:
 		_aim_t -= delta
 		if _aim_t <= 0.0:
 			gun_trigger(BURST_COUNT)
+			trigger_strike()
 		return
 	aiming = false
 	_fire_t -= delta
 	if _fire_t <= 0.0 and see and dist < SIGHT_RANGE:
 		_fire_t = FIRE_COOLDOWN
 		_aim_t = AIM_TELEGRAPH
+		begin_telegraph(AIM_TELEGRAPH, "aim")
