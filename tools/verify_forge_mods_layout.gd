@@ -3,8 +3,9 @@
 # the Forge menu: the Mods tab's outer ScrollContainer was dropped, the
 # Mods box is the direct TabContainer child, and the mod list (ModsScroll)
 # is the only scroller. Asserts:
-#   - 6 tabs, 6th tab child is a VBoxContainer named "Mods" (NOT a
-#     ScrollContainer), tab title "Mods", _mods_tab_idx == 5
+#   - 7 tabs, 6th tab child is a VBoxContainer named "Mods" (NOT a
+#     ScrollContainer), tab title "Mods", _mods_tab_idx == 5; 7th tab
+#     is "Class" (v0.5.8 D&D classes).
 #   - ModsScroll is the ONLY ScrollContainer under the Mods tab and gets
 #     real height: it fills the tab-area remainder after the path label
 #     and Rescan row (baseline BEFORE the fix: exactly 0px — invisible
@@ -84,12 +85,12 @@ func _check_layout() -> void:
 	_check(tabs != null, tag + ": menu has TabContainer")
 	if tabs == null:
 		return
-	_check(tabs.get_tab_count() == 6, tag + ": 6 tabs (got %d)" % tabs.get_tab_count())
+	_check(tabs.get_tab_count() == 7, tag + ": 7 tabs (got %d)" % tabs.get_tab_count())
 	var names: Array[String] = []
 	for i in tabs.get_tab_count():
 		names.append(tabs.get_child(i).name)
-	_check(names == ["Build", "Weapons", "Events", "Killstreaks", "Loadouts", "Mods"],
-		tag + ": tab child names incl. Mods 6th (got %s)" % str(names))
+	_check(names == ["Build", "Weapons", "Events", "Killstreaks", "Loadouts", "Mods", "Class"],
+		tag + ": tab child names incl. Mods 6th + Class 7th (got %s)" % str(names))
 	_check(int(_menu.get("_mods_tab_idx")) == 5, tag + ": _mods_tab_idx == 5 (got %s)" % str(_menu.get("_mods_tab_idx")))
 	_check(tabs.get_tab_title(5) == "Mods", tag + ": Mods tab title is 'Mods' (got '%s')" % tabs.get_tab_title(5))
 	var tab_child := tabs.get_child(5) as Control
