@@ -60,6 +60,7 @@ var _bubble_seq := 0
 
 
 func _ready() -> void:
+	StencilStyle.install_menu(self)
 	_build()
 
 
@@ -139,8 +140,8 @@ func _build() -> void:
 	var vp := get_viewport_rect().size if is_inside_tree() else Vector2(1280, 800)
 	if vp.x <= 0.0 or vp.y <= 0.0:
 		vp = Vector2(1280, 800)
-	var body_font := UiScale.scaled_font(18, vp)
-	var small_font := UiScale.scaled_font(16, vp)
+	var body_font := StencilStyle.menu_font(18, vp)
+	var small_font := StencilStyle.menu_font(16, vp)
 	add_theme_constant_override("separation", 8)
 	# Message list (expands to fill the tab).
 	_messages_scroll = ScrollContainer.new()
