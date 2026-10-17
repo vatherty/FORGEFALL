@@ -109,8 +109,8 @@ func _check_layout() -> void:
 		if tab_child != null and path_lbl != null and row != null:
 			# The list must take ALL remaining tab area after the fixed
 			# rows (20px slack covers VBox separations), not collapse.
-			var remainder := tab_child.size.y - path_lbl.size.y - row.size.y
-			_check(scroll.size.y >= remainder - 20.0,
+			var remainder := tab_child.size.y - path_lbl.size.y - row.size.y - 2.0 * tab_child.get_theme_constant("separation")
+			_check(scroll.size.y >= remainder - 1.0,
 				tag + ": ModsScroll fills the tab-area remainder (list %.1f vs remainder %.1f, tab %.1f)" % [scroll.size.y, remainder, tab_child.size.y])
 	var scroll_count := 0
 	var stack: Array[Node] = [tab_child]
