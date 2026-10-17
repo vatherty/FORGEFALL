@@ -283,7 +283,7 @@ func _check_menu() -> void:
 
 func _check_picker() -> void:
 	_check("picker instantiated + open", _picker != null and _picker.call("is_open"))
-	var trav_sel := _picker.get_node_or_null("Panel/Root/Editor/TraversalRow/TraversalSelect") as OptionButton
+	var trav_sel := _picker.find_child("TraversalSelect", true, false) as OptionButton
 	_check("picker has TRAVERSAL dropdown", trav_sel != null)
 	if trav_sel != null:
 		_check("traversal dropdown has exactly 3 options", trav_sel.item_count == 3)
