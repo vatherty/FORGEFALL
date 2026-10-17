@@ -364,17 +364,26 @@ func _check_weapon_distinctness() -> void:
 			continue
 		_check(str(resolved[w]).begins_with("shot_"),
 			"%s fires a shot_* sound (got '%s')" % [str(w), str(resolved[w])])
-	# Pairwise distinctness across ALL weapons in the table.
+	# Pairwise distinctness across ALL weapons in the table — EXCEPT
+	# the documented deliberate share: ember (the Zombies starter)
+	# reuses the P9 viewmodel AND its fire sound (shot_p9) by design
+	# (Arsenal: "Reuses the P9 viewmodel"). That pair is asserted
+	# as a reuse below, not a collision.
 	var ids := resolved.keys()
 	for i in ids.size():
 		for j in range(i + 1, ids.size()):
 			var a := str(ids[i])
 			var b := str(ids[j])
+			if (a == "p9" and b == "ember") or (a == "ember" and b == "p9"):
+				continue
 			_check(resolved[a] != resolved[b],
 				"%s and %s resolve to DIFFERENT files ('%s' vs '%s')" % [a, b, resolved[a], resolved[b]])
 			if pcm.has(a) and pcm.has(b):
 				_check((pcm[a] as PackedByteArray) != (pcm[b] as PackedByteArray),
 					"%s and %s have DIFFERENT PCM (fingerprints %s vs %s)" % [a, b, fps[a], fps[b]])
+	if resolved.has("ember") and resolved.has("p9"):
+		_check(str(resolved["ember"]) == str(resolved["p9"]),
+			"ember reuses the P9 fire sound by design (Zombies starter, P9 viewmodel reuse)")
 	# The shot_lmg asset itself must exist and differ from shot_ar (so a
 	# correct LMG mapping has a distinct file to point at).
 	if _sound_ids.has("shot_lmg") and _sound_ids.has("shot_ar"):
