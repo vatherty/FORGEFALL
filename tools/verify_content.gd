@@ -138,11 +138,33 @@ func _count_descendants(node: Node, type_name: String) -> int:
 
 
 func _find_forge_markers(node: Node, out: Array) -> void:
+	# TD build spots are Forge markers too: Tower Defense is where
+	# Forge building lives, and its td_build_spot markers are the
+	# pads the player builds on.
 	if node.is_in_group("forge_pad") or node.is_in_group("forge_marker") \
-			or node.is_in_group("forge_spawn") or node.name.to_lower().contains("forge"):
+			or node.is_in_group("forge_spawn") or node.is_in_group("td_build_spot") \
+			or node.name.to_lower().contains("forge"):
 		out.append(node)
 	for c in node.get_children():
 		_find_forge_markers(c as Node, out)
+
+
+## Geometry count for a map subtree. Map builders batch static voxels
+## into a few MultiMeshInstance3D nodes (3 draw calls by design), so
+## counting NODES understates the geometry: one MultiMesh node can
+## hold hundreds of voxel instances. Count MeshInstance3D nodes plus
+## the instance count of every MultiMesh — that is the real geometry.
+func _count_geometry(node: Node) -> int:
+	var n := 0
+	if node is MeshInstance3D:
+		n += 1
+	elif node is MultiMeshInstance3D:
+		var mm: MultiMesh = (node as MultiMeshInstance3D).multimesh
+		if mm != null:
+			n += mm.instance_count
+	for c in node.get_children():
+		n += _count_geometry(c as Node)
+	return n
 
 
 func _mesh_bounds(node: Node) -> Array:
@@ -254,10 +276,9 @@ func _check_one_map(path: String, map_node: Node) -> void:
 	var forge: Array = []
 	_find_forge_markers(map_node, forge)
 	_check(not forge.is_empty(),
-		"map '%s' has >= 1 Forge marker (forge_pad/forge_marker/forge_spawn or *forge* node; found %d)" % [short, forge.size()])
-	var n_mesh := _count_descendants(map_node, "MeshInstance3D") \
-		+ _count_descendants(map_node, "MultiMeshInstance3D")
-	_check(n_mesh >= 10, "map '%s' has real geometry (>= 10 mesh/multimesh nodes; found %d)" % [short, n_mesh])
+		"map '%s' has >= 1 Forge marker (forge_pad/forge_marker/forge_spawn/td_build_spot or *forge* node; found %d)" % [short, forge.size()])
+	var n_mesh := _count_geometry(map_node)
+	_check(n_mesh >= 10, "map '%s' has real geometry (>= 10 mesh instances / multimesh instances; found %d)" % [short, n_mesh])
 	var navs := 0
 	var nav_baked := false
 	for c in map_node.find_children("*", "NavigationRegion3D", true, false):
@@ -366,8 +387,11 @@ func _run_enemy_checks() -> void:
 	var queued: Array = []
 	for w in [1, 2, 3, 5, 10]:
 		for q in wm.call("_build_queue", w):
-			if not queued.has(str(q)):
-				queued.append(str(q))
+			# _build_queue entries are Dictionaries ({type, creature_type}),
+			# not bare type strings — extract the type.
+			var qt: String = str((q as Dictionary).get("type", q)) if q is Dictionary else str(q)
+			if not queued.has(qt):
+				queued.append(qt)
 	print("VERIFY(content): wave queues (w1/2/3/5/10) spawn: ", queued)
 	for t in types:
 		var tid := str(t["type_id"])
