@@ -157,7 +157,10 @@ func _run_checks() -> void:
 	var mp_keys: Array = mp_consts.get("MAP_KEYS", [])
 	_check(mp_keys.has("factory"), "multiplayer_menu MAP_KEYS contains factory")
 	var menu_src := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
-	_check(menu_src.contains("FACTORY"), "main menu offers a FACTORY item")
+	# Map items are built from MAP_KEYS with to_upper(), so "factory"
+	# renders as "FACTORY" at runtime — no "FACTORY" literal in source.
+	_check(menu_src.contains("_map_select.add_item") and menu_src.contains("to_upper()"),
+		"main menu offers a FACTORY item (MAP_KEYS rendered upper-case)")
 	var zombies_src := FileAccess.get_file_as_string("res://scripts/modes/zombies.gd")
 	_check(not zombies_src.to_lower().contains("factory"),
 		"zombies.gd never references the factory map (Zombies keeps its own map)")
