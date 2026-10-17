@@ -157,3 +157,70 @@ Bank, Quick Revive in Bar, Stamin-Up south, etc.).
      tunable; Colin QA)
   3. Portal Gun
 - The choice is part of the loadout (TDM) / pre-run setup (TD).
+
+## Round 2 — Colin's v0.6.0 playtest verdict (2026-10-16 ~22:11 MDT)
+
+Colin played v0.6.0 on Steam Deck (WASD emulation):
+
+1. **The (Zombies Town-like) map sucks. Needs actual sustenance.**
+   Fix: remake BO2's Town faithfully — same layout/flow, same
+   streets/buildings/beats — with Forgefall's own voxel art and
+   names, framed as parody/homage. "Sustenance" = enterable
+   interiors (bank, bar, gun store, etc.), props, clutter, street
+   detail, lighting/atmosphere, more to explore and do — not a
+   flat empty lot with buy spots. No copied Activision assets,
+   textures, signage text, or trademarked names.
+   CLARIFIED by Colin 22:13: remake in voxel, NO BO2 assets
+   whatsoever, ENOUGH CHANGED to be covered, keep the reliable
+   flow. I.e. Town-inspired, not 1:1: same flow principles (small
+   town, central street, key buildings, box/PAP/perk spread) but
+   the layout itself changed enough to be a distinct map.
+   CLARIFIED AGAIN by Colin 22:13: 1:1 LAYOUT, different items and
+   different objects. Final spec: the spatial layout matches
+   Town (streets, building footprints, placements, flow), but
+   the items/objects/dressing are all different, voxel art, zero
+   BO2 assets.
+2. **Can't buy anything on Deck WASD emulation.** Fix: NATIVE
+   CONTROLLER SUPPORT WITH REMAPPING. Godot joypad / SDL mappings,
+   Deck built-in gamepad + Xbox/PS controllers, all actions
+   rebindable (keyboard + gamepad), remapping UI in Options,
+   interact/buy on a controller button. First verify buy/interact
+   works with keyboard (rule out a separate interact bug), then
+   add controller.
+3. Cinder City untouched unless Colin says otherwise.
+
+## Art suggestion (Colin, 2026-10-16 ~22:16 MDT)
+
+Kenney Blocky Characters (https://kenney.nl/assets/blocky-characters)
+for the player + enemies. Verified: CC0 license (public domain,
+free incl. commercial, no attribution), 3D, includes animations,
+20 files, v2.0 remade. Evaluate + adopt if formats (need
+Godot-friendly GLB/FBX/OBJ) and style fit — beats the procedural
+voxel models if the rigs/animations hold up. If not fitting this
+round, report as follow-up.
+
+## Art suggestion 2 (Colin, 2026-10-16 ~22:18 MDT)
+
+Kenney Brick Kit (https://kenney.nl/assets/brick-kit) for one of
+the maps — Lego-looking bricks fit the voxel style. Verified:
+CC0 (public domain, free incl. commercial), 3D, 290 files,
+v1.0 (2024). Evaluate: best fit is the Town remake (brick
+buildings + props/dressing) or the TD map. Adopt where it fits;
+report if it doesn't.
+
+## Factory map (Colin, 2026-10-16 ~22:18 MDT)
+
+Kenney Factory Kit (https://kenney.nl/assets/factory-kit) — USE
+for a factory-style map. v3.0 remade. License: Kenney packs are
+CC0 site-wide (confirmed on the Blocky Characters + Brick Kit
+pages); coordinator to confirm in-pack before use. Map serves the
+rotation (TDM/TD — coordinator picks); Zombies keeps Town.
+
+## Tall city map kit (Colin, 2026-10-16 ~22:19 MDT)
+
+Kenney City Kit (Commercial)
+(https://kenney.nl/assets/city-kit-commercial) — USE for the
+tall city map (Cinder City). Verified: CC0, 3D, 50 files,
+skyscraper/building variations, v2.1. Rebuild/upgrade Cinder
+City's buildings with the kit; KEEP the verified layout metrics
+(grapple coverage 104/104, wall-run faces, chainable medians).
