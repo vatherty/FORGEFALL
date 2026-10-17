@@ -275,7 +275,7 @@ func _process(_delta: float) -> bool:
 				is_equal_approx(_player.rotation.y, yaw1))
 			# --- Single source of truth: runtime scan of res://scripts.
 			var violations := _scan_single_source()
-			_check("single source of truth: no set_mouse_mode / mouse_mode write / binding edit outside mouse_capture.gd",
+			_check("single source of truth: no set_mouse_mode / mouse_mode write outside mouse_capture.gd, no InputMap action edit outside mouse_capture.gd / input_bindings.gd",
 				violations.is_empty())
 			for v in violations:
 				printerr("WINVERIFY VIOLATION: ", v)
@@ -290,9 +290,16 @@ func _process(_delta: float) -> bool:
 	return false
 
 
-# Recursively scan res://scripts for mouse-mode writes or mouse-binding
-# edits outside scripts/input/mouse_capture.gd. Full-comment lines are
-# skipped (hud.gd documents the helper in comments). Returns violations.
+# Recursively scan res://scripts for mouse-mode writes or InputMap
+# action edits outside their owners. Full-comment lines are skipped
+# (hud.gd documents the helper in comments). Returns violations.
+# v0.6.1: mouse_mode writes stay owned by mouse_capture.gd ONLY, but
+# InputMap action edits are also owned by input_bindings.gd — the
+# controller/rebind system (verify_controller.gd, 896 checks) MUST call
+# action_add_event/action_erase_event to apply rebinds; the pre-rebind
+# scan rule that flagged any such call outside mouse_capture.gd is
+# superseded for that one file. mouse_capture.gd keeps its own
+# erase/restore of the fire bindings.
 func _scan_single_source() -> Array:
 	var violations: Array = []
 	_scan_dir("res://scripts", violations)
@@ -323,5 +330,5 @@ func _scan_dir(path: String, violations: Array) -> void:
 				violations.append(full + ": calls set_mouse_mode")
 			elif code.contains("mouse_mode =") or code.contains("mouse_mode="):
 				violations.append(full + ": writes mouse_mode")
-			if code.contains("action_erase_event(") or code.contains("action_add_event("):
-				violations.append(full + ": edits InputMap mouse bindings")
+			if full != "res://scripts/input/input_bindings.gd" and (code.contains("action_erase_event(") or code.contains("action_add_event(")):
+				violations.append(full + ": edits InputMap action bindings")
