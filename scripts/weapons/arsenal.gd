@@ -267,6 +267,37 @@ const WEAPONS := {
 		"muzzle_flash_time": 0.06,
 		"muzzle_flash_energy": 6.0,
 	},
+	# Gameplay Rework (Zombies worker): the Zombies starter weapon —
+	# a weak custom-made sidearm that barely dents anything (8 dmg:
+	# ~13 body shots for a base grunt). Reuses the P9 viewmodel.
+	"ember": {
+		"weapon_id": "ember",
+		"name": "SP-1 EMBER",
+		"slot": "primary",
+		"fire_mode": 1, # WeaponBase.FireMode.SEMI
+		"rpm": 240.0,
+		"damage": 8.0,
+		"headshot_mult": 2.0,
+		"mag_size": 8,
+		"reserve": 32,
+		"pellets": 1,
+		"spread_hip": 0.050,
+		"spread_move": 0.050,
+		"near_range": 10.0,
+		"far_range": 30.0,
+		"falloff_min": 0.4,
+		"recoil_pattern": [
+			Vector2(0.005, 0.030),
+		],
+		"raise_time": 0.30,
+		"lower_time": 0.20,
+		"reload_stages": [0.40, 0.70, 0.30],
+		"cycle_time": 0.0,
+		"sfx_fire": "shot_p9",
+		"recoil_recover": 0.20,
+		"muzzle_flash_time": 0.03,
+		"muzzle_flash_energy": 2.5,
+	},
 	"raptor": {
 		"weapon_id": "raptor",
 		"name": "RAPTOR CLAW",
@@ -534,6 +565,7 @@ const SIGHT_Y := {
 	"p9": 0.055,     # iron-sight line
 	"br3": 0.092,    # red-dot centre (raised sight line)
 	"hv44": 0.062,   # iron-sight line (tall front blade)
+	"ember": 0.055,  # iron-sight line (P9 viewmodel reuse)
 	"raptor": 0.045, # prong-gap centre (no true sight)
 }
 
@@ -654,6 +686,8 @@ static func build_viewmodel(weapon_id: String) -> Node3D:
 			return _build_br3()
 		"hv44":
 			return _build_hv44()
+		"ember":
+			return _build_p9()
 		"raptor":
 			return _build_raptor()
 	return _build_ar7()
