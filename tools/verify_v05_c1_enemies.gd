@@ -186,7 +186,10 @@ func _check_distinct_stats() -> void:
 func _count(q: Array, t: String) -> int:
 	var n := 0
 	for x in q:
-		if x == t:
+		# Queue entries are Dictionaries ({type, creature_type}) since
+		# the v0.5.8 D&D spawn-by-type work — extract the type.
+		var xt: String = str((x as Dictionary).get("type", x)) if x is Dictionary else str(x)
+		if xt == t:
 			n += 1
 	return n
 
@@ -216,12 +219,13 @@ func _check_wave_composition() -> void:
 	_check(q10.size() > q5.size() and q5.size() > q1.size(),
 		"total wave size grows gently: w1=%d w5=%d w10=%d"
 		% [q1.size(), q5.size(), q10.size()])
-	# Alive cap actually gates spawning.
+	# Alive cap actually gates spawning. The queue holds Dictionaries
+	# ({type, creature_type}), not bare type strings.
 	wm.set("running", true)
 	wm.set("in_build_phase", false)
-	var qcap: Array[String] = []
+	var qcap: Array[Dictionary] = []
 	for i in 15:
-		qcap.append("grunt")
+		qcap.append({"type": "grunt", "creature_type": ""})
 	wm.set("_spawn_queue", qcap)
 	wm.set("alive_count", cap)
 	wm.set("_spawn_t", 0.0)
