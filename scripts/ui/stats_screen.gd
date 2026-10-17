@@ -68,6 +68,7 @@ func _notification(what: int) -> void:
 
 func open() -> void:
 	visible = true
+	InputBindings.grab_first_focus(self)
 	_reset_armed = false
 	if _reset_button != null:
 		_reset_button.text = "RESET STATS"
