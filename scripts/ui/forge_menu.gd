@@ -100,19 +100,30 @@ var _local_history: Array[String] = []
 var _wired := false
 var _mic_button: Button
 var _speech: SpeechInput
-# v0.5.3 Forge MAKE (session-scoped creation): ONE prompt box. MAKE
-# calls the same ModCreator.generate() entry point the Create-a-Mod
-# menu uses, but NEVER install() — the made thing lives in this match
-# only and nothing is written to user://mods/.
+# v0.5.12 UNIFIED FORGE (Colin's design): ONE prompt box. The old
+# SPAWN box and MAKE box are merged: the single box resolves first
+# (an installed mod / base weapon / structure / catalog entry spawns
+# as-is) and only generates when nothing exists (MAKE: session-scoped,
+# never saved). The MAKE panel below holds the status line + history
+# for what this match made — it has NO input of its own anymore.
 var _spawn_label: Label
 var _make_panel: PanelContainer
 var _make_title: Label
 var _make_explainer: Label
-var _make_input: LineEdit
-var _make_button: Button
 var _make_status: Label
 var _make_creator: ModCreator
 var _make_generating := false
+# v0.5.12 UNIFIED FORGE: the prompt the single box submitted that is
+# still awaiting its forge_result ("" = none). When the pipeline
+# answers "Don't know" for it (nothing exists by that name), the menu
+# falls back to MAKE generation with the same prompt — resolve first,
+# make if it doesn't exist. _unified_make_attempted guards the
+# fallback to once per prompt (MAKE failures report through the MAKE
+# status line, never back through forge_result, so no loop is
+# possible — the flag is belt-and-braces).
+var _unified_pending_prompt := ""
+var _unified_awaiting_result := false
+var _unified_make_attempted := false
 # v0.5.9 MAKE parity: the prompt awaiting generation (the manager
 # records it in MAKE history on success), and the MAKE-history list
 # (MAKE builds, most recent first — separate from the Forge-prompt
@@ -232,12 +243,13 @@ func _build() -> void:
 	content_scroll.add_child(content)
 	_content_box = content
 
-	# SPAWN section header: the preset tabs + the typed requisition
-	# below build from the fixed catalog. MAKE (further down) is the
-	# separate, session-scoped creation path — never confuse the two.
+	# v0.5.12 UNIFIED FORGE: ONE box. The label below the presets says
+	# what the single prompt does: existing things spawn, new things
+	# are made for this match. (The old "SPAWN — build from the
+	# catalog" / "MAKE" split is gone — one box, one flow.)
 	_spawn_label = Label.new()
 	_spawn_label.name = "SpawnSectionLabel"
-	_spawn_label.text = "SPAWN — build from the catalog"
+	_spawn_label.text = "FORGE — type anything: if it exists, it spawns; if not, it's made for this match"
 	content.add_child(_spawn_label)
 
 	# Category tabs with preset buttons.
@@ -300,7 +312,7 @@ func _build() -> void:
 	_prompt_row = prompt_row
 	_prompt_input = LineEdit.new()
 	_prompt_input.name = "PromptInput"
-	_prompt_input.placeholder_text = "Type a requisition... (e.g. build a wall)"
+	_prompt_input.placeholder_text = "Type anything — existing things spawn, new ones are made for this match"
 	_prompt_input.clear_button_enabled = true
 	_prompt_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	StencilStyle.style_lineedit(_prompt_input)
@@ -459,22 +471,25 @@ func _build() -> void:
 	_apply_scale()
 
 
-# ------------------------------------------------------------------ v0.5.3 MAKE
-# MAKE (this match only — not saved): ONE prompt box. The player types a
-# single idea ("a chunky concrete wall"); MAKE feeds it verbatim to the
-# EXISTING generation pipeline (ModCreator.generate — the exact entry
-# point the Create-a-Mod menu uses) and applies the validated
-# candidate in-session via ForgeManager.apply_make (block or script —
-# script candidates run through the session loader, ForgeSessionMake).
-# Create-a-Mod remains the ONLY path that saves a permanent mod: MAKE
-# never calls install() and never writes to user://mods/. A candidate
-# that cannot run for a real reason shows its exact reason instead of
-# silently falling back to a preset.
+# ------------------------------------------------------------------ v0.5.12 UNIFIED FORGE
+# The MAKE panel is now STATUS + HISTORY only — it has NO input. The
+# single prompt box above is the only text input for Forge: on submit
+# the menu resolves first (Forge pipeline: installed mod / base
+# weapon / structure / catalog entry spawns as-is) and falls back to
+# MAKE generation only when the pipeline answers "Don't know"
+# (nothing exists by that name). MAKE still calls the EXISTING
+# generation pipeline read-only: ModCreator.generate(prompt) ->
+# generation_ready(candidate). install() is NEVER called from this
+# path — the candidate is applied in-session via
+# ForgeManager.apply_make (blocks and scripts; a script that cannot
+# run shows its exact reason). No silent fallback to a preset, ever.
+# Create-a-Mod remains the ONLY path that saves a permanent mod:
+# MAKE never calls install() and never writes to user://mods/.
 func _build_make_section() -> void:
 	var panel := PanelContainer.new()
 	panel.name = "MakePanel"
-	# Gold border + warm dark fill: visually distinct from the SPAWN
-	# presets (orange accent) and from Create-a-Mod (standalone menu).
+	# Gold border + warm dark fill: visually distinct from the preset
+	# tabs (orange accent) and from Create-a-Mod (standalone menu).
 	panel.add_theme_stylebox_override("panel", StencilStyle.panel(Color(0.09, 0.07, 0.03, 0.94), StencilStyle.GOLD, 2))
 	_content_box.add_child(panel)
 	_make_panel = panel
@@ -483,35 +498,16 @@ func _build_make_section() -> void:
 	panel.add_child(box)
 	_make_title = Label.new()
 	_make_title.name = "MakeTitleLabel"
-	_make_title.text = "MAKE (this match only — not saved)"
+	_make_title.text = "MADE THIS MATCH (not saved)"
 	box.add_child(_make_title)
 	_make_explainer = Label.new()
 	_make_explainer.name = "MakeExplainerLabel"
-	_make_explainer.text = "Describe ONE thing — MAKE creates it NOW for this match only. Nothing is saved. To keep something forever, use CREATE A MOD in the main menu."
+	_make_explainer.text = "When the Forge doesn't know something by name, it makes it NOW for this match only. Nothing is saved. To keep something forever, use CREATE A MOD in the main menu."
 	_make_explainer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(_make_explainer)
-	var row := HBoxContainer.new()
-	row.name = "MakeRow"
-	box.add_child(row)
-	_make_input = LineEdit.new()
-	_make_input.name = "MakePromptInput"
-	_make_input.placeholder_text = "Make something new... (e.g. a chunky concrete wall)"
-	_make_input.clear_button_enabled = true
-	_make_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	StencilStyle.style_lineedit(_make_input)
-	# Same focus rule as the other fields: keyboard only on tap.
-	_make_input.focus_mode = Control.FOCUS_CLICK
-	_make_input.text_submitted.connect(_on_make_pressed)
-	row.add_child(_make_input)
-	_make_button = Button.new()
-	_make_button.name = "MakeButton"
-	_make_button.text = "MAKE IT"
-	StencilStyle.style_button(_make_button)
-	_make_button.pressed.connect(_on_make_pressed)
-	row.add_child(_make_button)
 	_make_status = Label.new()
 	_make_status.name = "MakeStatusLabel"
-	_make_status.text = "MAKE creates something new for this match only — nothing is saved."
+	_make_status.text = "Nothing made yet this match."
 	_make_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(_make_status)
 	# v0.5.9 MAKE parity: MAKE history — the MAKE builds this match
@@ -574,12 +570,6 @@ func _apply_scale() -> void:
 		StencilStyle.apply_title(_make_title, UiScale.scaled_font(22, vp), StencilStyle.GOLD, 3)
 	if _make_explainer != null:
 		StencilStyle.apply_body(_make_explainer, UiScale.scaled_font(17, vp), StencilStyle.TEXT_DIM, 2)
-	if _make_input != null:
-		_make_input.custom_minimum_size = Vector2(0, UiScale.scaled_size(56, vp))
-		_make_input.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
-	if _make_button != null:
-		_make_button.custom_minimum_size = Vector2(UiScale.scaled_size(200, vp), UiScale.scaled_size(56, vp))
-		_make_button.add_theme_font_size_override("font_size", UiScale.scaled_font(22, vp))
 	if _make_status != null:
 		StencilStyle.apply_body(_make_status, UiScale.scaled_font(17, vp), StencilStyle.TEXT, 2)
 	if _make_history_title != null:
@@ -716,8 +706,6 @@ func close() -> void:
 		_prompt_input.release_focus()
 	if _key_input != null and _key_input.has_focus():
 		_key_input.release_focus()
-	if _make_input != null and _make_input.has_focus():
-		_make_input.release_focus()
 	if _code_input != null and _code_input.has_focus():
 		_code_input.release_focus()
 	if _history_search_input != null and _history_search_input.has_focus():
@@ -847,6 +835,13 @@ func _submit_prompt(text: String) -> void:
 		_update_preview()
 		_refresh_history()
 		return
+	# v0.5.12 UNIFIED FORGE: this submit is awaiting a forge_result.
+	# If the pipeline answers "Don't know" (nothing exists by that
+	# name), _on_forge_result falls back to MAKE generation with the
+	# same prompt — resolve first, make if it doesn't exist.
+	_unified_pending_prompt = prompt
+	_unified_awaiting_result = true
+	_unified_make_attempted = false
 	forge.submit_prompt(prompt)
 	_prompt_input.clear()
 	_update_preview()
@@ -879,12 +874,18 @@ func _make_creator_instance() -> ModCreator:
 	return _make_creator
 
 
-func _on_make_pressed(_text: String = "") -> void:
+## v0.5.12 UNIFIED FORGE: starts MAKE generation for `prompt` — the
+## single-box prompt the Forge pipeline answered "Don't know" for.
+## The prompt goes to the pipeline VERBATIM — no form, no composition,
+## no preset substitution. The _make_generating guard is the in-flight
+## guard (no double-submits); the Forge busy check keeps MAKE from
+## racing a pipeline build that is still running.
+func _start_make(prompt: String) -> void:
 	if _make_generating:
 		_show_make_status("Already making something — wait for it.")
 		return
-	var prompt := "" if _make_input == null else _make_input.text.strip_edges()
-	if prompt.is_empty():
+	var clean := prompt.strip_edges()
+	if clean.is_empty():
 		_show_make_error("Type what you want to make first.")
 		return
 	var forge := _get_forge()
@@ -896,19 +897,13 @@ func _on_make_pressed(_text: String = "") -> void:
 		_show_make_error("MAKE unavailable — creator not found.")
 		return
 	_make_generating = true
-	_make_pending_prompt = prompt
-	if _make_button != null:
-		_make_button.disabled = true
+	_make_pending_prompt = clean
 	_show_make_status("Making… (this match only — nothing is saved)")
-	# The single-box prompt goes to the pipeline VERBATIM — no form, no
-	# composition, no preset substitution.
-	creator.generate(prompt)
+	creator.generate(clean)
 
 
 func _on_make_generation_ready(candidate: Dictionary) -> void:
 	_make_generating = false
-	if _make_button != null:
-		_make_button.disabled = false
 	if not (candidate is Dictionary):
 		_show_make_error("MAKE failed: generation returned nothing.")
 		return
@@ -951,6 +946,10 @@ func _on_make_generation_ready(candidate: Dictionary) -> void:
 	# loader, same result shape, just no history/undo/sync recording.
 	var player := get_tree().get_first_node_in_group("player") as Node3D
 	var root := get_tree().current_scene
+	# v0.5.12: current_scene can be null (headless / tests / a scene
+	# in transition) — the tree root is always a valid build parent.
+	if root == null:
+		root = get_tree().root
 	_make_pending_prompt = ""
 	var result := ForgeSessionMake.apply_candidate(candidate, player, root)
 	if bool(result.get("ok", false)):
@@ -1284,11 +1283,34 @@ func _update_preview() -> void:
 
 
 # ------------------------------------------------------------------ signals
+## True when a Forge failure message means "nothing exists by that
+## name" — the ONLY failure class that falls back to MAKE generation
+## in the unified flow. ForgeLLM.unknown_error produces "Don't know
+## '<prompt>' — try: ...". Refusals ("Can't do that with the available
+## blocks..."), cooldown/busy messages, and validation rejections
+## ("Forge rejected the spec...") are NOT eligible: a refusal is a
+## deliberate no, and a validation/cooldown failure must not spend a
+## generation on a prompt the pipeline already understood.
+static func is_make_fallback_message(message: String) -> bool:
+	return message.begins_with("Don't know")
+
+
 func _on_forge_result(success: bool, message: String) -> void:
 	_show_toast(message)
 	_refresh_budget()
 	_refresh_history()
 	_play("forge_success" if success else "forge_fail")
+	# v0.5.12 UNIFIED FORGE fallback: the pipeline didn't know the
+	# prompt — nothing exists by that name — so MAKE it (session
+	# scoped, never saved) with the same prompt. Once per prompt.
+	if _unified_awaiting_result:
+		_unified_awaiting_result = false
+		if not success and not _unified_make_attempted \
+				and is_make_fallback_message(message) \
+				and not _unified_pending_prompt.is_empty():
+			_unified_make_attempted = true
+			_start_make(_unified_pending_prompt)
+	_unified_pending_prompt = ""
 
 
 func _on_budget_changed(_amount: int) -> void:
