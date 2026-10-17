@@ -24,6 +24,10 @@ signal closed
 const STATS_SCENE := "res://scenes/ui/stats_screen.tscn"
 const STATS_SCRIPT := "res://scripts/progression/stats.gd"
 
+var _details_box: VBoxContainer
+var _metric_kills: Label
+var _metric_wins: Label
+var _metric_accuracy: Label
 var _lifetime_label: Label
 var _weapons_label: Label
 var _modes_label: Label
@@ -55,6 +59,7 @@ static func open_in(parent: Node) -> Node:
 
 
 func _ready() -> void:
+	StencilStyle.install_menu(self)
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	visible = false
 	_build()
@@ -121,6 +126,10 @@ func _refresh() -> void:
 	var hits := _as_int(snap.get("hits", 0))
 	var kd := float(kills) / float(deaths) if deaths > 0 else float(kills)
 	var acc := (float(hits) / float(shots) * 100.0) if shots > 0 else 0.0
+	if _metric_kills != null:
+		_metric_kills.text = str(kills)
+		_metric_wins.text = str(wins)
+		_metric_accuracy.text = "%.0f%%" % acc
 	var time_text := _format_time(float(snap.get("time_played_s", 0.0)))
 	if _lifetime_label != null:
 		_lifetime_label.text = "\n".join([
@@ -228,82 +237,100 @@ func _click() -> void:
 # --- Layout (built in code; .tscn is a thin shell) ---------------------------
 
 func _build() -> void:
-	var bg := ColorRect.new()
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bg.color = Color(0.02, 0.025, 0.03, 0.97)
-	bg.mouse_filter = Control.MOUSE_FILTER_STOP
-	add_child(bg)
-
+	StencilStyle.cinematic_background(self, "armory")
 	var margin := MarginContainer.new()
-	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 24)
-	margin.add_theme_constant_override("margin_top", 24)
-	margin.add_theme_constant_override("margin_right", 24)
-	margin.add_theme_constant_override("margin_bottom", 24)
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for edge in ["left", "right", "top", "bottom"]:
+		margin.add_theme_constant_override("margin_" + edge, 48)
 	add_child(margin)
-
 	var scroll := ScrollContainer.new()
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	margin.add_child(scroll)
-
-	var vb := VBoxContainer.new()
-	vb.alignment = BoxContainer.ALIGNMENT_BEGIN
-	vb.add_theme_constant_override("separation", 14)
-	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(vb)
-
-	var title := Label.new()
-	title.name = "Title"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.text = "SERVICE RECORD"
-	StencilStyle.apply_title(title, 44, StencilStyle.ORANGE, 4)
-	vb.add_child(title)
-
-	var sub := Label.new()
-	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	StencilStyle.apply_body(sub, 20, StencilStyle.TEXT_DIM, 2)
-	sub.text = "LIFETIME STATS // FORGEFALL"
-	vb.add_child(sub)
-
-	_lifetime_label = _section(vb, "LIFETIME", "")
-	_weapons_label = _section(vb, "PER-WEAPON KILLS", "")
-	_modes_label = _section(vb, "PER-MODE", "")
-	_endless_label = _section(vb, "BEST ENDLESS", "")
-
-	var btn_row := HBoxContainer.new()
-	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	btn_row.add_theme_constant_override("separation", 16)
-	vb.add_child(btn_row)
-
+	var content := VBoxContainer.new()
+	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	content.add_theme_constant_override("separation", 28)
+	scroll.add_child(content)
+	StencilStyle.section_header(content, "SERVICE RECORD")
+	var gap := Control.new()
+	gap.custom_minimum_size.y = 32
+	content.add_child(gap)
+	var metrics := HBoxContainer.new()
+	metrics.add_theme_constant_override("separation", 32)
+	content.add_child(metrics)
+	_metric_kills = _metric(metrics, "KILLS")
+	_metric_wins = _metric(metrics, "WINS")
+	_metric_accuracy = _metric(metrics, "ACCURACY")
+	var details := VBoxContainer.new()
+	_details_box = details
+	details.custom_minimum_size.x = 600
+	details.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	details.add_theme_constant_override("separation", 16)
+	content.add_child(details)
+	_lifetime_label = _section(details, "COMBAT SUMMARY", "")
+	_weapons_label = _section(details, "WEAPON RECORD", "")
+	_modes_label = _section(details, "MATCH HISTORY", "")
+	_endless_label = _section(details, "ENDLESS RECORD", "")
+	var fill := Control.new()
+	fill.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	content.add_child(fill)
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 24)
+	content.add_child(actions)
+	var back := Button.new()
+	back.text = "‹  BACK"
+	back.custom_minimum_size = Vector2(160, 52)
+	StencilStyle.navigation_button(back)
+	back.pressed.connect(_on_back_pressed)
+	actions.add_child(back)
 	_reset_button = Button.new()
 	_reset_button.text = "RESET STATS"
-	_reset_button.custom_minimum_size = Vector2(280, 56)
 	StencilStyle.style_button(_reset_button)
 	_reset_button.pressed.connect(_on_reset_pressed)
-	btn_row.add_child(_reset_button)
-
-	var back := Button.new()
-	back.text = "BACK"
-	back.custom_minimum_size = Vector2(280, 56)
-	StencilStyle.style_button(back)
-	back.pressed.connect(_on_back_pressed)
-	btn_row.add_child(back)
-
+	actions.add_child(_reset_button)
 	_apply_scale()
+
+
+func _metric(parent: Control, caption: String) -> Label:
+	var column := VBoxContainer.new()
+	column.custom_minimum_size.x = 96
+	parent.add_child(column)
+	var value := Label.new()
+	StencilStyle.apply_title(value, 64)
+	value.text = "0"
+	column.add_child(value)
+	var label := Label.new()
+	label.text = caption
+	StencilStyle.apply_body(label, 16, StencilStyle.TEXT_DIM)
+	column.add_child(label)
+	return value
 
 
 func _section(parent: VBoxContainer, heading: String, body: String) -> Label:
 	var head := Label.new()
 	StencilStyle.apply_body(head, 24, StencilStyle.ORANGE, 3)
 	head.text = heading
-	parent.add_child(head)
+	var stack := VBoxContainer.new()
+	stack.add_theme_constant_override("separation", 6)
+	parent.add_child(stack)
+	stack.add_child(head)
 	var label := Label.new()
 	label.name = heading.replace(" ", "_")
 	StencilStyle.apply_body(label, 22, StencilStyle.TEXT, 2)
 	label.text = body
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	parent.add_child(label)
+	stack.add_child(label)
+	label.visible = heading == "WEAPON RECORD"
+	if heading != "WEAPON RECORD":
+		var toggle := Button.new()
+		toggle.text = heading + "  +"
+		toggle.toggle_mode = true
+		StencilStyle.navigation_button(toggle)
+		toggle.add_theme_font_size_override("font_size", 22)
+		toggle.toggled.connect(func(pressed: bool) -> void: label.visible = pressed)
+		stack.add_child(toggle)
+		stack.move_child(toggle, 0)
+		head.visible = false
 	_section_labels.append(label)
 	return label
 
@@ -312,10 +339,14 @@ func _apply_scale() -> void:
 	var vp := get_viewport_rect().size
 	if vp.x <= 0 or vp.y <= 0:
 		return
-	var f := UiScale.scale_factor(vp)
+	if _details_box != null:
+		_details_box.custom_minimum_size.x = minf(600, maxf(280, vp.x - 96))
+	for metric in [_metric_kills, _metric_wins, _metric_accuracy]:
+		if metric != null:
+			metric.add_theme_font_size_override("font_size", clampi(int(vp.x * 0.05), 32, 64))
 	for l in _section_labels:
 		if is_instance_valid(l):
-			l.add_theme_font_size_override("font_size", maxi(10, int(round(22 * f))))
+			l.add_theme_font_size_override("font_size", StencilStyle.menu_font(22, vp))
 	# Margin tracks ~2% of the viewport (v0.6.1 full-screen-modal rule).
 	# Guard: a resize can fire before _build() has added the children.
 	if get_child_count() < 2:
