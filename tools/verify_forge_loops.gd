@@ -260,7 +260,8 @@ func _process(_delta: float) -> bool:
 
 func _test_base_defense() -> void:
 	# Against the landed API: scripts/modes/base_defense.gd (BaseDefenseMode),
-	# wired by GameModeManager.start("base_defense") + the main menu.
+	# wired by GameModeManager.start("base_defense") (legacy: still
+	# startable, hidden from the new menu).
 	var s := "base-defense"
 	var impl_path := "res://scripts/modes/base_defense.gd"
 	var impl_src := _src(impl_path)
@@ -281,8 +282,10 @@ func _test_base_defense() -> void:
 		return
 	var gm_src := _src("res://scripts/core/game_mode.gd")
 	var menu_src := _src("res://scripts/ui/main_menu.gd")
-	_check(s, gm_src.contains("BaseDefenseMode") and gm_src.contains("\"base_defense\"") and menu_src.contains("base_defense"),
-		"base-defense: GameModeManager wires BaseDefenseMode + main menu lists base_defense")
+	# Base Defense is LEGACY: GameModeManager still wires + starts it,
+	# but the new menu must NOT list it in the mode selects.
+	_check(s, gm_src.contains("BaseDefenseMode") and gm_src.contains("\"base_defense\"") and not menu_src.contains("base_defense"),
+		"base-defense: GameModeManager wires BaseDefenseMode + new menu does NOT list base_defense (legacy, hidden)")
 	var bd_script: GDScript = load(impl_path) as GDScript
 	if bd_script == null:
 		_check(s, false, "base-defense: BaseDefenseMode script loads")
