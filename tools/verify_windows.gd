@@ -110,6 +110,10 @@ func _process(_delta: float) -> bool:
 			root.add_child(_main)
 			# Main boots in MENU; simulate post-start_game state.
 			_main.set("state", 1)  # State.PLAYING
+			# Main boots into the menu (set_menu) and this harness fakes
+			# PLAYING without start_game(); on the real Deploy path the
+			# HUD sync establishes gameplay capture once the run starts.
+			_hud.call("_sync_mouse_mode")
 			_check("game start -> requested CAPTURED + bindings present",
 				_requested_captured() and not _bindings_erased())
 			var wd: Variant = _hud.get("_mouse_watchdog")
