@@ -116,6 +116,8 @@ func _reset_player(pos: Vector3, vel: Vector3, rot_y: float) -> void:
 	_player.get_node("Head").rotation.x = 0.0
 	_player.call("_end_wallrun")
 	_player.set("_can_wallrun", true)
+	_player.set("_wallrun_blocked_normal", Vector3.ZERO)
+	_player.set("_wallrun_detach_cooldown", 0.0)
 	_player.set("_walljump_cut_armed", false)
 	_player.set("_sliding", false)
 	_player.get("grapple").call("release")
