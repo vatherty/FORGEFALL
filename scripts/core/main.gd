@@ -83,6 +83,7 @@ func _show_menu() -> void:
 	if not ResourceLoader.exists(MENU_SCENE):
 		push_warning("FORGEFALL: menu scene missing at %s — booting to empty root." % MENU_SCENE)
 		return
+	MouseCapture.set_menu()
 	_menu = (load(MENU_SCENE) as PackedScene).instantiate()
 	add_child(_menu)
 
@@ -323,9 +324,16 @@ func resume() -> void:
 	if state != State.PAUSED:
 		return
 	if _pause_menu != null:
+		# Hide synchronously: queue_free() is deferred, and HUD sync
+		# reads the still-visible menu as "pause open" and would flip
+		# the mouse back to menu mode for a frame (HUD's contract:
+		# "resume paths own hiding").
+		if _pause_menu is Control:
+			(_pause_menu as Control).visible = false
 		_pause_menu.queue_free()
 		_pause_menu = null
 	get_tree().paused = false
+	MouseCapture.set_gameplay()
 	state = State.PLAYING
 
 
@@ -361,8 +369,20 @@ func quit_to_menu() -> void:
 	for child in get_children():
 		# All children here are menu / map / pause-menu instances owned by Main.
 		child.queue_free()
+	_menu = null
+	_pause_menu = null
+	_hud = null
+	_touch = null
+	_waves = null
+	_modes = null
+	_mp_menu = null
+	_puzzle_select = null
+	Sfx.stop_loop_2d("grapple_zip")
+	Game.reset_run()
+	MouseCapture.set_menu()
 	state = State.MENU
-	_show_menu()
+	# Old players must exit before the new menu takes focus/cursor ownership.
+	_show_menu.call_deferred()
 
 
 # --- Goal 5 Worker B: PUZZLE CHAMBERS --------------------------------------
