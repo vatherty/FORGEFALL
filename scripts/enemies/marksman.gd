@@ -2,9 +2,10 @@
 # Worker 4 (enemy AI + waves).
 #
 # MARKSMAN — long-range harasser. Holds a 24–34m band from the player,
-# telegraphs a long aim (0.9s, visible aim pose) then fires one accurate,
-# high-damage shot. Retreats when the player closes in, advances when the
-# player runs, and periodically repositions to a new firing lane.
+# CROUCHES into a long aim (1.0s telegraph: crouch pose + lamp + scope
+# glint read) then fires one accurate, high-damage shot. Retreats when
+# the player closes in, advances when the player runs, and periodically
+# repositions to a new firing lane.
 
 class_name Marksman
 extends EnemyBase
@@ -43,6 +44,10 @@ func _configure() -> void:
 	preferred_range = 29.0
 	body_radius = 0.34
 	body_height = 1.7
+
+
+func behaviour_tags() -> Array:
+	return ["ranged", "long_range_band", "crouch_aim", "reposition", "peek_strafe"]
 
 
 func _debris_colors() -> Array:
@@ -105,6 +110,7 @@ func _set_state(s: int) -> void:
 	if s != State.HOLD:
 		aiming = false
 		_aim_t = 0.0
+		anim_crouch = 0.0
 
 
 func _update_band(delta: float, pp: Vector3, dist: float) -> void:
@@ -135,18 +141,23 @@ func _update_band(delta: float, pp: Vector3, dist: float) -> void:
 func _update_shot(delta: float, pp: Vector3, dist: float, see: bool) -> void:
 	if _aim_t > 0.0:
 		aiming = true
+		anim_crouch = 1.0  # rework: drops into a crouch for the shot
 		face_target = pp
 		wish_dir = Vector3.ZERO
 		_aim_t -= delta
 		if _aim_t <= 0.0:
+			anim_crouch = 0.0
+			trigger_strike()  # recoil kick pose on the crack
 			var spread := lerpf(3.0, 0.9, accuracy) + maxf(0.0, dist - BAND_MAX) * 0.05
 			fire_hitscan(damage, spread, "shot_sniper", Color(0.7, 0.9, 1.0))
 		return
 	aiming = false
+	anim_crouch = 0.0
 	_fire_t -= delta
 	if _fire_t <= 0.0 and see and dist < SIGHT_RANGE:
 		_fire_t = randf_range(SHOT_COOLDOWN_MIN, SHOT_COOLDOWN_MAX)
 		_aim_t = AIM_TELEGRAPH  # long, readable telegraph before the crack
+		begin_telegraph(AIM_TELEGRAPH, "snipe")
 
 
 func _pick_reposition(pp: Vector3) -> void:
