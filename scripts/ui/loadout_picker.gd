@@ -42,6 +42,7 @@ var _new_button: Button
 var _close_button: Button
 var _status_label: Label
 # Editor (hidden until NEW / EDIT).
+var _editor_scroll: ScrollContainer
 var _editor: VBoxContainer
 var _editor_title: Label
 var _name_input: LineEdit
@@ -58,6 +59,7 @@ var _weapon_ids: Array[String] = []
 
 
 func _ready() -> void:
+	StencilStyle.install_menu(self)
 	add_to_group("loadout_picker")
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -69,12 +71,7 @@ func _ready() -> void:
 
 
 func _build() -> void:
-	var dim := ColorRect.new()
-	dim.name = "Dim"
-	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	dim.color = Color(0.0, 0.0, 0.0, 0.55)
-	dim.mouse_filter = Control.MOUSE_FILTER_STOP
-	add_child(dim)
+	StencilStyle.cinematic_background(self, "armory", 0.18, false)
 
 	var panel := PanelContainer.new()
 	panel.name = "Panel"
@@ -86,6 +83,8 @@ func _build() -> void:
 	var root := VBoxContainer.new()
 	root.name = "Root"
 	panel.add_child(root)
+	root.add_theme_constant_override("separation", 12)
+	StencilStyle.eyebrow(root, "ARMORY")
 
 	var header := HBoxContainer.new()
 	header.name = "Header"
@@ -101,14 +100,14 @@ func _build() -> void:
 	header.add_child(_slots_label)
 	_close_button = Button.new()
 	_close_button.name = "CloseButton"
-	_close_button.text = "X"
+	_close_button.text = "BACK"
 	StencilStyle.style_button(_close_button)
 	_close_button.pressed.connect(close)
 	header.add_child(_close_button)
 
 	_info_label = Label.new()
 	_info_label.name = "InfoLabel"
-	_info_label.text = "Pick the loadout used on Deploy. Select one to make it active."
+	_info_label.text = "Choose your loadout."
 	_info_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	root.add_child(_info_label)
 
@@ -116,6 +115,8 @@ func _build() -> void:
 	_list_scroll.name = "ListScroll"
 	_list_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_list_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_list_scroll.custom_minimum_size.x = 550
+	_list_scroll.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	root.add_child(_list_scroll)
 	_list_box = VBoxContainer.new()
 	_list_box.name = "ListBox"
@@ -125,10 +126,13 @@ func _build() -> void:
 	var new_row := HBoxContainer.new()
 	new_row.name = "NewRow"
 	root.add_child(new_row)
+	_close_button.reparent(new_row)
+	StencilStyle.navigation_button(_close_button)
+	_close_button.text = "‹  BACK"
 	_new_button = Button.new()
 	_new_button.name = "NewButton"
 	_new_button.text = "NEW LOADOUT"
-	StencilStyle.style_button(_new_button)
+	StencilStyle.primary_button(_new_button)
 	_new_button.pressed.connect(_on_new_pressed)
 	new_row.add_child(_new_button)
 	var new_hint := Label.new()
@@ -145,15 +149,24 @@ func _build() -> void:
 	_status_label.text = ""
 	_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	root.add_child(_status_label)
+	root.move_child(new_row, root.get_child_count() - 1)
 
 	_apply_scale()
 
 
 func _build_editor(parent: VBoxContainer) -> void:
+	_editor_scroll = ScrollContainer.new()
+	_editor_scroll.name = "EditorScroll"
+	_editor_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_editor_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_editor_scroll.custom_minimum_size.x = 620
+	_editor_scroll.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	parent.add_child(_editor_scroll)
 	_editor = VBoxContainer.new()
 	_editor.name = "Editor"
-	_editor.visible = false
-	parent.add_child(_editor)
+	_set_editor_visible(false)
+	_editor.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_editor_scroll.add_child(_editor)
 	_editor_title = Label.new()
 	_editor_title.name = "EditorTitle"
 	_editor_title.text = "NEW LOADOUT"
@@ -183,7 +196,7 @@ func _build_editor(parent: VBoxContainer) -> void:
 	_traversal_select = _traversal_row()
 	var trav_hint := Label.new()
 	trav_hint.name = "TraversalHint"
-	trav_hint.text = "Exactly ONE traversal tool is active in the run. Jetpack (fuel-based thrust) lands with the movement worker — your choice is stored and applies once it lands."
+	trav_hint.text = "Choose the traversal tool you will take into the match."
 	trav_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	StencilStyle.apply_body(trav_hint, 16, StencilStyle.TEXT_DIM, 2)
 	_editor.add_child(trav_hint)
@@ -194,7 +207,7 @@ func _build_editor(parent: VBoxContainer) -> void:
 	_save_button = Button.new()
 	_save_button.name = "SaveButton"
 	_save_button.text = "SAVE"
-	StencilStyle.style_button(_save_button)
+	StencilStyle.primary_button(_save_button)
 	_save_button.pressed.connect(_on_save_pressed)
 	btn_row.add_child(_save_button)
 	_cancel_button = Button.new()
@@ -278,37 +291,40 @@ func _apply_scale() -> void:
 		return
 	var vp := _vp_size()
 	var m := UiScale.panel_margin(vp)
+	var content_width := maxf(280, vp.x - 2 * m.x - 28)
+	_list_scroll.custom_minimum_size.x = minf(550, content_width)
+	_editor_scroll.custom_minimum_size.x = minf(620, content_width)
 	_panel.offset_left = m.x
 	_panel.offset_right = -m.x
 	_panel.offset_top = m.y
 	_panel.offset_bottom = -m.y
 	if _title_label != null:
-		StencilStyle.apply_title(_title_label, UiScale.scaled_font(26, vp), StencilStyle.ORANGE, 3)
+		StencilStyle.apply_title(_title_label, maxi(32, StencilStyle.menu_font(44, vp)), StencilStyle.TEXT, 0)
 	if _slots_label != null:
-		StencilStyle.apply_body(_slots_label, UiScale.scaled_font(20, vp), StencilStyle.TEXT, 2)
+		StencilStyle.apply_body(_slots_label, StencilStyle.menu_font(20, vp), StencilStyle.TEXT, 2)
 	if _close_button != null:
 		_close_button.custom_minimum_size = Vector2(UiScale.scaled_size(56, vp), UiScale.scaled_size(56, vp))
-		_close_button.add_theme_font_size_override("font_size", UiScale.scaled_font(22, vp))
+		_close_button.add_theme_font_size_override("font_size", StencilStyle.menu_font(22, vp))
 	if _info_label != null:
-		StencilStyle.apply_body(_info_label, UiScale.scaled_font(18, vp), StencilStyle.TEXT, 2)
+		StencilStyle.apply_body(_info_label, StencilStyle.menu_font(18, vp), StencilStyle.TEXT, 2)
 	if _new_button != null:
 		_new_button.custom_minimum_size = Vector2(UiScale.scaled_size(200, vp), UiScale.scaled_size(56, vp))
-		_new_button.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+		_new_button.add_theme_font_size_override("font_size", StencilStyle.menu_font(20, vp))
 	if _status_label != null:
-		StencilStyle.apply_body(_status_label, UiScale.scaled_font(17, vp), StencilStyle.TEXT_DIM, 2)
+		StencilStyle.apply_body(_status_label, StencilStyle.menu_font(17, vp), StencilStyle.TEXT_DIM, 2)
 	if _editor_title != null:
-		StencilStyle.apply_body(_editor_title, UiScale.scaled_font(20, vp), StencilStyle.ORANGE, 2)
+		StencilStyle.apply_body(_editor_title, StencilStyle.menu_font(20, vp), StencilStyle.ORANGE, 2)
 	if _name_input != null:
 		_name_input.custom_minimum_size = Vector2(0, UiScale.scaled_size(56, vp))
-		_name_input.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+		_name_input.add_theme_font_size_override("font_size", StencilStyle.menu_font(20, vp))
 	for sel: OptionButton in [_primary_select, _secondary_select, _forge_select, _traversal_select]:
 		if sel != null:
 			sel.custom_minimum_size = Vector2(0, UiScale.scaled_size(56, vp))
-			sel.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+			sel.add_theme_font_size_override("font_size", StencilStyle.menu_font(20, vp))
 	for btn: Button in [_save_button, _cancel_button]:
 		if btn != null:
 			btn.custom_minimum_size = Vector2(UiScale.scaled_size(180, vp), UiScale.scaled_size(56, vp))
-			btn.add_theme_font_size_override("font_size", UiScale.scaled_font(20, vp))
+			btn.add_theme_font_size_override("font_size", StencilStyle.menu_font(20, vp))
 
 
 # ------------------------------------------------------------------ API
@@ -324,7 +340,7 @@ func open() -> void:
 
 func close() -> void:
 	visible = false
-	_editor.visible = false
+	_set_editor_visible(false)
 	if _name_input != null and _name_input.has_focus():
 		_name_input.release_focus()
 	picker_closed.emit()
@@ -400,7 +416,7 @@ func _add_note(text: String) -> void:
 	var lbl := Label.new()
 	lbl.text = text
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	StencilStyle.apply_body(lbl, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
+	StencilStyle.apply_body(lbl, StencilStyle.menu_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
 	_list_box.add_child(lbl)
 
 
@@ -408,45 +424,39 @@ func _add_row(entry: Dictionary, active_name: String, store: Node, only_one: boo
 	var loadout_name: String = str(entry.get("name", ""))
 	var wrap := VBoxContainer.new()
 	wrap.name = "LoadoutRow_" + loadout_name
+	wrap.add_theme_constant_override("separation", 6)
 	_list_box.add_child(wrap)
-	var row := HBoxContainer.new()
-	row.name = "Row"
-	wrap.add_child(row)
-	var name_lbl := Label.new()
-	name_lbl.name = "LoadoutName"
-	name_lbl.text = loadout_name
-	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	StencilStyle.apply_body(name_lbl, UiScale.scaled_font(19, _vp_size()), StencilStyle.TEXT, 2)
-	row.add_child(name_lbl)
-	var is_active: bool = (loadout_name == active_name)
-	if is_active:
-		var badge := Label.new()
-		badge.name = "ActiveBadge"
-		badge.text = "ACTIVE"
-		StencilStyle.apply_body(badge, UiScale.scaled_font(17, _vp_size()), StencilStyle.GREEN, 2)
-		row.add_child(badge)
+	var is_active := loadout_name == active_name
 	var select_btn := Button.new()
 	select_btn.name = "SelectButton"
-	select_btn.text = "SELECT"
-	select_btn.disabled = is_active
-	StencilStyle.style_button(select_btn)
+	select_btn.text = loadout_name.to_upper()
+	select_btn.custom_minimum_size.y = 54
+	StencilStyle.navigation_button(select_btn, is_active)
 	select_btn.pressed.connect(_on_select_pressed.bind(loadout_name))
-	row.add_child(select_btn)
-	var edit_btn := Button.new()
-	edit_btn.name = "EditButton"
-	edit_btn.text = "EDIT"
-	StencilStyle.style_button(edit_btn)
-	edit_btn.pressed.connect(_on_edit_pressed.bind(loadout_name))
-	row.add_child(edit_btn)
-	var del_btn := Button.new()
-	del_btn.name = "DeleteButton"
-	del_btn.text = "DELETE"
-	del_btn.disabled = only_one
-	if only_one:
-		del_btn.tooltip_text = "Cannot delete the last loadout."
-	StencilStyle.style_button(del_btn)
-	del_btn.pressed.connect(_on_delete_pressed.bind(loadout_name))
-	row.add_child(del_btn)
+	wrap.add_child(select_btn)
+	if is_active:
+		var actions := HBoxContainer.new()
+		actions.add_theme_constant_override("separation", 16)
+		wrap.add_child(actions)
+		var badge := Label.new()
+		badge.name = "ActiveBadge"
+		badge.text = "EQUIPPED"
+		StencilStyle.apply_body(badge, 14, StencilStyle.ORANGE)
+		badge.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		actions.add_child(badge)
+		var edit := Button.new()
+		edit.name = "EditButton"
+		edit.text = "EDIT"
+		StencilStyle.style_button(edit)
+		edit.pressed.connect(_on_edit_pressed.bind(loadout_name))
+		actions.add_child(edit)
+		var delete := Button.new()
+		delete.name = "DeleteButton"
+		delete.text = "DELETE"
+		delete.disabled = only_one
+		StencilStyle.style_button(delete)
+		delete.pressed.connect(_on_delete_pressed.bind(loadout_name))
+		actions.add_child(delete)
 	var detail := Label.new()
 	detail.name = "LoadoutDetail"
 	var primary_id: String = str(entry.get("primary", ""))
@@ -474,8 +484,9 @@ func _add_row(entry: Dictionary, active_name: String, store: Node, only_one: boo
 		trav_txt = str(entry.get("traversal", "grapple"))
 	detail.text = "%s  /  %s   ·   Forge: %s   ·   Traversal: %s" % [primary_txt, secondary_txt, forge_txt, trav_txt]
 	detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	StencilStyle.apply_body(detail, UiScale.scaled_font(17, _vp_size()), StencilStyle.TEXT_DIM, 2)
+	StencilStyle.apply_body(detail, maxi(16, StencilStyle.menu_font(19, _vp_size())), StencilStyle.TEXT_DIM, 2)
 	wrap.add_child(detail)
+	detail.visible = is_active
 
 
 ## (Re)builds the editor dropdowns. Weapon ids/names from the Loadouts
@@ -556,6 +567,9 @@ func _on_select_pressed(loadout_name: String) -> void:
 	if bool(store.call("set_active", loadout_name)):
 		_set_status("%s is now active — used on Deploy." % loadout_name)
 		_refresh()
+		for button in _list_box.find_children("SelectButton", "Button", true, false):
+			if button.text == loadout_name.to_upper():
+				button.grab_focus()
 		_play("ui_click")
 	else:
 		_set_status("Could not select %s." % loadout_name)
@@ -575,7 +589,7 @@ func _on_edit_pressed(loadout_name: String) -> void:
 	_select_weapon(_secondary_select, str(entry.get("secondary", "")))
 	_select_forge(str(entry.get("forge_preset", "")))
 	_select_traversal(str(entry.get("traversal", "grapple")))
-	_editor.visible = true
+	_set_editor_visible(true)
 	_apply_scale()
 
 
@@ -587,12 +601,12 @@ func _on_new_pressed() -> void:
 	_select_weapon(_secondary_select, "p9")
 	_select_forge("")
 	_select_traversal("grapple")
-	_editor.visible = true
+	_set_editor_visible(true)
 	_apply_scale()
 
 
 func _on_cancel_pressed() -> void:
-	_editor.visible = false
+	_set_editor_visible(false)
 	_editing_name = ""
 	_play("ui_click")
 
@@ -615,7 +629,7 @@ func _on_save_pressed() -> void:
 	if _editing_name.is_empty():
 		# CREATE path.
 		if bool(store.call("create_loadout", new_name, primary_id, secondary_id, forge_prompt, traversal_id)):
-			_editor.visible = false
+			_set_editor_visible(false)
 			_editing_name = ""
 			_set_status("%s created." % new_name)
 			_refresh()
@@ -631,7 +645,7 @@ func _on_save_pressed() -> void:
 			return
 		target_name = new_name
 	if bool(store.call("update_loadout", target_name, primary_id, secondary_id, forge_prompt, traversal_id)):
-		_editor.visible = false
+		_set_editor_visible(false)
 		_editing_name = ""
 		_set_status("%s saved." % target_name)
 		_refresh()
@@ -646,7 +660,7 @@ func _on_delete_pressed(loadout_name: String) -> void:
 		return
 	if bool(store.call("delete_loadout", loadout_name)):
 		if _editing_name == loadout_name:
-			_editor.visible = false
+			_set_editor_visible(false)
 			_editing_name = ""
 		_set_status("%s deleted." % loadout_name)
 		_refresh()
@@ -664,3 +678,13 @@ func _play(id: String) -> void:
 	var s: Node = get_node_or_null("/root/Sfx")
 	if s != null and s.has_method("play_2d"):
 		s.call("play_2d", id)
+
+
+func _set_editor_visible(show_editor: bool) -> void:
+	_title_label.text = ("NEW LOADOUT" if _editing_name.is_empty() else "EDIT LOADOUT") if show_editor else "LOADOUTS"
+	_info_label.text = "Customize your gear, then save your loadout." if show_editor else "Choose your loadout."
+	_editor.visible = show_editor
+	_editor_scroll.visible = show_editor
+	_list_scroll.visible = not show_editor
+	for child in _new_button.get_parent().get_children():
+		child.visible = true if child == _close_button else not show_editor
