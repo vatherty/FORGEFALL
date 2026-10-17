@@ -2,7 +2,7 @@
 # Usage: godot --headless --path <project> --script res://tools/verify_v05_b1_forge_ui.gd
 # Checks:
 #   1. The menu scene instantiates; starts hidden; joins group "forge_menu".
-#   2. All 4 tabs exist (Build / Weapons / Events / Killstreaks) with preset buttons.
+#   2. All 7 tabs exist (Build / Weapons / Events / Killstreaks + Loadouts / Mods / Class) with preset buttons on the first four.
 #   3. open()/close() work; budget label reflects Forge.get_budget().
 #   4. Preset tap fills the prompt field; CONFIRM submits via Forge.submit_prompt
 #      and a forge_result arrives (real backend, offline fallback) with no error.
@@ -68,13 +68,18 @@ func _process(_delta: float) -> bool:
 			var tabs := _menu.find_child("TabContainer", true, false) as TabContainer
 			_check(tabs != null, "TabContainer exists")
 			if tabs != null:
-				_check(tabs.get_tab_count() == 4, "4 tabs exist (got %d)" % tabs.get_tab_count())
+				_check(tabs.get_tab_count() == 7, "7 tabs exist (got %d)" % tabs.get_tab_count())
 				for i in 4:
 					var title := tabs.get_tab_title(i)
 					_check(title in ["Build", "Weapons", "Events", "Killstreaks"],
 						"tab %d is '%s'" % [i, title])
 					var n := _count_preset_buttons(tabs.get_tab_control(i))
 					_check(n >= 3, "tab '%s' has preset buttons (got %d)" % [title, n])
+				# Tabs 5-7 arrived after this suite: Loadouts (v0.6
+				# loadouts tab), Mods (v0.7), Class (v0.5.8 D&D).
+				_check(tabs.get_tab_title(4) == "Loadouts", "tab 4 is 'Loadouts'")
+				_check(tabs.get_tab_title(5) == "Mods", "tab 5 is 'Mods'")
+				_check(tabs.get_tab_title(6) == "Class", "tab 6 is 'Class'")
 			# Integrated-backend configuration (post-B2): the real Forge now
 			# HAS the new methods, so this run verifies the integrated path.
 			# Degradation (methods absent) was verified pre-B2 at delivery
@@ -128,8 +133,10 @@ func _process(_delta: float) -> bool:
 			_check(_last_result.to_lower().contains("wall"),
 				"forge_result message describes the wall build (got '%s')" % _last_result)
 			var budget2 := _menu.find_child("BudgetLabel", true, false) as Label
-			_check(budget2 != null and budget2.text == "BUDGET: 900",
-				"budget drops by wall cost 100 after build (got '%s')" % (budget2.text if budget2 != null else "<null>"))
+			# Budget is OFF since v0.5.1 (costs display-only, building
+			# is free) — the label must NOT drop after a build.
+			_check(budget2 != null and budget2.text == "BUDGET: 1000",
+				"budget stays 1000 after build (budget OFF, costs display-only) (got '%s')" % (budget2.text if budget2 != null else "<null>"))
 			# History falls back to the local list: a button for the prompt.
 			var hist := _find_history_button("Build a wall in front of me")
 			_check(hist != null, "history lists the submitted prompt (local fallback)")
