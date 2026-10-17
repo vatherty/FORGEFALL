@@ -1028,6 +1028,12 @@ func _ui_history_search_field() -> void:
 	if field == null:
 		_check("build-codes", false, "build-codes: Forge menu has a History search field (NOT-LANDED if absent)")
 		return
+	# Cinematic layout: history lives in the collapsed "History &
+	# Tools" details — expand it first, or its buttons are never
+	# visible in tree and the filter check reads empty.
+	var details_btn := _forge_menu.find_child("ForgeDetailsButton", true, false) as Button
+	if details_btn != null:
+		details_btn.button_pressed = true
 	var forge := root.get_node_or_null("Forge")
 	if forge != null:
 		# Typed Array[String] (see the manager search check): an
@@ -1356,7 +1362,8 @@ func _ui_creator_tabs(creator_ui: Control) -> void:
 	_count_kinds(form, kinds)
 	var multi := int(kinds.get("option", 0)) + int(kinds.get("check", 0)) >= 2
 	var has_name := int(kinds.get("lineedit", 0)) >= 1
-	var visual := _texts_contain(form, "visual") or _texts_contain(form, "color") or _texts_contain(form, "shape") or _texts_contain(form, "asset")
+	# Cinematic creator labels the visual section "APPEARANCE".
+	var visual := _texts_contain(form, "visual") or _texts_contain(form, "color") or _texts_contain(form, "shape") or _texts_contain(form, "asset") or _texts_contain(form, "appearance")
 	var logic := _texts_contain(form, "logic") or _texts_contain(form, "behavior") or _texts_contain(form, "behaviour") or _texts_contain(form, "effect")
 	var has_textedits := int(kinds.get("textedit", 0)) >= 2
 	_check("creator", multi and has_name and visual and logic and has_textedits,
