@@ -870,8 +870,10 @@ func _phase6() -> void:
 			"make(6): forge_menu.gd contains no .install() call (MAKE never installs)")
 		_check(not menu_src.contains("MAKE can't run script mods"),
 			"make(6): forge_menu.gd carries no script-refusal text")
-		_check(menu_src.contains("MAKE (this match only"),
-			"make(6): MAKE UI is labeled 'MAKE (this match only — not saved)'")
+		# v0.5.12: the MAKE section is now status + history (the second
+		# input box is gone); its title is "MADE THIS MATCH (not saved)".
+		_check(menu_src.contains("MADE THIS MATCH (not saved)"),
+			"make(6): MAKE section is labeled 'MADE THIS MATCH (not saved)'")
 		_sub = 4
 		return
 	if _sub == 4:
