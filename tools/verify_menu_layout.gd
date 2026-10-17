@@ -1,7 +1,8 @@
 # verify_menu_layout.gd — main-menu layout verifier (Deck screenshot fix).
 # Instantiates scenes/ui/main_menu.tscn at 4 resolutions and asserts:
-#  - tagline rect does not intersect the MAP row; MAP row does not
-#    intersect the MODE row (vertical order, no shared space)
+#  - tagline rect does not intersect the MAP row (vertical order, no
+#    shared space). The legacy MODE row is gone (Gameplay Rework:
+#    SINGLE PLAYER / MULTIPLAYER top entries + mode-select overlay).
 #  - no two visible text controls overlap (within the menu stack, and
 #    separately within the options panel when open — the panel is an
 #    overlay, so cross-group pairs are excluded by design)
@@ -108,7 +109,7 @@ func _check_buttons(leaves: Array[Control], group: String) -> void:
 	_check("%s COMING SOON appears zero times" % group, coming_soon == 0)
 	_check("%s has a LOADOUTS button" % group, has_loadout)
 	_check("%s has a STATS button" % group, has_stats)
-	for want in ["DEPLOY", "MULTIPLAYER", "PUZZLE CHAMBERS", "LOADOUTS", "STATS", "OPTIONS", "QUIT"]:
+	for want in ["SINGLE PLAYER", "MULTIPLAYER", "PUZZLE CHAMBERS", "LOADOUTS", "STATS", "CREATE A MOD", "OPTIONS", "QUIT"]:
 		_check("%s has button '%s'" % [group, want], seen.has(want))
 	var loadouts := _menu.get_node_or_null("MenuScroll/MenuStack/LoadoutButton") as Button
 	if loadouts != null:
@@ -126,20 +127,17 @@ func _check_closed() -> void:
 		return
 	var tagline := _menu.get_node_or_null("MenuScroll/MenuStack/Tagline") as Label
 	var map_row := _menu.get_node_or_null("MenuScroll/MenuStack/MapRow") as Control
-	var mode_row := _menu.get_node_or_null("MenuScroll/MenuStack/ModeRow") as Control
 	_check(tag + " tagline exists", tagline != null)
 	_check(tag + " map row exists", map_row != null)
-	_check(tag + " mode row exists", mode_row != null)
+	_check(tag + " no legacy MODE row (rework: mode select is an overlay)", _menu.get_node_or_null("MenuScroll/MenuStack/ModeRow") == null)
+	_check(tag + " no legacy DEPLOY button (rework: SINGLE PLAYER top entry)", _menu.get_node_or_null("MenuScroll/MenuStack/DeployButton") == null)
+	_check(tag + " SINGLE PLAYER top entry exists", _menu.get_node_or_null("MenuScroll/MenuStack/SinglePlayerButton") != null)
+	_check(tag + " mode-select overlay exists (hidden)", _menu.get_node_or_null("ModeSelectOverlay") != null)
 	if tagline != null and map_row != null:
 		var tr := tagline.get_global_rect()
 		var mr := map_row.get_global_rect()
 		_check(tag + " tagline does not intersect MAP row", not tr.intersects(mr))
 		_check(tag + " tagline is above MAP row", tr.position.y + tr.size.y <= mr.position.y + 0.5)
-	if map_row != null and mode_row != null:
-		var mr := map_row.get_global_rect()
-		var orr := mode_row.get_global_rect()
-		_check(tag + " MAP row does not intersect MODE row", not mr.intersects(orr))
-		_check(tag + " MAP row is above MODE row", mr.position.y + mr.size.y <= orr.position.y + 0.5)
 	var footer := _menu.get_node_or_null("MenuScroll/MenuStack/Footer") as Label
 	_check(tag + " footer exists", footer != null)
 	if footer != null:
