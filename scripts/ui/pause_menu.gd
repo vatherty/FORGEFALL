@@ -9,6 +9,7 @@ extends Control
 var _options_box: VBoxContainer
 var _sens: HSlider
 var _master: HSlider
+var _resume_button: Button
 
 
 func _ready() -> void:
@@ -59,6 +60,7 @@ func _build() -> void:
 	add_child(buttons)
 
 	var resume := _menu_button("RESUME")
+	_resume_button = resume
 	resume.pressed.connect(toggle_pause)
 	buttons.add_child(resume)
 	var restart := _menu_button("RESTART RUN")
@@ -79,6 +81,11 @@ func _build() -> void:
 	_sens = _slider_row("SENSITIVITY", 0.5, 3.0, 0.05, _read_setting("sensitivity", 1.0))
 	_master = _slider_row("MASTER VOL", 0.0, 1.0, 0.01, _read_setting("master_vol", 0.9))
 	_master.value_changed.connect(_on_master_vol)
+	# CONTROLS (v0.6.1): full keyboard + gamepad remapping, reachable
+	# from pause so a Deck player never needs the main menu mid-run.
+	var controls := _menu_button("CONTROLS...")
+	controls.pressed.connect(_on_controls)
+	_options_box.add_child(controls)
 
 
 func _menu_button(text: String) -> Button:
@@ -111,6 +118,11 @@ func _slider_row(label_text: String, mn: float, mx: float, step: float, val: flo
 
 func _input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel"):
+		# The rebind screen owns the press while open (its own B/Esc
+		# closes it); otherwise B would close the rebind screen AND
+		# resume the game on the same press.
+		if get_node_or_null("RebindMenu") != null:
+			return
 		toggle_pause()
 		get_viewport().set_input_as_handled()
 
@@ -122,6 +134,9 @@ func toggle_pause() -> void:
 	else:
 		get_tree().paused = true
 		visible = true
+		# Controller: focus RESUME so D-pad + Confirm work with no mouse.
+		if _resume_button != null:
+			_resume_button.grab_focus()
 
 
 func _on_restart() -> void:
@@ -136,6 +151,19 @@ func _on_restart() -> void:
 func _on_options() -> void:
 	_click()
 	_options_box.visible = not _options_box.visible
+
+
+func _on_controls() -> void:
+	_click()
+	var menu := RebindMenu.open_in(self)
+	if menu.has_signal("closed"):
+		menu.connect("closed", _on_rebind_closed)
+
+
+func _on_rebind_closed() -> void:
+	# Back from CONTROLS: focus returns to the pause menu.
+	if _resume_button != null and visible:
+		_resume_button.grab_focus()
 
 
 func _on_quit_to_menu() -> void:
