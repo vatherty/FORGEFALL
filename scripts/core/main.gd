@@ -22,6 +22,7 @@ const MENU_SCENE := "res://scenes/ui/main_menu.tscn"
 const MAPS := {
 	"dustline": {"scene": "res://scenes/maps/dustline.tscn", "props": "res://scenes/maps/dustline_props.tscn"},
 	"foundry": {"scene": "res://scenes/maps/foundry.tscn", "props": ""},
+	"factory": {"scene": "res://scenes/maps/factory.tscn", "props": ""},
 	"outpost": {"scene": "res://scenes/maps/outpost.tscn", "props": ""},
 	"cinder_city": {"scene": "res://scenes/maps/cinder_city.tscn", "props": ""},
 	# Gameplay Rework (TD worker): the purpose-built Tower Defense map.
@@ -66,6 +67,9 @@ var _mp_waiting_for_players := false
 
 func _ready() -> void:
 	add_to_group("game_root")
+	# Native controller support (v0.6.1): create missing InputMap
+	# actions, guarantee menu-nav gamepad events, apply saved rebinds.
+	InputBindings.ensure_loaded()
 	_show_menu()
 
 
