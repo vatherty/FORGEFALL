@@ -3,7 +3,8 @@
 # Instantiates the real Dustline map scene and asserts:
 #   1. Map builds (StaticVoxels MultiMesh has instances).
 #   2. Exactly ONE DirectionalLight3D ("Sun") with shadow_enabled, cheap
-#      mobile settings (orthogonal, tight frustum, zero blur). Shadow map
+#      mobile settings (orthogonal, tight frustum, blur 1.0 to soften
+#      texel moire — dustline_builder sets 1.0 deliberately). Shadow map
 #      SIZE is a project setting in Godot 4.7, reported not asserted.
 #   3. A WorldEnvironment with fog + ACES tonemapping + gradient sky,
 #      glow (bloom) explicitly OFF, ambient fill present.
@@ -74,8 +75,8 @@ func _run_checks() -> void:
 		print("INFO-A1: project directional shadow size = ",
 			ProjectSettings.get_setting(
 				"rendering/lights_and_shadows/directional_shadow/size"))
-		_check(sun.shadow_blur == 0.0,
-			"Sun shadow blur 0 (crisp shadows, no blur cost)")
+		_check(sun.shadow_blur == 1.0,
+			"Sun shadow blur 1.0 (softens texel moire — dustline_builder sets 1.0 deliberately, was 0.0)")
 
 	# 3. WorldEnvironment: fog + tonemapping + gradient sky + ambient.
 	var we := _map.get_node_or_null("WorldEnvironment") as WorldEnvironment
