@@ -14,6 +14,16 @@
 #     "Forge exists ONLY in Tower Defense" rule covers Forge-built
 #     structures, not map geometry; city maps keep their map buildings).
 #     Heights 12-34 m + a 40 m antenna on the landmark Spire.
+#   - Buildings RENDER as Kenney City Kit (Commercial) v2.1 GLBs (CC0,
+#     see assets/kenney-city-kit/): one kit model per building, scaled to
+#     fit its gameplay volume EXACTLY (footprint w x d, height h, base at
+#     y = 0). Collision stays the ORIGINAL voxel boxes, so wall-run
+#     faces, grapple anchors, spawns and pads are bit-identical to the
+#     verified layout. The old voxel shell (main mass, trim, roof slab
+#     visual, parapet, window strips, AC boxes, water tower) is gone: the
+#     kit model fills the same volume, so the box would hide / z-fight
+#     it. Rooftop dressing: kit parasols on every third low roof.
+#     The Spire keeps its antenna + beacon above the kit crown.
 #   - 2 skybridges (y = 16 / 18) across streets: grapple anchors and
 #     rooftop-to-rooftop traversal.
 #   - 4 wall-run medians ("fins"): 34 m long x 5 m high freestanding
@@ -120,15 +130,63 @@ const FORGE_PADS := [
 	Vector3(-14, 0, 14), Vector3(14, 0, 14),
 ]
 
-# Facade schemes: [main, trim]. Kept in the dusk palette family.
-const SCHEMES := [
-	[Color("8f8a80"), Color("6e6a62")],
-	[Color("b3a284"), Color("8d7f63")],
-	[Color("7e6f66"), Color("5d534c")],
-	[Color("6d7680"), Color("525a63")],
+# --- Kenney City Kit (Commercial) v2.1 visuals (CC0) ---------------------
+# KIT_DIR holds the GLBs the builder instantiates (one per building).
+# Each entry: {file, min, size} = native GLB AABB measured from the kit
+# files (base at y = 0, roughly centred in x/z). The builder scales the
+# model so its AABB maps EXACTLY onto the building's gameplay volume.
+# Tall buildings (h >= 24) get skyscraper variants; the rest get the
+# 14 standard variants, round-robin in BUILDINGS order. Awnings /
+# overhangs are deliberately NOT used: they would poke past the
+# collision faces and clip wall-running players. Parasols sit on roofs,
+# inside the footprint, so they are safe.
+const KIT_DIR := "res://assets/kenney-city-kit/models/"
+const KIT_SKYSCRAPERS := [
+	{"file": "building-skyscraper-a.glb", "min": Vector3(-0.68, 0, -0.68), "size": Vector3(1.36, 2.88, 1.36)},
+	{"file": "building-skyscraper-b.glb", "min": Vector3(-0.68, 0, -0.68), "size": Vector3(1.36, 4.48, 1.36)},
+	{"file": "building-skyscraper-c.glb", "min": Vector3(-0.64, 0, -0.69), "size": Vector3(1.28, 4.08, 1.39)},
+	{"file": "building-skyscraper-d.glb", "min": Vector3(-0.64, 0, -0.69), "size": Vector3(1.28, 5.47, 1.39)},
+	{"file": "building-skyscraper-e.glb", "min": Vector3(-0.65, 0, -0.62), "size": Vector3(1.29, 4.08, 1.24)},
 ]
-const C_ROOF := Color("3a3d42")
-const C_PARAPET := Color("55504a")
+const KIT_BUILDINGS := [
+	{"file": "building-a.glb", "min": Vector3(-0.44, 0, -0.47), "size": Vector3(0.88, 1.29, 0.94)},
+	{"file": "building-b.glb", "min": Vector3(-0.49, 0, -0.47), "size": Vector3(0.97, 1.29, 0.94)},
+	{"file": "building-c.glb", "min": Vector3(-0.44, 0, -0.55), "size": Vector3(0.88, 0.89, 1.09)},
+	{"file": "building-d.glb", "min": Vector3(-0.42, 0, -0.45), "size": Vector3(0.84, 1.29, 0.90)},
+	{"file": "building-e.glb", "min": Vector3(-0.82, 0, -0.50), "size": Vector3(1.64, 0.89, 1.01)},
+	{"file": "building-f.glb", "min": Vector3(-0.42, 0, -0.51), "size": Vector3(0.84, 1.69, 1.03)},
+	{"file": "building-g.glb", "min": Vector3(-0.49, 0, -0.46), "size": Vector3(0.97, 1.69, 0.92)},
+	{"file": "building-h.glb", "min": Vector3(-0.44, 0, -0.50), "size": Vector3(0.88, 1.29, 1.01)},
+	{"file": "building-i.glb", "min": Vector3(-0.62, 0, -0.65), "size": Vector3(1.24, 1.68, 1.30)},
+	{"file": "building-j.glb", "min": Vector3(-1.04, 0, -0.67), "size": Vector3(2.08, 1.69, 1.34)},
+	{"file": "building-k.glb", "min": Vector3(-1.04, 0, -0.47), "size": Vector3(2.08, 1.47, 0.94)},
+	{"file": "building-l.glb", "min": Vector3(-0.69, 0, -0.70), "size": Vector3(1.37, 2.27, 1.40)},
+	{"file": "building-m.glb", "min": Vector3(-0.62, 0, -0.62), "size": Vector3(1.24, 3.15, 1.24)},
+	{"file": "building-n.glb", "min": Vector3(-1.16, 0, -0.91), "size": Vector3(2.32, 2.48, 1.82)},
+]
+const KIT_PARASOLS := [
+	{"file": "detail-parasol-a.glb", "min": Vector3(-0.17, 0, -0.20), "size": Vector3(0.35, 0.45, 0.40)},
+	{"file": "detail-parasol-b.glb", "min": Vector3(-0.17, 0, -0.20), "size": Vector3(0.35, 0.45, 0.40)},
+]
+# Every kit file the builder can load (read by tools/verify_city_maps.gd).
+const KIT_FILES := [
+	"building-a.glb", "building-b.glb", "building-c.glb", "building-d.glb",
+	"building-e.glb", "building-f.glb", "building-g.glb", "building-h.glb",
+	"building-i.glb", "building-j.glb", "building-k.glb", "building-l.glb",
+	"building-m.glb", "building-n.glb", "building-skyscraper-a.glb",
+	"building-skyscraper-b.glb", "building-skyscraper-c.glb",
+	"building-skyscraper-d.glb", "building-skyscraper-e.glb",
+	"detail-parasol-a.glb", "detail-parasol-b.glb",
+]
+# Which kit model BUILDINGS[idx] renders (same rule as _build_building).
+static func kit_model_for(idx: int) -> Dictionary:
+	var tall_before := 0
+	for j in idx:
+		if float(BUILDINGS[j]["h"]) >= 24.0:
+			tall_before += 1
+	if float(BUILDINGS[idx]["h"]) >= 24.0:
+		return KIT_SKYSCRAPERS[tall_before % KIT_SKYSCRAPERS.size()]
+	return KIT_BUILDINGS[(idx - tall_before) % KIT_BUILDINGS.size()]
 const C_ASPHALT := Color("33363b")
 const C_ASPHALT_D := Color("2a2d31")
 const C_SIDEWALK := Color("6b6760")
@@ -146,8 +204,10 @@ func _ready() -> void:
 	_build_environment(0.0045)  # clearer air than Dustline: 130 m sightlines
 	_build_ground()
 	_build_perimeter(ARENA_HALF, 5.0, 6.0)
+	var bi := 0
 	for b in BUILDINGS:
-		_build_building(b)
+		_build_building(b, bi)
+		bi += 1
 	_build_skybridges()
 	_build_fins()
 	_build_plaza()
@@ -191,59 +251,58 @@ func _build_ground() -> void:
 				_v(Vector3(cx + off, 0.03, cz), Vector3(0.9, 0.02, 8.0), C_STRIPE)
 
 
-func _build_building(b: Dictionary) -> void:
+func _build_building(b: Dictionary, idx: int) -> void:
 	var cx: float = b["x"]
 	var cz: float = b["z"]
 	var w: float = b["w"]
 	var d: float = b["d"]
 	var h: float = b["h"]
-	var scheme: Array = SCHEMES[int(b["c"])]
-	var main_col: Color = scheme[0]
-	var trim_col: Color = scheme[1]
 	var center := Vector3(cx, h * 0.5, cz)
-	# Main mass + collision (one flat vertical face per side, ground to roof).
-	_v(center, Vector3(w, h, d), main_col)
+	# COLLISION (gameplay volumes — UNCHANGED from the verified layout):
+	# one flat vertical face per side, ground to roof, + roof slab.
 	_solid(center, Vector3(w, h, d))
-	# Base trim + roof slab.
-	_v(Vector3(cx, 0.4, cz), Vector3(w + 0.3, 0.8, d + 0.3), trim_col)
-	_v(Vector3(cx, h + 0.15, cz), Vector3(w + 0.4, 0.3, d + 0.4), C_ROOF)
 	_solid(Vector3(cx, h + 0.15, cz), Vector3(w + 0.4, 0.3, d + 0.4))
-	# Parapet: 4 low walls on the roof edge (cover up top, grapple lip).
-	_v(Vector3(cx, h + 0.7, cz - d * 0.5), Vector3(w, 0.8, 0.3), C_PARAPET)
-	_v(Vector3(cx, h + 0.7, cz + d * 0.5), Vector3(w, 0.8, 0.3), C_PARAPET)
-	_v(Vector3(cx - w * 0.5, h + 0.7, cz), Vector3(0.3, 0.8, d), C_PARAPET)
-	_v(Vector3(cx + w * 0.5, h + 0.7, cz), Vector3(0.3, 0.8, d), C_PARAPET)
-	# Lit window strips: one per floor per face (floor pitch 4 m, first at 3 m).
-	var floors := int(h / 4.0)
-	for f in floors:
-		var wy := 3.0 + float(f) * 4.0
-		if wy > h - 1.5:
-			break
-		# +/- z faces (strip runs along x), +/- x faces (strip runs along z).
-		_g(Vector3(cx, wy, cz - d * 0.5 - 0.06), Vector3(w * 0.8, 0.5, 0.12), C_WINDOW_LIT)
-		_g(Vector3(cx, wy, cz + d * 0.5 + 0.06), Vector3(w * 0.8, 0.5, 0.12), C_WINDOW_LIT)
-		_g(Vector3(cx - w * 0.5 - 0.06, wy, cz), Vector3(0.12, 0.5, d * 0.8), C_WINDOW_LIT)
-		_g(Vector3(cx + w * 0.5 + 0.06, wy, cz), Vector3(0.12, 0.5, d * 0.8), C_WINDOW_LIT)
-	# Rooftop dressing: deterministic by footprint (no RNG drift in layout).
-	var area := w * d
-	if area >= 190.0:
-		# Water tower on the two biggest inner towers (28 m + 30 m).
-		if h >= 28.0 and h <= 30.0:
-			_v(Vector3(cx + w * 0.25, h + 2.2, cz), Vector3(2.6, 2.6, 2.6), C_RUST_D)
-			_v(Vector3(cx + w * 0.25, h + 3.8, cz), Vector3(3.0, 0.4, 3.0), C_DARKMETAL)
-			for ox in [-0.8, 0.8]:
-				for oz in [-0.8, 0.8]:
-					_v(Vector3(cx + w * 0.25 + ox, h + 1.0, cz + oz),
-						Vector3(0.25, 2.0, 0.25), C_DARKMETAL)
-	# AC / vent boxes on every roof (grapple lip + rooftop cover).
-	_v(Vector3(cx - w * 0.25, h + 0.75, cz), Vector3(2.0, 0.9, 1.4), C_STEEL_D)
-	_v(Vector3(cx + w * 0.2, h + 0.6, cz + d * 0.25), Vector3(1.2, 0.6, 1.2), C_GUNMETAL)
+	# VISUAL: one Kenney kit model, scaled so its AABB maps EXACTLY onto
+	# the collision volume (footprint w x d, height h, base at y = 0).
+	_kit_place(kit_model_for(idx), Vector3(cx - w * 0.5, 0, cz - d * 0.5),
+		Vector3(w, h, d), "KitBuilding_%d" % idx, "kit_building")
+	# Rooftop parasols on every third low roof (inside the footprint).
+	if idx % 3 == 0 and h < 28.0:
+		for s in [-1.0, 1.0]:
+			_kit_place(KIT_PARASOLS[idx % KIT_PARASOLS.size()],
+				Vector3(cx + s * w * 0.22 - 0.7, h + 0.3, cz + d * 0.22 - 0.7),
+				Vector3(1.4, 1.8, 1.4),
+				"KitParasol_%d_%s" % [idx, "a" if s < 0.0 else "b"], "kit_detail")
 	# Landmark Spire antenna: 34 m roof + 6 m mast = 40 m tip, glowing.
 	if h >= 34.0:
 		_v(Vector3(cx, h + 3.0, cz), Vector3(0.3, 6.0, 0.3), C_STEEL_D)
 		_g(Vector3(cx, h + 6.2, cz), Vector3(0.5, 0.5, 0.5), C_FORGE)
 		# Spire beacon strip down the +x face (visible from across the map).
 		_g(Vector3(cx + w * 0.5 + 0.06, h * 0.6, cz), Vector3(0.14, h * 0.7, 1.2), C_FORGE)
+
+
+# Instantiates one kit GLB and scales it so its native AABB (min/size)
+# maps onto the box [corner, corner + target]. The instance's visual
+# AABB then equals the target box exactly: nothing pokes past the
+# collision faces. No collision is added — kit models are visual-only.
+func _kit_place(model: Dictionary, corner: Vector3, target: Vector3,
+		node_name: String, group: String) -> void:
+	var ps := load(KIT_DIR + str(model["file"])) as PackedScene
+	if ps == null:
+		push_warning("Cinder City: kit model failed to load: %s" % str(model["file"]))
+		return
+	var inst := ps.instantiate() as Node3D
+	if inst == null:
+		return
+	inst.name = node_name
+	inst.set_meta("kit_file", str(model["file"]))
+	var mn: Vector3 = model["min"]
+	var sz: Vector3 = model["size"]
+	inst.scale = Vector3(target.x / sz.x, target.y / sz.y, target.z / sz.z)
+	inst.position = Vector3(corner.x - mn.x * inst.scale.x,
+		corner.y - mn.y * inst.scale.y, corner.z - mn.z * inst.scale.z)
+	inst.add_to_group(group)
+	add_child(inst)
 
 
 func _build_skybridges() -> void:
