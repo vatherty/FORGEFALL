@@ -13,6 +13,7 @@ var _resume_button: Button
 
 
 func _ready() -> void:
+	StencilStyle.install_menu(self)
 	add_to_group("pause_menu")
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -21,10 +22,8 @@ func _ready() -> void:
 
 
 func _build() -> void:
-	var dim := ColorRect.new()
-	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	dim.color = Color(0.015, 0.025, 0.035, 0.95)
-	add_child(dim)
+	StencilStyle.cinematic_background(self, "industrial", 0.18, get_viewport().get_camera_3d() != null)
+
 	var margin := MarginContainer.new()
 	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	for edge in ["left", "right", "top", "bottom"]:
@@ -34,7 +33,8 @@ func _build() -> void:
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	margin.add_child(scroll)
 	var buttons := VBoxContainer.new()
-	buttons.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	buttons.custom_minimum_size.x = 420
+	buttons.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	buttons.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
 	buttons.add_theme_constant_override("separation", 12)
@@ -43,7 +43,7 @@ func _build() -> void:
 	title.text = "PAUSED"
 	title.add_theme_font_override("font", preload("res://assets/ui/fonts/BarlowCondensed-Bold.ttf"))
 	title.add_theme_font_size_override("font_size", 64)
-	title.add_theme_color_override("font_color", StencilStyle.ORANGE)
+	title.add_theme_color_override("font_color", StencilStyle.TEXT)
 	buttons.add_child(title)
 	var sub := Label.new()
 	sub.text = "CATCH YOUR BREATH, OPERATOR"
@@ -79,10 +79,10 @@ func _menu_button(text: String) -> Button:
 	b.text = text
 	b.custom_minimum_size = Vector2(0, 56)
 	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	StencilStyle.style_button(b)
+	StencilStyle.navigation_button(b)
 	b.add_theme_font_override("font", preload("res://assets/ui/fonts/BarlowCondensed-Bold.ttf"))
 	b.add_theme_font_size_override("font_size", 26)
-	b.add_theme_stylebox_override("focus", StencilStyle.panel(Color(0, 0, 0, 0), StencilStyle.ORANGE, 2))
+
 	return b
 
 
