@@ -316,6 +316,10 @@ func open() -> void:
 	visible = true
 	_refresh()
 	_play("ui_click")
+	# Controller (v0.6.1): focus the first button (X close) so D-pad +
+	# Confirm navigate the picker with no mouse. Text fields are skipped
+	# (focus there would pop the phone keyboard).
+	InputBindings.grab_first_focus(self)
 
 
 func close() -> void:
