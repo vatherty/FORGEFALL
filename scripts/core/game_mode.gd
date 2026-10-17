@@ -25,6 +25,85 @@ signal domination_point_changed(point_name: String, owned: bool)
 signal domination_score_changed(score: int)
 signal mode_won(mode: String, score: int)
 signal endless_run_over(score: int, best: int, is_new_best: bool)
+signal tdm_match_ended(winner_team: int, result: Dictionary)
+
+## Mode registry (Gameplay Rework — menu + TDM worker).
+## MODES above carries name/desc (legacy shape, kept for menus and
+## verifiers); REGISTRY adds the routing metadata. A mode is
+## SELECTABLE in the menus iff is_implemented(id) is true.
+##   scope: "sp" | "mp" | "legacy" (legacy = pre-rework modes, kept
+##     working via Main.start_game() but NOT listed in the new
+##     Single/Multiplayer mode selects).
+##   implemented: true when a start path ships — builtin (legacy),
+##     BotTDM (tdm), TowerDefenseMode (tower_defense), or the MP lobby
+##     flow (mp_tdm via Main.open_multiplayer_menu()).
+## REGISTRATION CONTRACT (for the TD / Zombies / MP workers): when
+## your mode lands, (1) wire its start path (cf. TowerDefenseMode's
+## hook line in start() below, or Main.start_sp_mode()), then (2) call
+## GameModeManager.register_mode("<id>", true). Until step 2, the menu
+## shows the entry as NOT AVAILABLE and start() refuses it — never a
+## crash, never a silent fallback into another mode.
+const REGISTRY := {
+	"tower_defense": {"scope": "sp", "implemented": true},
+	"tdm": {"scope": "sp", "implemented": true},
+	"zombies": {"scope": "sp", "implemented": true},
+	"mp_tower_defense": {"scope": "mp", "implemented": false},
+	"mp_tdm": {"scope": "mp", "implemented": true},
+	"mp_zombies": {"scope": "mp", "implemented": false},
+	"survival": {"scope": "legacy", "implemented": true},
+	"domination": {"scope": "legacy", "implemented": true},
+	"endless": {"scope": "legacy", "implemented": true},
+	"base_defense": {"scope": "legacy", "implemented": true},
+}
+const SP_MODE_ORDER := ["tower_defense", "tdm", "zombies"]
+const MP_MODE_ORDER := ["mp_tower_defense", "mp_tdm", "mp_zombies"]
+
+## Runtime registration overrides (id -> bool), set by register_mode().
+## Lets a worker flip its mode to implemented without editing this file.
+static var _registry_overrides := {}
+
+
+## Mark a mode implemented / not (see REGISTRY contract above).
+## Returns false for unknown ids (nothing changed).
+static func register_mode(id: String, implemented: bool) -> bool:
+	if not REGISTRY.has(id):
+		return false
+	_registry_overrides[id] = implemented
+	return true
+
+
+## True when the mode has a start path (registry flag or override).
+## Unknown ids are never implemented.
+static func is_implemented(id: String) -> bool:
+	if _registry_overrides.has(id):
+		return bool(_registry_overrides[id])
+	if REGISTRY.has(id):
+		return bool((REGISTRY[id] as Dictionary).get("implemented", false))
+	return false
+
+
+## Scope of a mode ("sp" | "mp" | "legacy", "" when unknown).
+static func mode_scope(id: String) -> String:
+	if REGISTRY.has(id):
+		return str((REGISTRY[id] as Dictionary).get("scope", ""))
+	return ""
+
+
+## Mode ids for one menu, in display order ("sp" | "mp").
+static func modes_for_scope(scope: String) -> Array[String]:
+	if scope == "mp":
+		return MP_MODE_ORDER.duplicate()
+	return SP_MODE_ORDER.duplicate()
+
+
+## Whether the Forge MENU may exist in a run of `mode` (HUD button +
+## Forge menu scene). Forge BUILDING itself is gated by ForgeGate
+## (TD worker): only "tower_defense" passes a live build. The menu
+## still instances for legacy modes (their submits are refused by
+## ForgeGate in a live run) but NEVER for the new non-TD modes —
+## TDM / Zombies / MP must not open Forge building at all.
+static func forge_menu_allowed(mode: String) -> bool:
+	return mode in ["survival", "domination", "endless", "base_defense", "tower_defense", "mp_tower_defense"]
 
 ## Mode metadata for the menu (id -> {name, desc}). Survival first = default.
 const MODES := {
@@ -43,6 +122,30 @@ const MODES := {
 	"base_defense": {
 		"name": "BASE DEFENSE",
 		"desc": "Build phase, then hold the core. Forge is how you survive.",
+	},
+	"tower_defense": {
+		"name": "TOWER DEFENSE",
+		"desc": "Purpose-built TD map: build on the lanes, then defend the core. Forge building lives here — and only here.",
+	},
+	"tdm": {
+		"name": "TEAM DEATHMATCH",
+		"desc": "You + bot squadmates vs a bot squad. First team to 25 kills wins. Pick your loadout + traversal tool first.",
+	},
+	"zombies": {
+		"name": "ZOMBIES",
+		"desc": "Horde survival. Buy doors, perks, Mystery Box, Pack-a-Punch. No Forge — pure gunplay.",
+	},
+	"mp_tower_defense": {
+		"name": "TOWER DEFENSE (MP)",
+		"desc": "Co-op Tower Defense: two players defend the same core. Shared build phase — Forge building lives here, and only here.",
+	},
+	"mp_tdm": {
+		"name": "TEAM DEATHMATCH (MP)",
+		"desc": "PvP Team Deathmatch over LAN / direct IP. Bots fill empty slots (planned).",
+	},
+	"mp_zombies": {
+		"name": "ZOMBIES (MP)",
+		"desc": "Co-op Zombies: own points each, shared doors/perks/box/PAP, cross-peer revives. No Forge.",
 	},
 }
 
@@ -64,6 +167,18 @@ const RESPAWN_DELAY := 3.0
 ## this process; reset to "survival" only by explicit menu choice.
 static var selected_mode: String = "survival"
 
+
+## Static getter for live_mode (verifiers / tools reach statics through
+## script.call(), not get()).
+static func get_live_mode() -> String:
+	return live_mode
+
+## Mode of the LIVE run, tracked for the Forge gate (ForgeGate).
+## Set in start(), cleared in stop() / _exit_tree(). "" = no live run.
+## The Forge gate permits building when no run is live (menus, tools,
+## tests) and allows it in a live run ONLY for "tower_defense".
+static var live_mode: String = ""
+
 # Fixed Dustline points: open ground, clear of the shack footprints in
 # dustline_builder.gd (A north-west plaza, B south-center, C south-east).
 const POINT_DEFS := [
@@ -78,6 +193,17 @@ var domination_score := 0
 var _points: Array = []  # {name, pos, progress, owned, contested, root, mat}
 var _score_frac := 0.0
 var _respawn_t := -1.0
+var _tdm: Node = null  # BotTDM child while a TDM run is live.
+
+
+func _exit_tree() -> void:
+	# quit_to_menu() frees this node WITHOUT calling stop(): clear the
+	# Forge gate's live mode here, or the gate would stay latched on
+	# the dead run's mode and refuse Forge in the menu / next run.
+	# Only clear when this manager owns the live mode (a newer manager
+	# may already have started the next run).
+	if live_mode == mode:
+		live_mode = ""
 
 
 func _ready() -> void:
@@ -88,32 +214,98 @@ func _ready() -> void:
 		Game.wave_cleared.connect(_on_wave_cleared)
 
 
-## Start a run in `m` ("survival" | "domination" | "endless"). Resets the
-## run state (score/wave/budget) and builds objective points for Domination.
-func start(m: String) -> void:
+## Start a run in `m`. Resets the run state (score/wave/budget) and builds
+## objective points for Domination. Returns false (and starts NOTHING)
+## for a known-but-unimplemented mode — the menu shows those as NOT
+## AVAILABLE and never calls start() for them; a direct call must not
+## silently fall back into another mode. Unknown ids still fall back
+## to survival (legacy behaviour).
+func start(m: String) -> bool:
 	if not MODES.has(m):
 		push_warning("GameModeManager: unknown mode '%s', falling back to survival." % m)
 		m = "survival"
+	if not is_implemented(m):
+		push_warning("GameModeManager: mode '%s' is registered but not implemented — not starting." % m)
+		return false
+	if mode_scope(m) == "mp":
+		push_warning("GameModeManager: mode '%s' is multiplayer — it starts through Main._on_mp_start, not GameModeManager." % m)
+		return false
 	mode = m
 	selected_mode = m
+	live_mode = m
 	domination_score = 0
 	_score_frac = 0.0
 	_respawn_t = -1.0
 	Game.reset_run()
 	_clear_points()
 	if mode == "base_defense": add_child(BaseDefenseMode.new())
+	if mode == "tower_defense": add_child(TowerDefenseMode.new())
+	if mode == "zombies":
+		# Same treatment as BotTDM below (TD worker, 2026-10-16): the
+		# Zombies worker's zombies.gd does not parse yet (its own
+		# in-flight errors), so a direct ZombiesMode.new() reference
+		# breaks parsing of this WHOLE file. Load at runtime; when
+		# zombies.gd parses, this behaves identically to
+		# ZombiesMode.new(). Coordinator: remove the guard once
+		# zombies.gd is green in check_scripts.
+		var zombies_script: GDScript = null
+		if ResourceLoader.exists("res://scripts/modes/zombies.gd"):
+			zombies_script = load("res://scripts/modes/zombies.gd") as GDScript
+		if zombies_script == null:
+			push_warning("GameModeManager: ZombiesMode script missing/unparseable — Zombies run starts without zombie logic.")
+		else:
+			add_child(zombies_script.new())
+	if mode == "tdm":
+		# TD worker note (2026-10-16): the TDM worker's BotTDM script
+		# has not landed yet — a direct BotTDM.new() reference breaks
+		# parsing of this WHOLE file (and every file that depends on
+		# GameModeManager). Load it at runtime instead, so a missing
+		# TDM script warns instead of breaking all modes; when the TDM
+		# worker lands scripts/modes/bot_tdm.gd this behaves
+		# identically to BotTDM.new(). Coordinator: confirm the path.
+		var tdm_script: GDScript = null
+		if ResourceLoader.exists("res://scripts/modes/bot_tdm.gd"):
+			tdm_script = load("res://scripts/modes/bot_tdm.gd") as GDScript
+		if tdm_script == null:
+			push_warning("GameModeManager: BotTDM script missing — TDM run starts without bot logic.")
+		else:
+			_tdm = tdm_script.new()
+			add_child(_tdm)
+			if _tdm.has_signal("match_ended") and not _tdm.is_connected("match_ended", _on_tdm_match_ended):
+				_tdm.connect("match_ended", _on_tdm_match_ended)
+			if _tdm.has_method("start"):
+				_tdm.call("start", _active_traversal())
 	if mode == "domination":
 		_build_points()
 	running = true
 	mode_started.emit(mode)
 	_announce("%s" % str(MODES[mode]["name"]),
 		str(MODES[mode]["desc"]).to_upper())
+	return true
+
+
+## The active loadout's traversal choice (TDM runs it). Guarded: no
+## Loadouts autoload (headless / bare tree) -> the default "grapple".
+func _active_traversal() -> String:
+	var lo := get_node_or_null("/root/Loadouts")
+	if lo != null and lo.has_method("get_active_traversal"):
+		return str(lo.call("get_active_traversal"))
+	return "grapple"
+
+
+## BotTDM -> public signal (Main shows the result, then quits to menu).
+func _on_tdm_match_ended(winner_team: int, result: Dictionary) -> void:
+	tdm_match_ended.emit(winner_team, result)
 
 
 ## Stop the run (quit to menu / mode won / endless run over). Points freed.
 func stop() -> void:
 	running = false
+	live_mode = ""
 	_respawn_t = -1.0
+	if _tdm != null and is_instance_valid(_tdm) and _tdm.has_method("stop"):
+		_tdm.call("stop")
+	_tdm = null
 	_clear_points()
 
 
@@ -300,6 +492,8 @@ func _on_player_died() -> void:
 			endless_run_over.emit(score, best, is_new)
 			if is_inside_tree() and get_node_or_null("/root/Progression") != null: get_node_or_null("/root/Progression").report_event("endless_run_over", {"score": score, "best": best, "is_new_best": is_new, "wave": Game.wave})
 			_stop_waves()
+		"tdm":
+			pass  # BotTDM owns player death (attribution + redeploy)
 		_:
 			pass  # survival keeps the shipped KIA behaviour (no respawn)
 
