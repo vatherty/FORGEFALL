@@ -293,15 +293,21 @@ const WEAPONS := {
 }
 #endregion
 
-#region MOD WEAPONS (v0.5.9, Worker B)
+#region MOD WEAPONS (v0.5.9, Worker B; script mods unified v0.5.12)
 ## Installed user weapon-mods as first-class Arsenal entries.
 ## A weapon-mod is a JSON block mod (kind "block") whose block_info has
-## target "weapon" and a base_weapon_id mapping to a base Arsenal id.
-## Script mods are NOT listed: their behaviour lives in ModBlock.apply()
-## code, which Arsenal cannot run — they stay Forge-only (ForgeBuilder
-## runs apply()). A JSON weapon-mod is fully declarative (base stats x
-## multipliers + data hooks + projectile spec), so Arsenal can build it
-## exactly like ForgeBuilder._build_json_mod does for the weapon target.
+## target "weapon" and a base_weapon_id mapping to a base Arsenal id —
+## OR a script mod (kind "script") whose block_info has target
+## "weapon" (v0.5.12: script mods are loadout-compatible too — their
+## behaviour lives in ModBlock.apply() code, which WeaponManager runs
+## through the SAME ForgeBuilder path Forge uses; see
+## ForgeBuilder.build_weapon_mod). A JSON weapon-mod is fully
+## declarative (base stats x multipliers + data hooks + projectile
+## spec), so Arsenal can build it exactly like
+## ForgeBuilder._build_json_mod does for the weapon target. A script
+## mod has NO declarative stats: Arsenal lists it (name/slot) and
+## validates it, but NEVER builds it from stats — make_weapon refuses
+## script mods and WeaponManager routes them to ForgeBuilder.
 ## Canonical id: "mod:<mod_id>" (mod id = the ModLoader record id, i.e.
 ## the mod folder/file name — stable, and never collides with a base id,
 ## which never contains ":"). The id is the persisted form: loadouts
@@ -354,8 +360,9 @@ static func _mod_base_id(rec: Dictionary) -> String:
 
 ## The validated full ModLoader record for a mod-weapon id, or {} when
 ## the id is not a live weapon-mod (unknown / disabled / broken / not a
-## JSON weapon block / no known base). Uses find_mod(..., false) so
-## Arsenal lookups never pollute ModHookRegistry's find-pair history.
+## weapon mod / JSON weapon block with no known base). Uses
+## find_mod(..., false) so Arsenal lookups never pollute
+## ModHookRegistry's find-pair history.
 static func _mod_record(weapon_id: String) -> Dictionary:
 	var mod_id := mod_id_of(weapon_id)
 	if mod_id.is_empty():
@@ -363,12 +370,15 @@ static func _mod_record(weapon_id: String) -> Dictionary:
 	var rec := ModLoader.find_mod(mod_id, false)
 	if rec.is_empty() or not bool(rec.get("enabled", false)) or str(rec.get("error", "")) != "":
 		return {}
-	if str(rec.get("kind", "")) != "block":
-		return {} # script mods stay Forge-only (apply() code)
+	if not (str(rec.get("kind", "")) in ["block", "script"]):
+		return {}
 	var info: Dictionary = rec.get("block_info", {})
 	if str(info.get("target", "")) != "weapon":
 		return {}
-	if _mod_base_id(rec).is_empty():
+	# JSON mods need a known base (Arsenal builds them from base
+	# stats). Script mods need none: apply() decides what weapon it
+	# grants, and WeaponManager routes them through ForgeBuilder.
+	if str(rec.get("kind", "")) == "block" and _mod_base_id(rec).is_empty():
 		return {}
 	return rec
 
@@ -459,12 +469,21 @@ static func _apply_mod_ammo(stats: Dictionary, ammo_type: String) -> void:
 ## for the weapon target: damage_mult, range_mult, mag_mult, then
 ## ammo_type), plus the mod attachment WeaponBase.setup already
 ## understands (mod_id / mod_hooks / mod_projectile_spec). {} when the
-## id is not a live weapon-mod.
+## id is not a live weapon-mod. SCRIPT MODS get a DISPLAY-ONLY dict
+## (weapon_id / name / slot) — a script mod has no declarative stats,
+## and feeding this to make_weapon would build a generic default gun.
+## WeaponManager routes script mods through ForgeBuilder instead, so
+## make_weapon never sees them; get_stats is only ever used for
+## display names (Loadouts picker) on script ids.
 static func _mod_stats(weapon_id: String) -> Dictionary:
 	var rec := _mod_record(weapon_id)
 	if rec.is_empty():
 		return {}
 	var info: Dictionary = rec.get("block_info", {})
+	if str(rec.get("kind", "")) == "script":
+		return {"weapon_id": weapon_id,
+			"name": str(info.get("display_name", rec.get("name", weapon_id))),
+			"slot": "primary"}
 	var base_id := _mod_base_id(rec)
 	var stats := (WEAPONS.get(base_id, {}) as Dictionary).duplicate(true)
 	if stats.is_empty():
@@ -546,7 +565,18 @@ static func has_weapon(weapon_id: String) -> bool:
 ## Build a WeaponBase (or RaptorGun for "raptor" / raptor-based mods)
 ## with stats + viewmodel. Mod stats already carry the mod attachment,
 ## so the built weapon fires with its hooks/projectiles immediately.
+## NEVER called for script-mod ids: WeaponManager routes those through
+## ForgeBuilder.build_weapon_mod. A direct call with a script-mod id
+## warns and returns a default-configured weapon (unreachable in the
+## game; the guard exists so a script mod can never be built from
+## display-only stats as a silent wrong gun).
 static func make_weapon(weapon_id: String) -> WeaponBase:
+	if is_mod_weapon(weapon_id) and str(_mod_record(weapon_id).get("kind", "")) == "script":
+		push_warning("Arsenal.make_weapon: script mod %s must go through ForgeBuilder.build_weapon_mod" % weapon_id)
+		var fallback := WeaponBase.new()
+		fallback.setup((WEAPONS.get("ar7", {}) as Dictionary).duplicate(true))
+		fallback.name = "Weapon_" + weapon_id.replace(":", "_")
+		return fallback
 	var w: WeaponBase
 	if weapon_id == "raptor":
 		w = RaptorGun.new()
