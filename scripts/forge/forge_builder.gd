@@ -242,6 +242,26 @@ static func build(spec: Dictionary, ctx: Dictionary) -> String:
 # declared cost. Failures here are graceful FAIL_PREFIX strings, never
 # crashes: a mod that fails to load / apply refunds via the manager.
 
+## v0.5.12 UNIFIED GIVE PATH: builds an installed weapon-mod for a
+## player through the SAME route Forge uses for a mod_block weapon
+## spec — so Forge ("give me the taquito launcher"), Arsenal, and
+## Loadouts all construct a script-mod weapon identically. JSON mods
+## never come here (Arsenal builds them from stats); this is for
+## SCRIPT mods, whose behaviour lives in ModBlock.apply() code. The
+## script's apply() typically calls api.give_weapon(base, ...) which
+## lands the base weapon on the player's WeaponManager, and the
+## pending-attach pair rule (see ModHookRegistry) attaches the mod's
+## hooks — callers that bypass the ForgeManager gate must call
+## ModLoader.find_mod(mod_id) twice first (WeaponManager does).
+## `slot` is the WeaponManager slot the weapon fills (default
+## "primary"): it rides to the script as params["_slot"] so a
+## script-mod weapon built for a loadout's secondary slot lands in
+## secondary instead of clobbering primary. Returns the builder
+## message (FAIL_PREFIX + reason on failure).
+static func build_weapon_mod(mod_id: String, player: Node3D, root: Node, slot: String = "primary") -> String:
+	return _build_mod_block({"target": "weapon"}, {"mod_block": mod_id, "_slot": slot}, player, root)
+
+
 static func _build_mod_block(spec: Dictionary, params: Dictionary, player: Node3D, root: Node) -> String:
 	var ref := str(params.get("mod_block", ""))
 	var rec := ModLoader.find_mod(ref)
@@ -432,6 +452,12 @@ static func _build_script_mod(rec: Dictionary, spec: Dictionary, params: Diction
 	var api := ModAPI.new(player, root)
 	var call_params := params.duplicate()
 	call_params["_target"] = target
+	# v0.5.12 UNIFIED GIVE PATH: a weapon-mod build for a non-primary
+	# slot (loadout secondary) tells the api which slot give_weapon()
+	# fills, so the script's weapon lands in that slot instead of
+	# clobbering primary. Absent _slot = "primary" (Forge default).
+	if params.has("_slot"):
+		api.set_give_slot(str(params.get("_slot", "primary")))
 	if target in ["cover", "structure", "turret", "pickup"]:
 		call_params["_position"] = snap_to_ground(_resolve_position(params.get("position", "near_player"), player, root), root)
 	else:
