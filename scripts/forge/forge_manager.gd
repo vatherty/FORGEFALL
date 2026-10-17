@@ -353,9 +353,14 @@ func _on_forge_budget_changed(amount: int) -> void:
 
 
 func _build_ctx() -> Dictionary:
+	# v0.5.12: current_scene can be null (headless / tests / a scene in
+	# transition) — the tree root is always a valid build parent.
+	var root := get_tree().current_scene
+	if root == null:
+		root = get_tree().root
 	return {
 		"player": get_tree().get_first_node_in_group("player") as Node3D,
-		"root": get_tree().current_scene,
+		"root": root,
 	}
 
 
@@ -508,6 +513,20 @@ func _validate_spec(spec: Dictionary) -> Array:
 	if not (spec.get("params") is Dictionary):
 		spec["params"] = {}
 	var params: Dictionary = spec["params"]
+	# v0.5.12 UNIFIED FORGE (root cause of Colin's "weapon_id missing"):
+	# a spec referencing an installed mod (params.mod_block) is NOT a
+	# base-catalog spec — the strict gate (validate_modspec) already
+	# validated the reference + target match before this legacy check
+	# runs, and the mod block itself carries the shape/stats. The old
+	# code fell through to the per-target branches below, where the
+	# "weapon" branch demanded a base weapon_id and rejected EVERY
+	# mod_block weapon spec with "weapon_id missing" — so "give me the
+	# taquito launcher" could resolve to the installed mod and still
+	# never build (the COST preview showed the same error). A
+	# mod_block spec passes this legacy check outright; the strict
+	# gate remains the real validator.
+	if params.has("mod_block"):
+		return [true, "ok"]
 	match target:
 		"cover":
 			var shape := str(params.get("shape", "wall"))
