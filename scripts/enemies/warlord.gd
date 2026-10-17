@@ -74,6 +74,10 @@ func _configure() -> void:
 	body_scale = Vector3(1.6, 1.5, 1.65)  # biggest silhouette on the field
 
 
+func behaviour_tags() -> Array:
+	return ["boss", "phases", "summons", "slam_aoe", "flinch_immune", "barrage"]
+
+
 func _debris_colors() -> Array:
 	return [Color(0.5, 0.1, 0.1), Color(1.0, 0.75, 0.15), Color(0.14, 0.15, 0.16)]
 
@@ -200,6 +204,10 @@ func _update_phase() -> void:
 	if p == _phase:
 		return
 	_phase = p
+	# Rework: phase change roars — horn + a brief raised-weapon telegraph
+	# pose (arms up, lamp lit) so the phase shift reads before the summons.
+	Sfx.play_3d("juggernaut_horn", global_position)
+	begin_telegraph(0.5, "roar")
 	var mgr := get_parent()
 	if p == 2:
 		_announce("WARLORD ENRAGED — reinforcements inbound!")
@@ -219,6 +227,7 @@ func _try_slam(_pp: Vector3, dist: float, see: bool) -> bool:
 		return false
 	_slam_cooldown = SLAM_COOLDOWN
 	_slam_t = SLAM_TELEGRAPH_TIME
+	begin_telegraph(SLAM_TELEGRAPH_TIME, "slam")
 	Sfx.play_3d("juggernaut_horn", global_position)
 	_announce("WARLORD SLAM — MOVE!")
 	_set_state(State.SLAM_TELEGRAPH)
@@ -226,6 +235,7 @@ func _try_slam(_pp: Vector3, dist: float, see: bool) -> bool:
 
 
 func _detonate_slam() -> void:
+	trigger_strike()
 	# Visuals (detonate_light: fireball + shake + explosion_small, no damage).
 	if ClassDB.class_exists("ExplosionFX"):
 		ExplosionFX.detonate_light(global_position)
@@ -264,6 +274,7 @@ func _update_burst(delta: float, pp: Vector3, dist: float, see: bool) -> void:
 		_aim_t -= delta
 		if _aim_t <= 0.0:
 			gun_trigger(BURST_COUNT)
+			trigger_strike()
 		return
 	aiming = false
 	_fire_t -= delta
@@ -276,3 +287,4 @@ func _update_burst(delta: float, pp: Vector3, dist: float, see: bool) -> void:
 			_:
 				_fire_t = FIRE_COOLDOWN_P3
 		_aim_t = AIM_TELEGRAPH
+		begin_telegraph(AIM_TELEGRAPH, "aim")
