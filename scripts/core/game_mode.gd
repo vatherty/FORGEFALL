@@ -92,8 +92,8 @@ static func mode_scope(id: String) -> String:
 ## Mode ids for one menu, in display order ("sp" | "mp").
 static func modes_for_scope(scope: String) -> Array[String]:
 	if scope == "mp":
-		return MP_MODE_ORDER.duplicate()
-	return SP_MODE_ORDER.duplicate()
+		return Array(MP_MODE_ORDER, TYPE_STRING, &"", null)
+	return Array(SP_MODE_ORDER, TYPE_STRING, &"", null)
 
 
 ## Whether the Forge MENU may exist in a run of `mode` (HUD button +
