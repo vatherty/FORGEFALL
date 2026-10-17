@@ -38,6 +38,7 @@ func _init() -> void:
 
 
 func _ready() -> void:
+	StencilStyle.install_menu(self)
 	InputBindings.ensure_loaded()
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	_build()
@@ -46,23 +47,15 @@ func _ready() -> void:
 
 
 func _build() -> void:
-	var dim := ColorRect.new()
-	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	dim.color = Color(0.0, 0.0, 0.0, 0.72)
-	add_child(dim)
+	StencilStyle.cinematic_background(self, "armory", 0.18, false)
 
 	var panel := PanelContainer.new()
 	panel.name = "RebindPanel"
-	panel.set_anchors_preset(Control.PRESET_CENTER)
-	var vp := size
-	if vp.x <= 0 or vp.y <= 0:
-		vp = get_viewport().get_visible_rect().size if get_viewport() != null else Vector2(1280, 720)
-	var pw := minf(860.0, vp.x * 0.94)
-	var ph := minf(720.0, vp.y * 0.94)
-	panel.offset_left = -pw / 2.0
-	panel.offset_right = pw / 2.0
-	panel.offset_top = -ph / 2.0
-	panel.offset_bottom = ph / 2.0
+	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	panel.offset_left = 24
+	panel.offset_right = -24
+	panel.offset_top = 24
+	panel.offset_bottom = -24
 	panel.add_theme_stylebox_override("panel", StencilStyle.panel_accent())
 	add_child(panel)
 
@@ -72,14 +65,15 @@ func _build() -> void:
 	var vb := VBoxContainer.new()
 	vb.name = "RebindStack"
 	vb.alignment = BoxContainer.ALIGNMENT_BEGIN
-	vb.add_theme_constant_override("separation", 6)
-	vb.custom_minimum_size = Vector2(maxf(0.0, pw - 28.0), 0.0)
+	vb.add_theme_constant_override("separation", 12)
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(vb)
 
+	StencilStyle.eyebrow(vb, "INPUT CONFIGURATION")
 	var head := Label.new()
-	StencilStyle.apply_title(head, 30, StencilStyle.ORANGE, 4)
+	StencilStyle.apply_title(head, 40, StencilStyle.TEXT, 0)
 	head.text = "CONTROLS"
-	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	vb.add_child(head)
 
 	var pad_lbl := Label.new()
@@ -104,7 +98,7 @@ func _build() -> void:
 	dz.max_value = 0.5
 	dz.step = 0.05
 	dz.value = InputBindings.deadzone
-	dz.custom_minimum_size = Vector2(280, 30)
+	dz.custom_minimum_size = Vector2(0, 30)
 	dz.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	StencilStyle.style_slider(dz)
 	dz.value_changed.connect(_on_deadzone_changed)
