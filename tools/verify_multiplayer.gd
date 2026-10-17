@@ -575,8 +575,8 @@ func _puppet_snap_and_damage() -> void:
 	var st: Dictionary = _shim.call("_gather_local_state")
 	_check((st.get("position", Vector3.ZERO) as Vector3).is_equal_approx(Vector3(5, 1, 5)),
 		"B: shim gathers the local position (5,1,5)")
-	_check(is_equal_approx(float(st.get("health", -1.0)), 90.0),
-		"B: shim gathers local health (90 after a 10-damage hit)")
+	_check(is_equal_approx(float(st.get("health", -1.0)), 115.0),
+		"B: shim gathers local health (115 after a 10-damage hit: fighter max HP is 125, not 100)")
 	_check(is_equal_approx(float(st.get("pitch", -1.0)), 0.25),
 		"B: shim gathers head pitch (0.25)")
 	_check(str(st.get("weapon", "")) == "ar7",
