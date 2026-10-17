@@ -96,6 +96,12 @@ func submit_prompt(text: String) -> void:
 		Sfx.play_2d("forge_fail")
 		forge_result.emit(false, "Forge: empty requisition.")
 		return
+	# Forge gate (Gameplay Rework): building exists ONLY in Tower
+	# Defense. One check here covers the whole prompt pipeline.
+	if not ForgeGate.can_build():
+		Sfx.play_2d("forge_fail")
+		forge_result.emit(false, ForgeGate.BLOCK_MESSAGE)
+		return
 	if _busy:
 		Sfx.play_2d("forge_fail")
 		forge_result.emit(false, "Forge is already fabricating — one requisition at a time.")
@@ -213,6 +219,10 @@ func undo_last() -> Dictionary:
 ## user://mods/ (ForgeSessionMake never does). A failed MAKE records
 ## nothing — the failure message itself is the visible feedback.
 func apply_make(candidate: Dictionary, prompt: String) -> Dictionary:
+	# Forge gate (Gameplay Rework): MAKE builds are builds — TD only.
+	if not ForgeGate.can_build():
+		return {"ok": false, "message": ForgeGate.BLOCK_MESSAGE,
+			"node": null, "target": ""}
 	var ctx := _build_ctx()
 	var result := ForgeSessionMake.apply_candidate(
 		candidate, ctx.get("player") as Node3D, ctx.get("root"))
@@ -310,6 +320,11 @@ func build_from_code(code: String) -> void:
 		Sfx.play_2d("forge_fail")
 		forge_result.emit(false, "Paste a build code first.")
 		return
+	# Forge gate (Gameplay Rework): build codes are builds — TD only.
+	if not ForgeGate.can_build():
+		Sfx.play_2d("forge_fail")
+		forge_result.emit(false, ForgeGate.BLOCK_MESSAGE)
+		return
 	if _busy:
 		Sfx.play_2d("forge_fail")
 		forge_result.emit(false, "Forge is already fabricating — one requisition at a time.")
@@ -334,6 +349,11 @@ func build_from_code(code: String) -> void:
 ## caller supplies the full spec (e.g. a ghost-confirmed position).
 ## Callers do NOT set _busy — this entry owns the busy/cooldown gates.
 func build_spec_direct(spec: Dictionary) -> void:
+	# Forge gate (Gameplay Rework): ghost-confirmed builds are builds.
+	if not ForgeGate.can_build():
+		Sfx.play_2d("forge_fail")
+		forge_result.emit(false, ForgeGate.BLOCK_MESSAGE)
+		return
 	if _busy:
 		Sfx.play_2d("forge_fail")
 		forge_result.emit(false, "Forge is already fabricating — one requisition at a time.")
