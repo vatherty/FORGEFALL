@@ -209,6 +209,20 @@ var last_spawned_position := Vector3.ZERO
 
 var _player: Node3D
 var _root: Node
+## v0.5.12 UNIFIED GIVE PATH: the WeaponManager slot give_weapon()
+## fills ("primary" by default). ForgeBuilder sets this from the
+## build's _slot param when a script-mod weapon is built for a
+## non-primary slot (e.g. a script mod in a loadout's secondary
+## slot) — otherwise every script-mod weapon would land in primary
+## and clobber whatever was there. Scripts never set this themselves;
+## it is build context, not script API.
+var _give_slot := "primary"
+
+
+## Build-context only (ForgeBuilder): the slot give_weapon() fills.
+func set_give_slot(slot: String) -> void:
+	if slot in ["primary", "secondary", "prototype"]:
+		_give_slot = slot
 
 
 func _init(player: Node3D, root: Node) -> void:
@@ -331,6 +345,11 @@ func spawn_turret(position: Vector3, duration_sec: float, damage_mult: float, ra
 ## Gives the player a weapon with optional multipliers + fire mode.
 ## fire_mode: "" (keep base) or "auto"|"semi"|"burst"|"bolt"|"pump".
 ## burst_size: rounds per burst (only with fire_mode "burst", 2-10).
+## The weapon lands in the build's give slot (set_give_slot — "primary"
+## unless a script-mod build targeted another slot). The primary path
+## keeps WeaponManager.give_weapon (with its pending-attach consume);
+## a non-primary slot uses set_slot + an explicit pending-attach on
+## that slot's fresh weapon, so hooks attach identically in both.
 func give_weapon(weapon_id: String, damage_mult: float, range_mult: float, mag_mult: float, fire_mode: String = "", burst_size: int = 0) -> bool:
 	if not _charge_step():
 		return false
@@ -344,28 +363,52 @@ func give_weapon(weapon_id: String, damage_mult: float, range_mult: float, mag_m
 	var arsenal_id := str(ForgeBuilder.FORGE_WEAPON_IDS.get(weapon_id, weapon_id))
 	if not Arsenal.has_weapon(arsenal_id):
 		return false
-	wm.give_weapon(arsenal_id)
+	var fresh: Node = null
+	if _give_slot == "primary":
+		wm.give_weapon(arsenal_id)
+		fresh = _fresh_weapon_child(wm, arsenal_id)
+	else:
+		if not wm.has_method("set_slot") or not wm.has_method("get_slot_weapon"):
+			return false
+		wm.set_slot(_give_slot, arsenal_id)
+		fresh = wm.get_slot_weapon(_give_slot)
+		if fresh != null:
+			ModHookRegistry.try_attach_pending(fresh, arsenal_id)
+	if fresh == null:
+		return false
+	_apply_weapon_tuning(fresh, damage_mult, range_mult, mag_mult, fire_mode, burst_size)
+	return true
+
+
+## Newest live weapon child with this arsenal id (skips the
+## queued-for-free old weapon after set_slot()).
+static func _fresh_weapon_child(wm: Node, arsenal_id: String) -> Node:
 	var kids := wm.get_children()
 	for i in range(kids.size() - 1, -1, -1):
 		var kid := kids[i] as Node
 		if kid == null or kid.is_queued_for_deletion():
 			continue
 		if str(kid.get("weapon_id")) == arsenal_id:
-			if damage_mult != 1.0:
-				kid.set("damage", float(kid.get("damage")) * damage_mult)
-			if range_mult != 1.0:
-				kid.set("near_range", float(kid.get("near_range")) * range_mult)
-				kid.set("far_range", float(kid.get("far_range")) * range_mult)
-			if mag_mult != 1.0:
-				var mag_size := maxi(1, int(round(float(kid.get("mag_size")) * mag_mult)))
-				kid.set("mag_size", mag_size)
-				kid.set("mag", mag_size)
-			if not fire_mode.is_empty():
-				kid.set("fire_mode", WeaponBase.fire_mode_from_string(fire_mode))
-			if burst_size >= 2:
-				kid.set("burst_size", mini(burst_size, 10))
-			break
-	return true
+			return kid
+	return null
+
+
+## In-place tuning of a freshly granted weapon (multipliers + fire
+## mode). Shared by both give slots.
+static func _apply_weapon_tuning(kid: Node, damage_mult: float, range_mult: float, mag_mult: float, fire_mode: String, burst_size: int) -> void:
+	if damage_mult != 1.0:
+		kid.set("damage", float(kid.get("damage")) * damage_mult)
+	if range_mult != 1.0:
+		kid.set("near_range", float(kid.get("near_range")) * range_mult)
+		kid.set("far_range", float(kid.get("far_range")) * range_mult)
+	if mag_mult != 1.0:
+		var mag_size := maxi(1, int(round(float(kid.get("mag_size")) * mag_mult)))
+		kid.set("mag_size", mag_size)
+		kid.set("mag", mag_size)
+	if not fire_mode.is_empty():
+		kid.set("fire_mode", WeaponBase.fire_mode_from_string(fire_mode))
+	if burst_size >= 2:
+		kid.set("burst_size", mini(burst_size, 10))
 
 
 ## A one-shot effect. kind: "explosion" (uses radius + damage), "smoke"
