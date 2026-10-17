@@ -58,9 +58,10 @@ func _process(_delta: float) -> bool:
 			_phase = 2
 		2:
 			# Wall-run, side approach: airborne, fast, moving parallel to the
-			# wall, NO sprint held.
+			# wall, NO sprint held. Entry speed 7.0: above the Gameplay
+			# Rework attach minimum (full walk speed 6.0).
 			_player.position = Vector3(0.0, 2.0, 5.0)
-			_player.velocity = Vector3(0.0, 0.0, -5.0)
+			_player.velocity = Vector3(0.0, 0.0, -7.0)
 			_player.rotation = Vector3.ZERO
 			Input.action_press("move_forward", 1.0)
 			_phase = 3
@@ -78,7 +79,7 @@ func _process(_delta: float) -> bool:
 			# Start just inside the 1.6m forward-ray range so entry is
 			# deterministic (not dependent on physics/process frame ratio).
 			_player.position = Vector3(-1.0, 2.0, 0.0)
-			_player.velocity = Vector3(5.0, 0.0, 0.0)
+			_player.velocity = Vector3(7.0, 0.0, 0.0)
 			_player.rotation = Vector3(0, -PI / 2.0, 0)
 			Input.action_press("move_forward", 1.0)
 			_phase = 4
