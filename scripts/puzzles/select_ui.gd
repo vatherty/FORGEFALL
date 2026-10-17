@@ -7,75 +7,87 @@
 class_name RoomSelect
 extends Control
 
+var _selected_room := ""
+
 
 func _ready() -> void:
+	StencilStyle.install_menu(self)
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	_build()
 
 
 func _build() -> void:
-	var bg := ColorRect.new()
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bg.color = Color(0.02, 0.025, 0.03, 1.0)
-	add_child(bg)
-
-	var title := Label.new()
-	title.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	title.offset_left = -400
-	title.offset_right = 400
-	title.offset_top = 80
-	title.offset_bottom = 150
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.text = "PORTAL CHAMBERS"
-	title.add_theme_font_size_override("font_size", 56)
-	title.add_theme_color_override("font_color", Color(1, 1, 1))
-	add_child(title)
-
-	var sub := Label.new()
-	sub.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	sub.offset_left = -400
-	sub.offset_right = 400
-	sub.offset_top = 155
-	sub.offset_bottom = 190
-	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	sub.text = "White panels take portals. Orange blocks hold plates. Green exits finish rooms."
-	sub.add_theme_font_size_override("font_size", 20)
-	sub.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
-	add_child(sub)
-
-	var buttons := VBoxContainer.new()
-	buttons.set_anchors_preset(Control.PRESET_CENTER)
-	buttons.offset_left = -260
-	buttons.offset_right = 260
-	buttons.offset_top = -140
-	buttons.offset_bottom = 220
-	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
-	buttons.add_theme_constant_override("separation", 14)
-	add_child(buttons)
-
+	StencilStyle.cinematic_background(self, "chambers", 0.08)
+	var margin := MarginContainer.new()
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for edge in ["left", "right", "top", "bottom"]:
+		margin.add_theme_constant_override("margin_" + edge, 48)
+	add_child(margin)
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	margin.add_child(scroll)
+	var content := VBoxContainer.new()
+	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	content.add_theme_constant_override("separation", 24)
+	scroll.add_child(content)
+	StencilStyle.section_header(content, "PORTAL CHAMBERS")
+	var gap := Control.new()
+	gap.custom_minimum_size.y = 24
+	content.add_child(gap)
+	var list := VBoxContainer.new()
+	list.name = "ChamberList"
+	list.custom_minimum_size.x = 430
+	list.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	content.add_child(list)
+	var description := Label.new()
+	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	description.custom_minimum_size.x = 430
+	description.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	StencilStyle.apply_body(description, 18, StencilStyle.TEXT_DIM)
 	var done := CompletionStore.all_done()
-	for r in CompletionStore.ROOMS:
-		var tick := "  ✓" if bool(done.get(str(r["id"]), false)) else ""
-		var b := Button.new()
-		b.text = str(r["title"]) + tick
-		b.custom_minimum_size = Vector2(520, 64)
-		b.add_theme_font_size_override("font_size", 24)
-		var rid: String = str(r["id"])
-		b.pressed.connect(_on_pick.bind(rid))
-		buttons.add_child(b)
-		var desc := Label.new()
-		desc.text = str(r["teaches"])
-		desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		desc.add_theme_font_size_override("font_size", 18)
-		desc.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
-		buttons.add_child(desc)
-
+	_selected_room = str(CompletionStore.ROOMS[0]["id"])
+	description.text = str(CompletionStore.ROOMS[0]["teaches"])
+	for room in CompletionStore.ROOMS:
+		var button := Button.new()
+		button.text = str(room["title"]) + ("  ✓" if bool(done.get(str(room["id"]), false)) else "")
+		button.custom_minimum_size.y = 58
+		button.set_meta("room_id", str(room["id"]))
+		StencilStyle.navigation_button(button, str(room["id"]) == _selected_room)
+		button.pressed.connect(func() -> void:
+			_selected_room = str(room["id"])
+			description.text = str(room["teaches"])
+			for child in list.get_children():
+				StencilStyle.navigation_button(child, child.get_meta("room_id") == _selected_room))
+		list.add_child(button)
+	content.add_child(description)
+	var fill := Control.new()
+	fill.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	content.add_child(fill)
+	var actions := HBoxContainer.new()
+	content.add_child(actions)
 	var back := Button.new()
-	back.text = "BACK"
-	back.custom_minimum_size = Vector2(300, 56)
-	back.add_theme_font_size_override("font_size", 22)
+	back.text = "‹  BACK"
+	back.custom_minimum_size = Vector2(150, 52)
+	StencilStyle.navigation_button(back)
 	back.pressed.connect(_on_back)
-	buttons.add_child(back)
+	actions.add_child(back)
+	var space := Control.new()
+	space.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_child(space)
+	var enter := Button.new()
+	enter.text = "ENTER  ›"
+	enter.custom_minimum_size = Vector2(210, 52)
+	StencilStyle.primary_button(enter)
+	enter.pressed.connect(func() -> void: _on_pick(_selected_room))
+	actions.add_child(enter)
+	InputBindings.grab_first_focus(self)
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("ui_cancel"):
+		get_viewport().set_input_as_handled()
+		_on_back()
 
 
 func _on_pick(id: String) -> void:
