@@ -13,7 +13,7 @@
 # forge_menu change should read via /root/Loadouts instead of adding a
 # second file; it must never invent its own loadouts.json writer.
 #
-# ENTRY SHAPE: {name, primary, secondary, forge_preset}
+# ENTRY SHAPE: {name, primary, secondary, forge_preset, traversal}
 #   primary/secondary: Arsenal weapon ids (validated against Arsenal when
 #     it loads, else the built-in mirror — see ARSENAL COUPLING below).
 #   forge_preset: a Forge menu preset PROMPT string ("" = none). Stored as
@@ -21,6 +21,15 @@
 #     the picker shows the preset's label via get_forge_preset_label().
 #   The active loadout is the one Deploy uses (coordinator wires
 #     Main._wire_player to call apply_active_to(weapon_manager)).
+#   traversal: EXACTLY ONE traversal tool id for the run —
+#     "grapple" | "jetpack" | "portal" (Gameplay Rework: the choice
+#     is part of the loadout in TDM; TD keeps its own pre-run setup in
+#     TowerDefenseSetup). "portal" is canonical (player.gd's
+#     enforcement side); the legacy id "portal_gun" from older saves
+#     migrates to "portal" on sanitize. Invalid / missing values
+#     sanitize to "grapple". The id set matches the TD worker's
+#     landed contract in TowerDefenseSetup.TOOLS; the player applies
+#     it through the movement worker's set_traversal_tool() API.
 #
 # SLOT GATING: additional slots are gated by Progression unlocks, read via
 # get_node_or_null("/root/Progression") + has_method("get_max_loadout_slots").
@@ -44,15 +53,24 @@ const DEFAULT_MAX_SLOTS := 5
 const MAX_NAME_LEN := 24
 const FALLBACK_PRIMARY := "ar7"
 const FALLBACK_SECONDARY := "p9"
+const DEFAULT_TRAVERSAL := "grapple"
+## Traversal tool ids (Gameplay Rework). Mirrors TowerDefenseSetup.TOOLS
+## and player.gd's enforcement ids: "portal", NOT "portal_gun".
+const TRAVERSAL_TOOLS: Array[String] = ["grapple", "jetpack", "portal"]
+const TRAVERSAL_NAMES := {
+	"grapple": "Grapple Hook",
+	"jetpack": "Jetpack",
+	"portal": "Portal Gun",
+}
 
 ## The 5 base presets. Names + weapon ids mirror WeaponManager.LOADOUTS
 ## and forge_menu.gd LOADOUT_PRESETS exactly — keep all three in sync.
 const DEFAULT_LOADOUTS: Array[Dictionary] = [
-	{"name": "Assault", "primary": "ar7", "secondary": "p9", "forge_preset": ""},
-	{"name": "Marksman", "primary": "lr8", "secondary": "p9", "forge_preset": ""},
-	{"name": "Breacher", "primary": "sg12", "secondary": "smg9", "forge_preset": ""},
-	{"name": "Raptor", "primary": "raptor", "secondary": "smg9", "forge_preset": ""},
-	{"name": "Burst", "primary": "br3", "secondary": "hv44", "forge_preset": ""},
+	{"name": "Assault", "primary": "ar7", "secondary": "p9", "forge_preset": "", "traversal": "grapple"},
+	{"name": "Marksman", "primary": "lr8", "secondary": "p9", "forge_preset": "", "traversal": "grapple"},
+	{"name": "Breacher", "primary": "sg12", "secondary": "smg9", "forge_preset": "", "traversal": "grapple"},
+	{"name": "Raptor", "primary": "raptor", "secondary": "smg9", "forge_preset": "", "traversal": "grapple"},
+	{"name": "Burst", "primary": "br3", "secondary": "hv44", "forge_preset": "", "traversal": "grapple"},
 ]
 
 ## Forge preset options: [label, prompt] pairs, mirroring forge_menu.gd
@@ -146,6 +164,33 @@ func get_active_loadout() -> Dictionary:
 	return get_loadout(_active_name)
 
 
+## Traversal tool of the ACTIVE loadout (sanitized; "grapple" when the
+## active entry predates the field). TDM / Main read this at run start.
+## Alias for get_active_traversal(): the TD worker's Main._wire_player
+## block calls get_active_traversal_tool(). Both names return the same
+## value — keep them in sync (this one forwards).
+func get_active_traversal_tool() -> String:
+	return get_active_traversal()
+
+
+func get_active_traversal() -> String:
+	var entry: Dictionary = get_active_loadout()
+	return _sanitize_traversal(str(entry.get("traversal", DEFAULT_TRAVERSAL)))
+
+
+## Traversal options for pickers: [[id, display name], ...] in UI order.
+func get_traversal_options() -> Array[Array]:
+	var out: Array[Array] = []
+	for tool: String in TRAVERSAL_TOOLS:
+		out.append([tool, str(TRAVERSAL_NAMES.get(tool, tool))])
+	return out
+
+
+## Display name for a traversal id ("" when unknown).
+func get_traversal_display_name(tool: String) -> String:
+	return str(TRAVERSAL_NAMES.get(tool, ""))
+
+
 ## Slot cap: Progression unlocks raise it; absent Progression -> default.
 ## Never crashes when Progression is missing.
 func get_max_loadout_slots() -> int:
@@ -231,7 +276,7 @@ func get_forge_preset_label(prompt: String) -> String:
 # ------------------------------------------------------------------ mutations
 ## Creates a loadout. Fails (false) on empty/duplicate name, slot cap, or
 ## unknown weapon ids. New loadouts do NOT become active automatically.
-func create_loadout(loadout_name: String, primary_id: String, secondary_id: String, forge_preset: String = "") -> bool:
+func create_loadout(loadout_name: String, primary_id: String, secondary_id: String, forge_preset: String = "", traversal: String = DEFAULT_TRAVERSAL) -> bool:
 	var clean_name: String = _clean_name(loadout_name)
 	if clean_name.is_empty() or has_loadout(clean_name):
 		return false
@@ -239,7 +284,7 @@ func create_loadout(loadout_name: String, primary_id: String, secondary_id: Stri
 		return false
 	if not _has_weapon(primary_id) or not _has_weapon(secondary_id):
 		return false
-	var entry: Dictionary = {"name": clean_name, "primary": primary_id, "secondary": secondary_id, "forge_preset": forge_preset}
+	var entry: Dictionary = {"name": clean_name, "primary": primary_id, "secondary": secondary_id, "forge_preset": forge_preset, "traversal": _sanitize_traversal(traversal)}
 	_loadouts.append(entry)
 	if _save():
 		loadouts_changed.emit()
@@ -249,7 +294,7 @@ func create_loadout(loadout_name: String, primary_id: String, secondary_id: Stri
 
 
 ## Updates weapons / Forge preset of an existing loadout (name unchanged).
-func update_loadout(loadout_name: String, primary_id: String, secondary_id: String, forge_preset: String = "") -> bool:
+func update_loadout(loadout_name: String, primary_id: String, secondary_id: String, forge_preset: String = "", traversal: String = "") -> bool:
 	if not _has_weapon(primary_id) or not _has_weapon(secondary_id):
 		return false
 	for entry: Dictionary in _loadouts:
@@ -257,6 +302,8 @@ func update_loadout(loadout_name: String, primary_id: String, secondary_id: Stri
 			entry["primary"] = primary_id
 			entry["secondary"] = secondary_id
 			entry["forge_preset"] = forge_preset
+			if not traversal.is_empty():
+				entry["traversal"] = _sanitize_traversal(traversal)
 			if _save():
 				loadouts_changed.emit()
 				return true
@@ -451,8 +498,21 @@ func _sanitize_entry(raw: Variant) -> Dictionary:
 		"primary": primary,
 		"secondary": secondary,
 		"forge_preset": str(d.get("forge_preset", "")),
+		"traversal": _sanitize_traversal(str(d.get("traversal", DEFAULT_TRAVERSAL))),
 	}
 	return out
+
+
+## Traversal ids outside the known three sanitize to the default —
+## except the legacy "portal_gun" id, which migrates to the canonical
+## "portal" so older saves keep their Portal Gun choice instead of
+## silently dropping to grapple.
+func _sanitize_traversal(raw: String) -> String:
+	if raw == "portal_gun":
+		return "portal"
+	if TRAVERSAL_TOOLS.has(raw):
+		return raw
+	return DEFAULT_TRAVERSAL
 
 
 func _save() -> bool:
