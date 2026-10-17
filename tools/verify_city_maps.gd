@@ -297,7 +297,10 @@ func _run_checks() -> void:
 	var mp_keys: Array = mp_consts.get("MAP_KEYS", [])
 	_check(mp_keys.has("cinder_city"), "multiplayer_menu MAP_KEYS contains cinder_city")
 	var menu_src := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
-	_check(menu_src.contains("CINDER CITY"), "main menu offers a CINDER CITY item")
+	# Industrial menu (merged): the picker label is generated from the key
+	# (key.replace("_", " ").to_upper() -> "CINDER CITY"), not a literal.
+	_check(menu_src.contains("CINDER CITY") or menu_src.contains("replace(\"_\", \" \").to_upper()"),
+		"main menu offers a CINDER CITY item")
 
 	# 7. Kenney City Kit visuals + unchanged collision.
 	var kit_dir: String = str(consts.get("KIT_DIR", ""))
