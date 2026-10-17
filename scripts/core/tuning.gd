@@ -225,5 +225,5 @@ const UPDATE_BASE_URL := "https://vatherty.github.io/Forgefall-updates/"
 const UPDATE_TIMEOUT_SEC := 8
 ## Installed version code used when the ForgeUpdater Android plugin is absent
 ## (desktop/editor builds). KEEP IN SYNC with export_presets.cfg version/code.
-const FALLBACK_VERSION_CODE := 39
+const FALLBACK_VERSION_CODE := 40
 #endregion
