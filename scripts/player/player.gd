@@ -31,12 +31,25 @@ const SLIDE_END_SPEED := 2.0      # slide cancels below this
 const SLIDE_MAX_TIME := 2.5
 const SLIDE_HOP := 5.5            # jump-out-of-slide vertical boost
 const WALLRUN_MAX_TIME := 3.0
-const WALLRUN_ENTRY_BOOST := 1.25
-const WALLRUN_MIN_SPEED := 4.0
+# GAMEPLAY REWORK (2026-10-16, Colin's spec): attach ONLY at >= full
+# walking speed AND aimed at the wall OR moving parallel to it.
+# Was WALLRUN_ENTRY_BOOST 1.25 / WALLRUN_MIN_SPEED 4.0.
+# BOOST READING: Colin said "a small speed boost (~50 units)". A literal
+# +50 m/s would be ~4.5x sprint speed — not "small" — so this is read as
+# +50% (x1.5). Flagged for Colin to confirm; the constant is the one knob.
+const WALLRUN_ENTRY_BOOST := 1.5
+const WALLRUN_MIN_SPEED := 6.0  # == WALK_SPEED: full walking speed
+const WALLRUN_AIM_DOT := 0.5  # aimed-at-wall: aim . (-wall_normal) > 0.5
+const WALLRUN_PARALLEL_DOT := 0.7  # moving parallel: |vel_dir . tangent| > 0.7
 const WALLRUN_GRAVITY_SCALE := 0.12
 const WALLRUN_ROLL_DEG := 12.0
 const WALL_JUMP_AWAY := 8.0
-const WALL_JUMP_UP := 6.5
+const WALL_JUMP_UP := 6.5  # FULL wall-jump height (jump HELD)
+# GAMEPLAY REWORK: variable wall-jump height, WALL-JUMP ONLY (ground jump
+# untouched). Tap = small hop: releasing jump early cuts upward velocity to
+# this value. Hold = full WALL_JUMP_UP trajectory. Cut applies only while
+# rising faster than this (see _walljump_cut_armed in _update_jump).
+const WALL_JUMP_TAP_UP := 4.0
 const MAX_HP := 100.0
 const REGEN_DELAY := 5.0
 const REGEN_RATE := 25.0
@@ -66,7 +79,25 @@ const STEP_DISTANCE := 2.2
 const LAND_HARD_SPEED := 10.0
 const HEAD_HEIGHT := 1.6
 const HEAD_CROUCH := 1.05
-const HEAD_SLIDE := 1.25
+# GAMEPLAY REWORK: slide camera was 1.25 — HIGHER than crouch, which is why
+# the slide felt wrong (popping UP when going low). Slide is now the lowest
+# stance: stand 1.6 / crouch 1.05 / slide 0.85. Camera-only: the collision
+# capsule is NOT shrunk (same as crouch today), so a slide does not let the
+# player pass under low gaps — shrinking the capsule is a deferred gameplay
+# change (stuck-risk when the slide ends under a ceiling; needs a headroom
+# check). Colin to verify feel on device.
+const HEAD_SLIDE := 0.85
+# --- JETPACK (Gameplay Rework 2026-10-16: NEW traversal tool) ---
+# Fuel-based thrust, on jump-HOLD while airborne. Tunables live here and
+# are mirrored in Tuning (PLAYER_JETPACK_*). Colin QAs the feel.
+const JETPACK_THRUST_ACCEL := 45.0  # m/s^2 toward max rise speed
+const JETPACK_MAX_RISE := 7.0  # upward velocity cap while thrusting
+const JETPACK_FUEL_MAX := 100.0
+const JETPACK_FUEL_DRAIN := 35.0  # fuel/sec while thrusting (~2.9 s tank)
+const JETPACK_FUEL_REGEN := 25.0  # fuel/sec, grounded only (4 s to refill)
+const JETPACK_MAX_BURN := 2.5  # sec of continuous thrust before the latch
+# cuts thrust until jump is released (or the player lands). Binds before
+# the tank empties, so burn time — not fuel — is the per-burst cap.
 #endregion
 
 #region SIGNALS
@@ -111,6 +142,25 @@ var _step_accum := 0.0
 var _land_offset := 0.0
 var _cam_roll := 0.0
 var _prev_vy := 0.0
+# --- TRAVERSAL TOOL (Gameplay Rework 2026-10-16): exactly ONE of
+# "grapple" / "jetpack" / "portal" / "none" is active per run. The choice
+# is part of the loadout (TDM) / pre-run setup (TD); see
+# set_traversal_tool / set_allowed_traversal_tools. Default "grapple"
+# preserves the pre-rework feel until a menu/loadout worker sets one.
+# Zombies: the Zombies worker calls set_allowed_traversal_tools([]) (or
+# its opt-in toggle list) — the allowed-set mechanism below is what makes
+# traversal tools respect a per-run enabled-set; this file sets no
+# mode-specific default of its own.
+var _traversal_tool := "grapple"
+var _allowed_traversal_tools: Array[String] = ["grapple", "jetpack", "portal"]
+# --- JETPACK state ---
+var _jetpack_fuel := JETPACK_FUEL_MAX
+var _jetpack_burn := 0.0  # continuous thrust this burst (sec)
+var _jetpack_latched := false  # max-burn reached: release jump to reset
+var _jetpack_thrusting := false
+# --- WALL-JUMP variable height: set on a wall-jump, cleared on landing /
+# on any non-wall jump / when the cut fires. Ground jumps never arm it.
+var _walljump_cut_armed := false
 # --- CLASS KIT (v0.5.8): active D&D class id + derived kit state. ---
 var active_class_id := "fighter"
 ## Base ability scores (all 10s — DnDTypes default). The EFFECTIVE block
@@ -345,6 +395,7 @@ func _physics_process(delta: float) -> void:
 	_update_jump()
 	_update_horizontal(delta, wish)
 	_update_gravity(delta)
+	_update_jetpack(delta)
 
 	var pre_vy := velocity.y
 	move_and_slide()
@@ -442,13 +493,21 @@ func _update_wallrun(delta: float, wish: Vector3) -> void:
 	var n := ray.get_collision_normal()
 	if absf(n.y) > 0.35:
 		return
-	# Wall-run entry: redirect momentum along the wall tangent + 10% boost.
+	# GAMEPLAY REWORK attach gate (Colin's spec): speed >= full walk AND
+	# (aimed at the wall OR moving parallel to it). No more attaching at
+	# weird times — e.g. drifting away from a wall, or strafing past it
+	# while looking away, no longer attaches.
+	if not _wallrun_attach_allowed(n):
+		return
+	# Wall-run entry: redirect momentum along the wall tangent + 50% boost
+	# (WALLRUN_ENTRY_BOOST; see the "BOOST READING" note at the const).
 	# The tangent is flipped to match travel direction, so a head-on
 	# (forward-ray) entry runs along the wall the way the player was moving.
 	_wallrunning = true
 	_wall_side = side
 	_wall_normal = n
 	_wallrun_time = 0.0
+	_walljump_cut_armed = false
 	# Goal 2: wall-run scrape — a 2.8 s ONE-SHOT fired once on entry.
 	# Deliberately not a loop (wall runs last <= 3 s, so the sample
 	# covers the whole run and there is no stop path to leak).
@@ -463,6 +522,29 @@ func _update_wallrun(delta: float, wish: Vector3) -> void:
 	# Level entry (v0.6.0): a jump's upward velocity must NOT survive into
 	# the run — was maxf(velocity.y, 1.0), which sent the player climbing.
 	velocity.y = 0.0
+
+
+## Wall-run attach gate (Gameplay Rework, Colin's spec): speed >= full
+## walking speed (WALLRUN_MIN_SPEED, checked by the caller) AND the player
+## is aimed at the wall OR moving parallel to it.
+## - Aimed: camera aim (horizontal) points against the wall normal by more
+##   than WALLRUN_AIM_DOT — i.e. within ~60 deg of straight at the wall.
+## - Parallel: horizontal velocity direction runs along the wall tangent
+##   (|vel_dir . tangent| > WALLRUN_PARALLEL_DOT, within ~45 deg).
+## Uses VELOCITY (actual movement), not wish/input, for the parallel test.
+func _wallrun_attach_allowed(n: Vector3) -> bool:
+	if Vector2(velocity.x, velocity.z).length() < WALLRUN_MIN_SPEED:
+		return false
+	var hv := Vector3(velocity.x, 0.0, velocity.z).normalized()
+	var tangent := n.cross(Vector3.UP).normalized()
+	if absf(hv.dot(tangent)) > WALLRUN_PARALLEL_DOT:
+		return true
+	var aim := -camera.global_transform.basis.z
+	aim.y = 0.0
+	if aim.length() < 0.001:
+		return false
+	aim = aim.normalized()
+	return aim.dot(-n) > WALLRUN_AIM_DOT
 
 
 func _wall_ray_for_side() -> RayCast3D:
@@ -486,6 +568,10 @@ func _end_wallrun() -> void:
 
 
 func _update_grapple_input() -> void:
+	# Traversal-tool gate: the grapple only fires when it is the chosen
+	# tool. Grapple itself is untouched (Colin: "starting to feel right").
+	if _traversal_tool != "grapple":
+		return
 	if Input.is_action_just_pressed("grapple"):
 		if grapple.fire():
 			_end_wallrun()
@@ -494,6 +580,10 @@ func _update_grapple_input() -> void:
 
 
 func _update_portal_input() -> void:
+	# Traversal-tool gate: portals only fire when the portal gun is the
+	# chosen tool.
+	if _traversal_tool != "portal":
+		return
 	if Input.is_action_just_pressed("portal_blue"):
 		portal_emitter.fire_blue()
 	elif Input.is_action_just_pressed("portal_orange"):
@@ -501,6 +591,17 @@ func _update_portal_input() -> void:
 
 
 func _update_jump() -> void:
+	# WALL-JUMP variable height (wall-jump ONLY): releasing jump while
+	# still rising faster than the tap value cuts the rise to the tap
+	# value — tap = small hop, hold = full jump. Ground jumps never arm
+	# this (only the wall-jump branch below sets the flag), and landing
+	# disarms it, so ground jump feel is byte-for-byte unchanged.
+	if _walljump_cut_armed:
+		if is_on_floor():
+			_walljump_cut_armed = false
+		elif Input.is_action_just_released("jump") and velocity.y > WALL_JUMP_TAP_UP:
+			velocity.y = WALL_JUMP_TAP_UP
+			_walljump_cut_armed = false
 	if _jump_buf <= 0.0:
 		return
 	if _wallrunning:
@@ -510,6 +611,7 @@ func _update_jump() -> void:
 		_can_wallrun = false
 		_jump_buf = 0.0
 		_just_jumped = true
+		_walljump_cut_armed = true
 		return
 	if grapple.is_active():
 		grapple.release()  # release keeps momentum; jump below may still fire via coyote
@@ -520,12 +622,14 @@ func _update_jump() -> void:
 		_sliding = false
 		_jump_buf = 0.0
 		_just_jumped = true
+		_walljump_cut_armed = false
 	elif is_on_floor() or _coyote > 0.0:
 		velocity.y = JUMP_VELOCITY * class_jump_mult()
 		_coyote = 0.0
 		_jump_buf = 0.0
 		_sliding = false
 		_just_jumped = true
+		_walljump_cut_armed = false
 
 
 func _update_horizontal(delta: float, wish: Vector3) -> void:
@@ -595,6 +699,110 @@ func _update_gravity(delta: float) -> void:
 		gs = grapple.get_gravity_scale()
 	if not is_on_floor():
 		velocity.y -= GRAVITY * gs * delta
+
+
+# ------------------------------------------------------------------ JETPACK
+# Fuel-based thrust on jump-HOLD while airborne. Runs AFTER gravity so
+# thrust is the final word on vertical velocity each tick. Never fires
+# while wall-running (the run owns vertical), grappled, grounded, or
+# when another traversal tool is selected. Fuel refills grounded-only;
+# the burn latch caps each continuous burst at JETPACK_MAX_BURN.
+func _update_jetpack(delta: float) -> void:
+	_jetpack_thrusting = false
+	if _traversal_tool != "jetpack":
+		return
+	if is_on_floor():
+		_jetpack_burn = 0.0
+		_jetpack_latched = false
+		if _jetpack_fuel < JETPACK_FUEL_MAX:
+			_jetpack_fuel = minf(_jetpack_fuel + JETPACK_FUEL_REGEN * delta, JETPACK_FUEL_MAX)
+		return
+	if _wallrunning or grapple.is_active():
+		return
+	if _jetpack_latched:
+		# Latch clears when jump is released (or on landing, above).
+		if not Input.is_action_pressed("jump"):
+			_jetpack_latched = false
+		return
+	if not Input.is_action_pressed("jump"):
+		return
+	if _jetpack_fuel <= 0.0:
+		return
+	_jetpack_thrusting = true
+	velocity.y = move_toward(velocity.y, JETPACK_MAX_RISE, JETPACK_THRUST_ACCEL * delta)
+	_jetpack_fuel = maxf(_jetpack_fuel - JETPACK_FUEL_DRAIN * delta, 0.0)
+	_jetpack_burn += delta
+	if _jetpack_burn >= JETPACK_MAX_BURN:
+		_jetpack_latched = true
+
+
+# ------------------------------------------------------------------ TRAVERSAL TOOL SELECTION
+# Contract for the menu / loadout workers (TDM loadout, TD pre-run setup,
+# Zombies opt-in toggle):
+#   player.set_traversal_tool("jetpack")  -> true; only that tool is live.
+#   player.set_traversal_tool("bogus")    -> false, selection unchanged.
+#   player.get_traversal_tool()           -> "grapple" | "jetpack" | "portal" | "none"
+#   player.set_allowed_traversal_tools(["portal"])  -> per-run enabled set;
+#     a current selection outside the set falls back to "none".
+#   Zombies: set_allowed_traversal_tools([]) = NO tools (default). The
+#     opt-in toggle passes the toggled list instead.
+#   Loadouts (canonical): the Loadouts store exposes
+#     get_active_traversal() -> String; Main._wire_player applies it via
+#     _apply_traversal_to_player() (allowed-set first, then selection).
+# Switching away from the grapple releases it (no dangling rope).
+const TRAVERSAL_TOOLS: Array[String] = ["grapple", "jetpack", "portal", "none"]
+
+
+func get_traversal_tool() -> String:
+	return _traversal_tool
+
+
+func set_traversal_tool(tool: String) -> bool:
+	if not TRAVERSAL_TOOLS.has(tool):
+		return false
+	if tool != "none" and not _allowed_traversal_tools.has(tool):
+		return false
+	if tool != _traversal_tool:
+		if grapple != null and is_instance_valid(grapple):
+			grapple.release()
+		_traversal_tool = tool
+		# A fresh tool starts with a clean jetpack state.
+		_jetpack_burn = 0.0
+		_jetpack_latched = false
+	return true
+
+
+func get_allowed_traversal_tools() -> Array[String]:
+	return _allowed_traversal_tools.duplicate()
+
+
+func is_traversal_tool_allowed(tool: String) -> bool:
+	if tool == "none":
+		return true
+	return _allowed_traversal_tools.has(tool)
+
+
+func set_allowed_traversal_tools(tools: Array) -> void:
+	var cleaned: Array[String] = []
+	for t: Variant in tools:
+		var s := str(t)
+		if s != "none" and TRAVERSAL_TOOLS.has(s) and not cleaned.has(s):
+			cleaned.append(s)
+	_allowed_traversal_tools = cleaned
+	if _traversal_tool != "none" and not _allowed_traversal_tools.has(_traversal_tool):
+		if grapple != null and is_instance_valid(grapple):
+			grapple.release()
+		_traversal_tool = "none"
+
+
+## Jetpack fuel 0..1 (HUD worker reads this for the fuel bar).
+func get_jetpack_fuel_frac() -> float:
+	return clampf(_jetpack_fuel / JETPACK_FUEL_MAX, 0.0, 1.0)
+
+
+## True while the jetpack is actively thrusting this tick.
+func is_jetpack_thrusting() -> bool:
+	return _jetpack_thrusting
 
 
 func _update_landing(pre_vy: float) -> void:
@@ -752,6 +960,10 @@ func _die() -> void:
 	_dead = true
 	_sliding = false
 	_end_wallrun()
+	_walljump_cut_armed = false
+	_jetpack_thrusting = false
+	_jetpack_burn = 0.0
+	_jetpack_latched = false
 	if _ads:
 		_ads = false
 		ads_changed.emit(false)
@@ -787,6 +999,11 @@ func respawn(pos: Vector3) -> void:
 	_sprinting = false
 	_end_wallrun()
 	_can_wallrun = true
+	_walljump_cut_armed = false
+	_jetpack_fuel = JETPACK_FUEL_MAX
+	_jetpack_burn = 0.0
+	_jetpack_latched = false
+	_jetpack_thrusting = false
 	grapple.release()
 	_land_offset = 0.0
 	_cam_roll = 0.0
