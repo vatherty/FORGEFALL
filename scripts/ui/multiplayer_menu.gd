@@ -59,12 +59,12 @@ const MAX_NAME_LEN := 16
 
 ## Map keys MUST mirror Main.MAPS in scripts/core/main.gd (Main is not a
 ## class_name, so the menu cannot read it directly — keep in sync).
-const MAP_KEYS := ["dustline", "foundry", "outpost"]
-## Mode keys: net matches are TDM-only in v0.9.3 (NetMatch supports only
-## "tdm"; co-op deferred — needs a NetworkEnemy layer). The picker offers
-## just TEAM DEATHMATCH so the lobby can never select a mode the match
-## layer refuses.
-const MODE_KEYS := ["tdm"]
+const MAP_KEYS := ["dustline", "foundry", "outpost", "cinder_city", "tower_defense"]
+## Mode keys: the three MP modes (MP worker). Main._on_mp_start routes
+## each to its real start path (co-op TD / PvP TDM + bots / co-op
+## Zombies); the registry (GameModeManager) marks all three implemented.
+const MODE_KEYS := ["mp_tower_defense", "mp_tdm", "mp_zombies"]
+const MODE_LABELS := ["TOWER DEFENSE (CO-OP)", "TEAM DEATHMATCH", "ZOMBIES (CO-OP)"]
 
 const STATE_BROWSE := "browse"
 const STATE_LOBBY := "lobby"
@@ -143,6 +143,15 @@ func get_selected_mode() -> String:
 	if _mode_select == null:
 		return MODE_KEYS[0]
 	return MODE_KEYS[clampi(_mode_select.selected, 0, MODE_KEYS.size() - 1)]
+
+
+## Pre-select the mode picker (Main passes the mode the player chose
+## in the main menu's MP select). Unknown ids are ignored.
+func set_selected_mode(mode_id: String) -> void:
+	var idx := MODE_KEYS.find(mode_id)
+	if idx >= 0 and _mode_select != null:
+		_mode_select.selected = idx
+		_save_last_choices()
 
 
 func get_player_name() -> String:
@@ -287,7 +296,8 @@ func _build_host_panel(parent: Control) -> void:
 	mode_label.custom_minimum_size = Vector2(90, 0)
 	mode_row.add_child(mode_label)
 	_mode_select = OptionButton.new()
-	_mode_select.add_item("TEAM DEATHMATCH")
+	for label in MODE_LABELS:
+		_mode_select.add_item(label)
 	StencilStyle.style_button(_mode_select)
 	_mode_select.item_selected.connect(func(_i: int) -> void: _save_last_choices())
 	mode_row.add_child(_mode_select)
