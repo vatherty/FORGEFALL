@@ -83,8 +83,10 @@ func _process(_delta: float) -> bool:
 			if _frames < 5:
 				return false
 			# --- Wall-run setup: airborne, fast, beside the wall. ---
+			# Entry speed 7.0: above the Gameplay Rework attach minimum
+			# (full walk speed 6.0).
 			_player.position = Vector3(0.0, 2.0, 5.0)
-			_player.velocity = Vector3(0.0, 0.0, -5.0)
+			_player.velocity = Vector3(0.0, 0.0, -7.0)
 			_player.rotation = Vector3.ZERO
 			_player.call("_end_wallrun")
 			Input.action_press("move_forward", 1.0)
