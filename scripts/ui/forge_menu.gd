@@ -684,16 +684,20 @@ func open() -> void:
 	_refresh_class_tab()
 	_refresh_placed()
 	_update_preview()
-	# v0.5.1 FIX 6: NEVER grab focus on open — grabbing focus pops the
-	# phone keyboard and routes WASD into the LineEdit. Re-assert
-	# FOCUS_CLICK (in case anything reset it) and release any focus the
-	# viewport currently holds, so no control has keyboard focus after open.
+	# v0.5.1 FIX 6 (kept): NEVER focus a LineEdit on open — grabbing
+	# LineEdit focus pops the phone keyboard and routes WASD into the
+	# prompt field. Re-assert FOCUS_CLICK (in case anything reset it).
+	# v0.6.1: focus the TAB BAR instead (a text field would pop the
+	# keyboard; the TabContainer itself is FOCUS_NONE, so its TabBar —
+	# the focusable tab strip — takes focus). No keyboard pops, no keys
+	# route into an edit field, and a gamepad player gets D-pad tab
+	# switching + Confirm with no mouse. Without any focus owner,
+	# controller nav in the Forge menu is dead.
 	_prompt_input.focus_mode = Control.FOCUS_CLICK
-	var vp := get_viewport()
-	if vp != null:
-		var focused := vp.gui_get_focus_owner()
-		if focused != null:
-			focused.release_focus()
+	if _tabs != null:
+		var tab_bar := _tabs.get_tab_bar()
+		if tab_bar != null:
+			tab_bar.grab_focus()
 	_play("ui_click")
 
 
