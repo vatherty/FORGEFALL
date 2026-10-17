@@ -5,7 +5,12 @@
 #      target viewports, font floor (>= 10px), margins ~2% of viewport,
 #      monotonic growth with resolution, degenerate-input guard.
 #   2. Per viewport in [720x1600, 1080x2400, 1440x3200, 1920x1200]:
-#      - Forge menu panel rect == viewport minus the 2% scaled margin.
+#      - Forge menu panel rect == viewport minus the 2% scaled margin
+#        (cinematic: on wide viewports >= 1100 the panel keeps a 27%
+#        right margin so the match/scenery stays visible).
+#      - Forge title / tile / prompt sizes follow the cinematic
+#        contract (max(32, menu_font(44)) title, fixed 104px tile
+#        buttons, menu_font(20) prompt) instead of raw UiScale.
 #      - All overlapping HUD elements hidden while the menu is open.
 #      - Touch layer hidden while the menu is open.
 #      - No menu content clipped: every visible control is within the
@@ -269,7 +274,10 @@ func _check_open_state() -> void:
 		_check(false, "%s: menu _panel exists" % tag)
 		return
 	var m := UiScale.panel_margin(vp)
-	var want := Rect2(m.x, m.y, vp.x - 2.0 * m.x, vp.y - 2.0 * m.y)
+	# Cinematic Forge: narrow viewports keep the 2% full-screen
+	# margins; wide viewports (>= 1100) keep a 27% right margin.
+	var right := maxf(m.x, vp.x * 0.27) if vp.x >= 1100 else m.x
+	var want := Rect2(m.x, m.y, vp.x - m.x - right, vp.y - 2.0 * m.y)
 	var got := panel.get_global_rect()
 	_check(absf(got.position.x - want.position.x) <= TOL
 			and absf(got.position.y - want.position.y) <= TOL
@@ -297,10 +305,13 @@ func _check_open_state() -> void:
 		"%s: touch layer hidden while menu open" % tag)
 	# Menu/HUD sizes match UiScale at this viewport.
 	var title := _menu.get("_title_label") as Label
+	# Cinematic Forge title: max(32, menu_font(44)) — large display
+	# type with a readability floor, not UiScale(26).
+	var want_title := maxi(32, StencilStyle.menu_font(44.0, vp))
 	_check(title != null and title.get_theme_font_size("font_size")
-			== UiScale.scaled_font(26.0, vp),
-		"%s: menu title font == UiScale(26) = %d (got %d)" % [tag,
-			UiScale.scaled_font(26.0, vp),
+			== want_title,
+		"%s: menu title font == cinematic max(32, menu_font(44)) = %d (got %d)" % [tag,
+			want_title,
 			title.get_theme_font_size("font_size") if title != null else -1])
 	var confirm := _menu.get("_confirm_button") as Button
 	_check(confirm != null and absf(confirm.custom_minimum_size.y
@@ -309,16 +320,22 @@ func _check_open_state() -> void:
 			UiScale.scaled_size(56.0, vp),
 			confirm.custom_minimum_size.y if confirm != null else -1.0])
 	var preset := (_menu.get("_menu_buttons") as Array)[0] as Button
+	# Cinematic Forge: tile preset buttons are fixed 104px tiles;
+	# non-tile preset buttons keep the UiScale(64) height.
+	var want_preset := 104.0 if preset != null and preset.has_meta("forge_tile") else UiScale.scaled_size(64.0, vp)
 	_check(preset != null and absf(preset.custom_minimum_size.y
-			- UiScale.scaled_size(64.0, vp)) <= 1.0,
-		"%s: preset button min height == UiScale(64) = %.1f (got %.1f)" % [tag,
-			UiScale.scaled_size(64.0, vp),
+			- want_preset) <= 1.0,
+		"%s: preset button min height == %.1f (got %.1f)" % [tag,
+			want_preset,
 			preset.custom_minimum_size.y if preset != null else -1.0])
 	var prompt := _menu.get("_prompt_input") as LineEdit
+	# Cinematic Forge prompt: StencilStyle.menu_font(20) — a 20px
+	# readability floor — not raw UiScale(20).
+	var want_prompt := StencilStyle.menu_font(20.0, vp)
 	_check(prompt != null and prompt.get_theme_font_size("font_size")
-			== UiScale.scaled_font(20.0, vp),
-		"%s: prompt input font == UiScale(20) = %d" % [tag,
-			UiScale.scaled_font(20.0, vp)])
+			== want_prompt,
+		"%s: prompt input font == menu_font(20) = %d" % [tag,
+			want_prompt])
 	var ammo := _hud.get("_ammo_label") as Label
 	_check(ammo != null and ammo.get_theme_font_size("font_size")
 			== UiScale.scaled_font(56.0, vp),
