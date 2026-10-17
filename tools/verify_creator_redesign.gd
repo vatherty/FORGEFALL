@@ -423,8 +423,7 @@ func _run_menu_structure_checks() -> void:
 		_skip("D(B): creator menu tabs", "main menu did not instantiate headless")
 		return
 	var btn := _find_named(_main_menu, "CreateAModButton") as Button
-	# Industrial menu prefixes nav labels with a glyph ("+   CREATE A MOD").
-	_check(btn != null and btn.text.contains("CREATE A MOD"),
+	_check(btn != null and btn.text.ends_with("CREATE A MOD"),
 		"D(B): main menu has a CREATE A MOD button (text 'CREATE A MOD')")
 	_check(_press("CreateAModButton", _main_menu), "D(B): CREATE A MOD button press emits")
 	_creator_menu = _find_named(_main_menu, "ModCreatorMenu") as Control
