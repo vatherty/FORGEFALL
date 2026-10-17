@@ -718,6 +718,14 @@ func _make_triangle_mesh(s: float) -> ArrayMesh:
 
 
 func _build_forge() -> void:
+	# Gameplay Rework: Forge building exists ONLY in Tower Defense.
+	# The Forge button + panel are not built at all for the new
+	# non-TD modes (TDM / Zombies / MP / puzzles) — ForgeGate would
+	# refuse their builds anyway, and Main never instances the Forge
+	# menu for them. Legacy modes keep the button (ForgeGate refuses
+	# their live submits per the TD worker's gate).
+	if not GameModeManager.forge_menu_allowed(GameModeManager.selected_mode):
+		return
 	_forge_btn = Button.new()
 	_forge_btn.text = "FORGE"
 	_forge_btn.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
@@ -1494,10 +1502,17 @@ func _forge_ui_open() -> bool:
 		var m := menus[0] as Control
 		if m != null:
 			return m.visible
+	# No Forge panel in this mode (see _build_forge) -> nothing open.
+	if _forge_panel == null:
+		return false
 	return _forge_panel.visible
 
 
 func _toggle_forge() -> void:
+	# No Forge button in this mode (see _build_forge) -> no-op, never
+	# a null deref from the forge_console action or the touch layer.
+	if _forge_btn == null:
+		return
 	_play(SFX_UI)
 	# v0.5.1: never auto-focus the prompt — grabbing focus pops the phone
 	# keyboard on open. The keyboard appears ONLY when the user taps the
@@ -1506,6 +1521,17 @@ func _toggle_forge() -> void:
 
 
 func _open_forge(open: bool, focus_input: bool = false) -> void:
+	# Forge gate (Gameplay Rework): building exists ONLY in Tower
+	# Defense. Refuse + announce instead of opening (the menu's own
+	# open() and the ForgeManager pipeline enforce the same gate).
+	if open and not ForgeGate.can_build():
+		_forge_open = false
+		announce("FORGE LOCKED", ForgeGate.BLOCK_MESSAGE.to_upper())
+		return
+	# No Forge panel in this mode (see _build_forge) -> refuse quietly
+	# (close path with nothing built must not null-deref below).
+	if _forge_panel == null:
+		return
 	_forge_open = open
 	# Windows mouse capture: menu open -> VISIBLE + erase mouse bindings
 	# (menu clicks can't fire); menu closed -> re-capture + restore
