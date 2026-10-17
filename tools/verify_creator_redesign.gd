@@ -1,6 +1,6 @@
 # verify_creator_redesign.gd — headless checks for Worker D (Mod Creator redesign):
 # main-menu CREATE A MOD button, standalone creator menu (CREATE / MODS /
-# IMPORT-EXPORT placeholder), structured form, voxel asset generator + cache,
+# IMPORT/EXPORT real tab), structured form, voxel asset generator + cache,
 # sandbox test room, old in-Forge create panel removal, watermelon-LMG E2E.
 # Usage: godot --headless --path <project> --script res://tools/verify_creator_redesign.gd
 # Tests NEVER call the real DeepSeek API: ModCreator.mock_generation is armed
@@ -58,6 +58,20 @@ func _skip(label: String, reason: String) -> void:
 func _call_script(script: GDScript, method: String, args: Array) -> Variant:
 	if script == null:
 		return null
+	# Poisoned-cache guard: when this suite runs via --script, the
+	# engine's early compile pass can fail on autoload identifiers
+	# (e.g. Sfx) and cache a BROKEN copy of Sfx-dependent scripts
+	# (forge_builder.gd) — a later callv then fails with "Method not
+	# found" even though the code is fine (proven by a clean probe).
+	# Re-load with CACHE_MODE_REPLACE so the copy we call was
+	# compiled AFTER autoloads registered. Instances created from
+	# the old copy (e.g. the creator menu) keep working — this only
+	# affects the handle used for this call.
+	if not script.resource_path.is_empty():
+		var fresh := ResourceLoader.load(script.resource_path, "GDScript",
+			ResourceLoader.CACHE_MODE_REPLACE) as GDScript
+		if fresh != null:
+			script = fresh
 	var is_static := true
 	var found := false
 	for m in script.get_script_method_list():
@@ -443,13 +457,23 @@ func _run_menu_structure_checks() -> void:
 			"D(C): categories are MULTI-CHOICE (Weapon + Effect both selected)")
 	else:
 		_check(false, "D(C): categories are MULTI-CHOICE (Weapon + Effect both selected)")
-	# IMPORT/EXPORT: placeholder, disabled, no functionality.
-	_check(_find_named(_creator_menu, "ImportExportNote") != null,
-		"D(B): IMPORT/EXPORT tab has a placeholder note")
+	# IMPORT/EXPORT: REAL since v0.5.10 (mod sharing) — no placeholder
+	# note, both buttons enabled. (verify_mod_sharing covers the
+	# full Export/Import flow; here we assert the tab is live.)
+	_check(_find_named(_creator_menu, "ImportExportNote") == null,
+		"D(B): IMPORT/EXPORT tab has NO placeholder note (tab is real)")
 	var ib := _find_named(_creator_menu, "ImportButton") as Button
 	var eb := _find_named(_creator_menu, "ExportButton") as Button
-	_check(ib != null and ib.disabled and eb != null and eb.disabled,
-		"D(B): IMPORT/EXPORT buttons exist but are DISABLED (placeholder only, no functionality)")
+	# Import is always live; Export disables only when the export
+	# picker is empty (no installed mods) — correct empty-state, not
+	# a placeholder. The real widgets (HowTo + picker + code field)
+	# prove the tab is wired.
+	_check(ib != null and not ib.disabled,
+		"D(B): IMPORT button exists and is ENABLED (real tab)")
+	_check(eb != null and _find_named(_creator_menu, "ExportPicker") != null \
+			and _find_named(_creator_menu, "ImportExportHowTo") != null \
+			and _find_named(_creator_menu, "ExportCode") != null,
+		"D(B): EXPORT button + picker + HowTo + code field exist (real tab, no placeholder)")
 	# MODS tab: same-list widgets.
 	_check(_find_named(_creator_menu, "ModsList") != null and _find_named(_creator_menu, "ModsRescanButton") != null,
 		"D(B): MODS tab has the installed-mods list + Rescan (ModLoader data)")
@@ -527,6 +551,11 @@ func _run_install_checks() -> void:
 	var row := _find_named(_creator_menu, "ModRow_watermelon_lmg")
 	_check(row != null, "D E2E: installed mod appears in the creator menu MODS tab (same list)")
 	# The mod WORKS through the existing validated path: Forge builds from it.
+	# NOTE: the --script early-compile pass can cache a BROKEN
+	# forge_builder (Sfx autoload not yet registered at that point);
+	# force a fresh compile here — the builder has no live instances
+	# in this suite, so reload() is safe.
+	_builder_script.reload()
 	var ctx := {"player": null, "root": _arena}
 	var before := _arena.get_child_count()
 	var msg: String = str(_call_script(_builder_script, "build", [
