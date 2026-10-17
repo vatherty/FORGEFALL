@@ -2905,7 +2905,7 @@ Exclusions (never pushed): builds/, updates/, .godot/, staging dirs, *.apk/*.zip
 
 ## v0.5.11 source sync
 
-Synced local source tree to `vatherty/FORGEFALL` main via contents API (diff by git blob SHA). Uploaded 15 files, deleted 0.
+Synced local source tree to `vatherty/FORGEFALL` main via contents API (diff by git blob SHA). Uploaded 14 files, deleted 0 (BUILD_LOG.md uploaded once more after this section was appended).
 Changed set: v0.5.11 burst + chain fix — `mod_loader.gd`, `mod_hook.gd`, `mod_api.gd`, `mod_creator.gd`, `mod_projectile.gd`, `forge_llm.gd`, `forge_builder.gd`, `weapon_base.gd`, `arsenal.gd`, `verify_burst_chain.gd` + `.uid` (new), `tuning.gd` (FALLBACK 37), `export_presets.cfg` (sanitized copy uploaded: keystore passwords blanked as `<redacted>` placeholders, version 0.5.11 / code 37, Windows export_path → v0.5.11), `verify_updater_pc.gd` (manifest expectations 0.5.11 / code 37), `BUILD_LOG.md` (this entry + publish details).
 Exclusions (never pushed): builds/, updates/, .godot/, staging dirs, *.apk/*.zip/*.pck/*.keystore/*.import/*.pyc, top-level android/ only (NOT scripts/android/ — top-level exclusions at depth 0 only), any credentials. Zero-diff verified after sync: 445 local files == 445 repo blobs, all blob SHAs match. No keystore/secrets/binaries landed.
 
@@ -2941,6 +2941,6 @@ Exclusions (never pushed): builds/, updates/, .godot/, staging dirs, *.apk/*.zip
 
 ## v0.5.12 source sync
 
-Synced local source tree to `vatherty/FORGEFALL` main via contents API (diff by git blob SHA). Uploaded 15 files, deleted 0.
+Synced local source tree to `vatherty/FORGEFALL` main via contents API (diff by git blob SHA). Uploaded 14 files, deleted 0 (BUILD_LOG.md uploaded once more after this section was appended).
 Changed set: v0.5.12 unified Forge — `forge_manager.gd` (legacy check accepts mod_block specs), `forge_llm.gd` (longest-match mod resolution), `forge_builder.gd` (build_weapon_mod single give path), `forge_menu.gd` (one box, MAKE status+history only), `mod_api.gd` (give-slot threading, give_weapon false-on-no-fresh-weapon), `arsenal.gd` + `weapon_manager.gd` (script mods in Loadouts), `verify_forge_unified.gd` + `.uid` (new, 45/45), `verify_invented_hooks.gd` (MAKE-section title assertion updated to the intentional v0.5.12 title), `tuning.gd` (FALLBACK 38), `export_presets.cfg` (sanitized copy uploaded: keystore passwords blanked as `<redacted>` placeholders, version 0.5.12 / code 38, Windows export_path → v0.5.12), `verify_updater_pc.gd` (manifest expectations 0.5.12 / code 38), `BUILD_LOG.md` (this entry + publish details).
 Exclusions (never pushed): builds/, updates/, .godot/, staging dirs, *.apk/*.zip/*.pck/*.keystore/*.import/*.pyc, top-level android/ only (NOT scripts/android/ — top-level exclusions at depth 0 only), any credentials. Zero-diff verified after sync: 447 local files == 447 repo blobs, all blob SHAs match. No keystore/secrets/binaries landed.
