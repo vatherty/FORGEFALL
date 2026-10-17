@@ -259,6 +259,15 @@ func _check_no_code_exec() -> void:
 			# comments describing the no-code rule — neither executes.
 			if stripped.begins_with("#") or stripped.contains("_FORBIDDEN"):
 				continue
+			# Session-MAKE exception (v0.5.9 MAKE parity, deliberate):
+			# forge_session_make.gd — and ONLY that file — may compile
+			# a session hook in memory (GDScript.new + reload) for the
+			# MAKER's own in-session MAKE build. The code is never
+			# persisted, never written to user://mods/, and peers never
+			# auto-run it. eval/Expression/OS.* stay forbidden there too.
+			if fname == "forge_session_make.gd" and (
+					stripped.contains("GDScript.new") or stripped.contains("reload(")):
+				continue
 			for pat in bad_patterns:
 				if line.contains(pat):
 					# Static resource preloads/loads of res:// literals are
@@ -270,4 +279,4 @@ func _check_no_code_exec() -> void:
 					hits += 1
 					printerr("FAIL: no-exec: %s contains '%s' in: %s"
 						% [fname, pat, stripped])
-	_check(hits == 0, "no-exec: no eval/Expression/OS.execute/dynamic-load in scripts/forge/*")
+	_check(hits == 0, "no-exec: no eval/Expression/OS.execute/dynamic-load in scripts/forge/* (session-MAKE in-memory compile in forge_session_make.gd only is the documented v0.5.9 exception)")
