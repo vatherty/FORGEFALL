@@ -1,34 +1,5 @@
-# scripts/ui/main_menu.gd
-# FORGEFALL — main menu (Worker 6: HUD/UI).
-# Dark military menu: stencil FORGEFALL title, voxel-cube motif strip,
-# SINGLE PLAYER / MULTIPLAYER / LOADOUTS (persistent loadout picker, Goal 6) /
-# OPTIONS / QUIT. Options: sensitivity, master + music volume, gyro toggle
-# (stub), quality -> viewport scale.
-# LAYOUT (Deck screenshot fix): ONE vertical flow — a VBoxContainer inside
-# a ScrollContainer. No fixed overlapping offsets: every row gets its own
-# band from the container, so rows can never overlap at any resolution.
-# _layout_stack() (also on resize) sizes the stack to at least the viewport
-# so the spacers center the menu + pin the footer; if content is taller
-# than the viewport, the stack grows to content height and the menu
-# scrolls instead of colliding. (Previously the centered buttons box had a
-# fixed 300px anchor rect but ~590px of content, so it overflowed into
-# the tagline above and the footer below — the footer text
-# "…Colin's playtest build" landed on top of the LOADOUT button.)
-# Settings persist to user://forge_settings.cfg (NOT the DeepSeek config).
-#
-# Gameplay Rework (menu + TDM worker): the menu is a START MENU with
-# two top entries — SINGLE PLAYER and MULTIPLAYER — each opening a
-# MODE SELECT (SP: Tower Defense / TDM / Zombies; MP: the multiplayer
-# versions). Mode entries route through the GameModeManager REGISTRY
-# (GameModeManager.modes_for_scope / is_implemented): an entry whose
-# implementation has not landed shows NOT AVAILABLE (disabled, never
-# a crash, never a silent fallback). TDM's row shows the active
-# loadout (weapons + exactly-one traversal tool) with a CHANGE
-# LOADOUT button into the shared loadout picker. TD's START opens the
-# TD worker's TowerDefenseSetup overlay; CONFIRM starts the TD run.
-# The old DEPLOY + legacy MODE selector (survival/domination/endless)
-# are gone: legacy modes still run via Main.start_game() for the
-# integration suites, but the menu no longer offers them.
+# FORGEFALL menus: industrial home, mode cards, and mission deployment.
+# Containers own all sizing; short/narrow screens scroll instead of overlapping.
 extends Control
 
 const SETTINGS_PATH := "user://forge_settings.cfg"
@@ -62,6 +33,19 @@ var _scroll: ScrollContainer
 var _stack: VBoxContainer
 var _title_label: Label
 var _menu_buttons: Array[Button] = []
+var _title_fall: Label
+var _selected_mode := "tdm"
+var _deploy_panel: PanelContainer
+var _deploy_columns: GridContainer
+var _deploy_title: Label
+var _deploy_desc: Label
+var _deploy_loadout: Button
+var _deploy_tool: OptionButton
+var _deploy_status: Label
+var _deploy_mode: OptionButton
+var _deploy_preview_label: Label
+var _deploy_preview: TextureRect
+const DEPLOY_TOOLS := ["grapple", "jetpack", "portal", "none"]
 
 
 func _notification(what: int) -> void:
@@ -75,36 +59,24 @@ func _notification(what: int) -> void:
 ## the title + button heights to the viewport so the stack fits short
 ## screens (Deck 1280x800) without scrolling.
 func _layout_stack() -> void:
-	if _stack == null or _title_label == null:
+	if _title_label == null:
 		return
-	var vp := size
-	if vp.x <= 0 or vp.y <= 0:
-		return
-	# Forge batch: 8 menu buttons + header rows overflow 800px-tall
-	# screens (measured stack min 827 at 1280x800). Buttons are
-	# floored at 56px by the theme, so the win comes from the title
-	# + stack gaps: shrink the title and drop gaps on short screens.
-	var title_factor := 0.095 if vp.y >= 900 else 0.075
-	var title_px := clampi(int(minf(vp.y * title_factor, vp.x * 0.12)), 48, 110)
-	StencilStyle.apply_title(_title_label, title_px, StencilStyle.TEXT, 10)
-	# Button custom-min below the 56px theme floor is a no-op (the
-	# theme min wins); 56 documents the real floor on short screens.
-	var btn_h := 64 if vp.y >= 900 else 56
-	# Forge batch: 8 menu buttons (CREATE A MOD added). Tighten further
-	# on short screens so the stack fits 800px-tall viewports again
-	# (separation 0 on short screens saves 16px of gaps).
-	_stack.add_theme_constant_override("separation", 5 if vp.y >= 900 else 0)
-	for b in _menu_buttons:
-		b.custom_minimum_size.y = btn_h
-	_stack.custom_minimum_size = Vector2.ZERO
-	var content_min := _stack.get_minimum_size()
-	_stack.custom_minimum_size = Vector2(maxf(vp.x, content_min.x), maxf(vp.y, content_min.y))
+	var title_size := clampi(int(size.x * 0.065), 48, 88)
+	_title_label.add_theme_font_size_override("font_size", title_size)
+	_title_fall.add_theme_font_size_override("font_size", title_size)
 	_size_options_panel()
+	if _mode_overlay_rows != null and _mode_overlay_rows.get_child_count() > 0:
+		var grid := _mode_overlay_rows.get_child(0) as GridContainer
+		if grid != null:
+			grid.columns = 3 if size.x >= 900 else 1
+	if _deploy_columns != null:
+		_deploy_columns.columns = 2 if size.x >= 900 else 1
 
 
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	InputBindings.ensure_loaded()
+	TowerDefenseSetup.load_selection()
 	_build()
 	_load_settings()
 	_hook_updater()
@@ -153,178 +125,134 @@ func _on_check_updates() -> void:
 
 
 func _build() -> void:
-	var bg := ColorRect.new()
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bg.color = Color(0.02, 0.025, 0.03, 1.0)
-	add_child(bg)
-
-	# Root layout: ONE vertical flow inside a ScrollContainer (see header).
+	var art := _art()
+	art.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(art)
+	var shade := ColorRect.new()
+	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	shade.color = Color(0.02, 0.03, 0.04, 0.25)
+	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(shade)
 	_scroll = ScrollContainer.new()
 	_scroll.name = "MenuScroll"
-	_scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_scroll.mouse_filter = Control.MOUSE_FILTER_PASS
+	_scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	add_child(_scroll)
+	var margin := MarginContainer.new()
+	margin.name = "MainMargin"
+	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	for edge in ["left", "right", "top", "bottom"]:
+		margin.add_theme_constant_override("margin_" + edge, 36)
+	_scroll.add_child(margin)
 	_stack = VBoxContainer.new()
 	_stack.name = "MenuStack"
-	_stack.alignment = BoxContainer.ALIGNMENT_CENTER
-	_stack.add_theme_constant_override("separation", 5)
-	_scroll.add_child(_stack)
-
-	# Spacer pair: splits free space above/below the content, so the menu
-	# centers vertically on tall screens and the footer pins to the bottom.
-	# Zero height when content exceeds the viewport (menu scrolls instead).
-	var spacer_top := Control.new()
-	spacer_top.name = "SpacerTop"
-	spacer_top.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_stack.add_child(spacer_top)
-
-	# Voxel-cube motif: a strip of chunky squares, orange on gunmetal.
-	var motif := HBoxContainer.new()
-	motif.name = "Motif"
-	motif.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	motif.alignment = BoxContainer.ALIGNMENT_CENTER
-	motif.add_theme_constant_override("separation", 6)
-	motif.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_stack.add_child(motif)
-	var cols := [
-		Color(0.23, 0.25, 0.27), Color(0.23, 0.25, 0.27), Color(1.0, 0.48, 0.11),
-		Color(0.23, 0.25, 0.27), Color(0.35, 0.30, 0.20), Color(1.0, 0.48, 0.11),
-		Color(0.23, 0.25, 0.27), Color(0.23, 0.25, 0.27), Color(1.0, 0.48, 0.11),
-		Color(0.23, 0.25, 0.27),
-	]
-	for c in cols:
-		var q := ColorRect.new()
-		q.custom_minimum_size = Vector2(44, 44)
-		q.color = c
-		q.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		motif.add_child(q)
-
-	_title_label = Label.new()
+	_stack.add_theme_constant_override("separation", 10)
+	margin.add_child(_stack)
+	_stack.add_child(_label("■   FORGE INDUSTRIAL  /  PROVING GROUND", 14, StencilStyle.ORANGE))
+	var title_row := HBoxContainer.new()
+	title_row.add_theme_constant_override("separation", 0)
+	_stack.add_child(title_row)
+	_title_label = _label("FORGE", 72)
 	_title_label.name = "Title"
-	_title_label.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_title_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_title_label.text = "FORGEFALL"
-	StencilStyle.apply_title(_title_label, 110, StencilStyle.TEXT, 10)
-	_stack.add_child(_title_label)
-
-	var sub := Label.new()
-	sub.name = "Tagline"
-	sub.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	StencilStyle.apply_body(sub, 24, StencilStyle.ORANGE, 5)
-	sub.text = "PROVING GROUND // BUILD. FIGHT. SURVIVE."
-	_stack.add_child(sub)
-
-	# Map selector (Goal 3, Worker A): minimal row reusing the menu button
-	# style. Selection flows to Main.set_selected_map() immediately, so
-	# DEPLOY loads the chosen map; it also persists via _save_settings().
-	var map_row := HBoxContainer.new()
-	map_row.name = "MapRow"
-	map_row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	map_row.add_theme_constant_override("separation", 12)
-	map_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	_stack.add_child(map_row)
-	var map_label := Label.new()
-	StencilStyle.apply_body(map_label, 20, StencilStyle.TEXT, 2)
-	map_label.text = "MAP"
-	map_row.add_child(map_label)
-	_map_select = OptionButton.new()
-	_map_select.add_item("DUSTLINE", 0)
-	_map_select.add_item("FOUNDRY", 1)
-	_map_select.add_item("OUTPOST", 2)
-	_map_select.add_item("CINDER CITY", 3)
-	_map_select.add_item("TOWER DEFENSE", 4)
-	_map_select.add_item("FACTORY", 5)
-	_map_select.selected = 0
-	StencilStyle.style_button(_map_select)
-	_map_select.item_selected.connect(_on_map_selected)
-	map_row.add_child(_map_select)
-
-	# Gameplay Rework: the two top entries. SINGLE PLAYER opens the SP
-	# mode select (Tower Defense / TDM / Zombies); MULTIPLAYER opens
-	# the MP mode select (the multiplayer versions).
-	var single_player := _menu_button("SINGLE PLAYER")
-	single_player.name = "SinglePlayerButton"
-	single_player.pressed.connect(_on_single_player)
-	_stack.add_child(single_player)
-	_menu_buttons.append(single_player)
-	var multiplayer := _menu_button("MULTIPLAYER")
-	multiplayer.name = "MultiplayerButton"
-	multiplayer.pressed.connect(_on_multiplayer)
-	_stack.add_child(multiplayer)
-	_menu_buttons.append(multiplayer)
-	# Goal 5 Worker B: puzzle-room entry (chambers are portal puzzles,
-	# not combat maps). Wiring for THIS button only; menu otherwise untouched.
-	var puzzles := _menu_button("PUZZLE CHAMBERS")
-	puzzles.name = "PuzzlesButton"
-	puzzles.pressed.connect(_on_puzzles)
-	_stack.add_child(puzzles)
-	_menu_buttons.append(puzzles)
-	# Goal 6 PROGRESSION (Worker B): LOADOUTS opens the persistent
-	# loadout picker (a self-contained overlay scene). The picker owns
-	# its own layout; this button only instantiates it and frees it
-	# when it closes. No placeholder state remains anywhere.
-	var loadouts := _menu_button("LOADOUTS")
-	loadouts.name = "LoadoutButton"
-	loadouts.pressed.connect(_on_loadouts)
-	_stack.add_child(loadouts)
-	_menu_buttons.append(loadouts)
-	# Goal 6 PROGRESSION (coordinator): STATS opens the persistent
-	# stats screen (a self-contained overlay scene, like the picker).
-	var stats := _menu_button("STATS")
-	stats.name = "StatsButton"
-	stats.pressed.connect(_on_stats)
-	_stack.add_child(stats)
-	_menu_buttons.append(stats)
-	# CREATE A MOD (Forge batch, Worker D): opens the standalone Mod
-	# Creator menu — CREATE / MODS / IMPORT-EXPORT tabs. This button is
-	# the menu's only addition to main_menu.gd.
-	var create_mod := _menu_button("CREATE A MOD")
-	create_mod.name = "CreateAModButton"
-	create_mod.pressed.connect(_on_create_mod)
-	_stack.add_child(create_mod)
-	_menu_buttons.append(create_mod)
-	var options := _menu_button("OPTIONS")
-	options.name = "OptionsButton"
-	options.pressed.connect(_on_options)
-	_stack.add_child(options)
-	_menu_buttons.append(options)
-	var quit := _menu_button("QUIT")
-	quit.name = "QuitButton"
-	quit.pressed.connect(_on_quit)
-	_stack.add_child(quit)
-	_menu_buttons.append(quit)
-
-	var spacer_bottom := Control.new()
-	spacer_bottom.name = "SpacerBottom"
-	spacer_bottom.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_stack.add_child(spacer_bottom)
-
-	var footer := Label.new()
+	title_row.add_child(_title_label)
+	_title_fall = _label("FALL", 72, StencilStyle.ORANGE)
+	title_row.add_child(_title_fall)
+	var tagline := _label("BUILD. FIGHT. SURVIVE.", 15, Color(0.75, 0.78, 0.8))
+	tagline.name = "Tagline"
+	_stack.add_child(tagline)
+	var gap := Control.new()
+	gap.custom_minimum_size.y = 16
+	_stack.add_child(gap)
+	var entries := [
+		["SinglePlayerButton", "▸   PLAY", _on_single_player],
+		["MultiplayerButton", "⇄   MULTIPLAYER", _on_multiplayer],
+		["LoadoutButton", "▣   LOADOUTS", _on_loadouts],
+		["CreateAModButton", "+   CREATE A MOD", _on_create_mod],
+		["PuzzlesButton", "◇   PUZZLE CHAMBERS", _on_puzzles],
+		["StatsButton", "≡   STATS", _on_stats],
+		["OptionsButton", "⚙   SETTINGS", _on_options],
+		["QuitButton", "↳   QUIT", _on_quit],
+	]
+	for entry in entries:
+		var b := _menu_button(entry[1])
+		b.name = entry[0]
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		b.pressed.connect(entry[2])
+		if _menu_buttons.is_empty():
+			_paint_button(b, StencilStyle.ORANGE, true)
+		_stack.add_child(b)
+		_menu_buttons.append(b)
+	var spacer := Control.new()
+	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_stack.add_child(spacer)
+	var footer := _label("A  SELECT     B  BACK     /     FORGEFALL", 14, Color(0.7, 0.74, 0.77))
 	footer.name = "Footer"
-	footer.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	footer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	StencilStyle.apply_body(footer, 16, StencilStyle.TEXT_DIM, 2)
-	# No hardcoded version here — it went stale at v0.1 and would again.
-	footer.text = "FORGEFALL — Colin's playtest build"
-	footer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_stack.add_child(footer)
-
 	_build_options()
 	_build_mode_overlay()
+	_build_deploy()
 	_layout_stack()
+
+
+func _label(text: String, px: int = 20, color: Color = StencilStyle.TEXT) -> Label:
+	var l := Label.new()
+	l.text = text
+	if px >= 22:
+		l.add_theme_font_override("font", preload("res://assets/ui/fonts/BarlowCondensed-Bold.ttf"))
+	l.add_theme_font_size_override("font_size", px)
+	l.add_theme_color_override("font_color", color)
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return l
+
+
+func _art() -> TextureRect:
+	var t := TextureRect.new()
+	t.texture = preload("res://assets/ui/industrial_backdrop.png")
+	t.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	t.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	t.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return t
+
+
+func _paint_button(b: Button, accent: Color = StencilStyle.ORANGE, solid: bool = false) -> void:
+	var normal := StencilStyle.panel(accent if solid else Color(0.055, 0.07, 0.085, 0.96), Color(0.25, 0.3, 0.34), 0)
+	var hover := StencilStyle.panel(accent, accent, 2)
+	b.add_theme_stylebox_override("normal", normal)
+	b.add_theme_stylebox_override("hover", hover)
+	b.add_theme_stylebox_override("pressed", hover)
+	var focus := StencilStyle.panel(Color(0, 0, 0, 0), accent, 3)
+	b.add_theme_stylebox_override("focus", focus)
+	b.add_theme_color_override("font_hover_color", Color(0.03, 0.05, 0.07))
+	b.add_theme_color_override("font_color", Color(0.03, 0.05, 0.07) if solid else StencilStyle.TEXT)
+	b.add_theme_color_override("font_focus_color", StencilStyle.TEXT)
+
+
+func _screen(name_: String, color: Color) -> PanelContainer:
+	var panel := PanelContainer.new()
+	panel.name = name_
+	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var style := StencilStyle.panel(color, color, 0)
+	style.content_margin_left = 32
+	style.content_margin_right = 32
+	style.content_margin_top = 28
+	style.content_margin_bottom = 28
+	panel.add_theme_stylebox_override("panel", style)
+	panel.visible = false
+	add_child(panel)
+	return panel
 
 
 func _menu_button(text: String) -> Button:
 	var b := Button.new()
 	b.text = text
-	b.custom_minimum_size = Vector2(380, 64)
-	# SHRINK_CENTER: menu buttons stay 380 wide and centered. Without
-	# this the default FILL flag stretches them to the full stack width.
+	b.custom_minimum_size = Vector2(340, 52)
 	b.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	StencilStyle.style_button(b)
-	b.add_theme_font_size_override("font_size", 26)
+	b.add_theme_font_override("font", preload("res://assets/ui/fonts/BarlowCondensed-Bold.ttf"))
+	b.add_theme_font_size_override("font_size", 24)
+	_paint_button(b)
 	return b
 
 
@@ -358,9 +286,11 @@ func _build_options() -> void:
 	add_child(_options_panel)
 	var opt_scroll := ScrollContainer.new()
 	opt_scroll.name = "OptionsScroll"
+	opt_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_options_panel.add_child(opt_scroll)
 	var vb := VBoxContainer.new()
 	vb.name = "OptionsStack"
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vb.alignment = BoxContainer.ALIGNMENT_CENTER
 	vb.add_theme_constant_override("separation", 10)
 	opt_scroll.add_child(vb)
@@ -565,151 +495,143 @@ func _on_td_setup_confirmed(_tool: String) -> void:
 # silent fallback into another mode.
 
 func _build_mode_overlay() -> void:
-	_mode_overlay = PanelContainer.new()
-	_mode_overlay.name = "ModeSelectOverlay"
-	_mode_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_mode_overlay.add_theme_stylebox_override("panel", StencilStyle.panel_accent())
-	_mode_overlay.visible = false
-	add_child(_mode_overlay)
+	_mode_overlay = _screen("ModeSelectOverlay", Color("101f2c"))
 	var scroll := ScrollContainer.new()
 	scroll.name = "ModeSelectScroll"
-	scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_mode_overlay.add_child(scroll)
 	var root := VBoxContainer.new()
 	root.name = "ModeSelectRoot"
-	root.alignment = BoxContainer.ALIGNMENT_CENTER
-	root.add_theme_constant_override("separation", 10)
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_theme_constant_override("separation", 20)
 	scroll.add_child(root)
-	var title := Label.new()
+	root.add_child(_label("■   FIELD TERMINAL  /  SELECT YOUR OPERATION", 14, Color("27d9ef")))
+	var title := _label("SINGLE PLAYER", 40)
 	title.name = "ModeSelectTitle"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	StencilStyle.apply_title(title, 36, StencilStyle.ORANGE, 4)
 	root.add_child(title)
-	var sub := Label.new()
-	sub.name = "ModeSelectSubtitle"
-	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	StencilStyle.apply_body(sub, 18, StencilStyle.TEXT_DIM, 2)
-	sub.text = "CHOOSE A MODE"
-	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	root.add_child(sub)
 	_mode_overlay_rows = VBoxContainer.new()
 	_mode_overlay_rows.name = "ModeRows"
-	_mode_overlay_rows.add_theme_constant_override("separation", 12)
+	_mode_overlay_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_mode_overlay_rows.add_theme_constant_override("separation", 16)
 	root.add_child(_mode_overlay_rows)
-	_mode_status_label = Label.new()
-	_mode_status_label.name = "ModeStatus"
-	_mode_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_mode_status_label = _label("", 18, StencilStyle.ORANGE)
 	_mode_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	StencilStyle.apply_body(_mode_status_label, 18, StencilStyle.ORANGE, 2)
 	root.add_child(_mode_status_label)
-	var back := _menu_button("BACK")
+	var spacer := Control.new()
+	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_child(spacer)
+	var actions := HBoxContainer.new()
+	root.add_child(actions)
+	var back := _menu_button("‹  BACK")
 	back.name = "ModeBackButton"
+	back.custom_minimum_size.x = 150
 	back.pressed.connect(_close_mode_select)
-	root.add_child(back)
+	actions.add_child(back)
+	var fill := Control.new()
+	fill.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_child(fill)
+	var next := _menu_button("CONTINUE  ›")
+	next.name = "ModeContinueButton"
+	next.custom_minimum_size.x = 220
+	_paint_button(next, Color("27d9ef"), true)
+	next.pressed.connect(func() -> void: _on_mode_start_pressed(_selected_mode))
+	actions.add_child(next)
 
 
 func _open_mode_select(scope: String) -> void:
 	_mode_overlay_scope = scope
-	if _mode_overlay == null:
-		_build_mode_overlay()
-	# MP worker: flip the MP modes to implemented through the
-	# registry (MPModes.ensure_registered) so the MP select reads
-	# AVAILABLE as soon as the implementations exist. Runtime load
-	# (never a bare MPModes reference): this file must parse before
-	# the new script lands in the class cache.
 	var mp_script := load("res://scripts/net/mp_modes.gd") as GDScript
 	if mp_script != null:
 		mp_script.call("ensure_registered")
-	var title := _mode_overlay.get_node_or_null("ModeSelectScroll/ModeSelectRoot/ModeSelectTitle") as Label
-	if title != null:
-		title.text = "SINGLE PLAYER" if scope == "sp" else "MULTIPLAYER"
-	if _mode_status_label != null:
-		_mode_status_label.text = ""
+	var title := _mode_overlay.get_node("ModeSelectScroll/ModeSelectRoot/ModeSelectTitle") as Label
+	title.text = "SINGLE PLAYER" if scope == "sp" else "MULTIPLAYER"
+	_mode_status_label.text = ""
+	_selected_mode = "tdm" if scope == "sp" else "mp_tdm"
 	_rebuild_mode_rows()
+	_scroll.visible = false
 	_mode_overlay.visible = true
-	InputBindings.grab_first_focus(_mode_overlay)
+	var selected := _mode_overlay_rows.find_child("ModeStart_" + _selected_mode, true, false) as Button
+	if selected != null:
+		selected.grab_focus()
 
 
 func _close_mode_select() -> void:
 	_click()
-	if _mode_overlay != null:
-		_mode_overlay.visible = false
+	_mode_overlay.visible = false
+	_scroll.visible = true
 	_focus_menu_button("MultiplayerButton" if _mode_overlay_scope == "mp" else "SinglePlayerButton")
 
 
 func _rebuild_mode_rows() -> void:
-	if _mode_overlay_rows == null:
-		return
 	for child in _mode_overlay_rows.get_children():
 		_mode_overlay_rows.remove_child(child)
 		child.queue_free()
-	for mode_id in GameModeManager.modes_for_scope(_mode_overlay_scope):
-		_mode_overlay_rows.add_child(_build_mode_row(mode_id))
+	var grid := GridContainer.new()
+	grid.name = "ModeCards"
+	grid.columns = 3 if size.x >= 900 else 1
+	grid.add_theme_constant_override("h_separation", 16)
+	grid.add_theme_constant_override("v_separation", 16)
+	_mode_overlay_rows.add_child(grid)
+	var mode_ids := GameModeManager.modes_for_scope(_mode_overlay_scope)
+	var first := "tdm" if _mode_overlay_scope == "sp" else "mp_tdm"
+	if first in mode_ids:
+		mode_ids.erase(first)
+		mode_ids.push_front(first)
+	for mode_id in mode_ids:
+		grid.add_child(_build_mode_row(mode_id))
+
+
+func _select_mode(mode_id: String) -> void:
+	_selected_mode = mode_id
+	_rebuild_mode_rows()
+	var selected := _mode_overlay_rows.find_child("ModeStart_" + mode_id, true, false) as Button
+	if selected != null:
+		selected.grab_focus()
 
 
 func _build_mode_row(mode_id: String) -> Control:
-	var wrap := VBoxContainer.new()
-	wrap.name = "ModeRow_" + mode_id
-	wrap.add_theme_constant_override("separation", 4)
-	var row := HBoxContainer.new()
-	row.name = "ModeRowInner_" + mode_id
-	row.add_theme_constant_override("separation", 12)
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	wrap.add_child(row)
-	var name_lbl := Label.new()
-	name_lbl.name = "ModeName_" + mode_id
-	name_lbl.text = str(GameModeManager.MODES[mode_id]["name"])
-	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	StencilStyle.apply_body(name_lbl, 22, StencilStyle.TEXT, 2)
-	row.add_child(name_lbl)
-	var implemented := GameModeManager.is_implemented(mode_id)
-	var status := Label.new()
-	status.name = "ModeStatus_" + mode_id
-	status.text = "AVAILABLE" if implemented else "NOT AVAILABLE"
-	StencilStyle.apply_body(status, 18, StencilStyle.GREEN if implemented else StencilStyle.TEXT_DIM, 2)
-	row.add_child(status)
-	var btn := Button.new()
-	btn.name = "ModeStart_" + mode_id
-	if not implemented:
-		btn.text = "NOT AVAILABLE"
-		btn.disabled = true
-		btn.tooltip_text = "This mode's implementation has not landed yet."
-	elif mode_id == "tdm":
-		btn.text = "START MATCH"
-	else:
-		btn.text = "START"
-	StencilStyle.style_button(btn)
-	btn.add_theme_font_size_override("font_size", 20)
-	btn.custom_minimum_size = Vector2(220, 54)
-	btn.pressed.connect(_on_mode_start_pressed.bind(mode_id))
-	row.add_child(btn)
-	var desc := Label.new()
+	var card := PanelContainer.new()
+	card.name = "ModeRow_" + mode_id
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var accent := Color("27d9ef") if mode_id == _selected_mode else Color("405263")
+	card.add_theme_stylebox_override("panel", StencilStyle.panel(Color("162b3b"), accent, 2))
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 12)
+	card.add_child(vb)
+	var preview_key := "factory"
+	if "tower" in mode_id:
+		preview_key = "tower_defense"
+	elif "zombies" in mode_id:
+		preview_key = "zombies_flat"
+	var art := _map_art(preview_key)
+	art.custom_minimum_size = Vector2(0, 145)
+	vb.add_child(art)
+	var title := _label(str(GameModeManager.MODES[mode_id]["name"]), 22)
+	title.name = "ModeName_" + mode_id
+	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(title)
+	var short_desc := "Your squad against enemy bots."
+	if "tower" in mode_id:
+		short_desc = "Build on the lanes, then defend the core."
+	elif "zombies" in mode_id:
+		short_desc = "Horde survival. Buy doors, perks, and weapons."
+	var desc := _label(short_desc, 16, Color("b3c6d4"))
 	desc.name = "ModeDesc_" + mode_id
-	desc.text = str(GameModeManager.MODES[mode_id]["desc"])
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	StencilStyle.apply_body(desc, 17, StencilStyle.TEXT_DIM, 2)
-	wrap.add_child(desc)
-	if _mode_overlay_scope == "sp" and mode_id == "tdm":
-		var lrow := HBoxContainer.new()
-		lrow.name = "TdmLoadoutRow"
-		lrow.add_theme_constant_override("separation", 12)
-		lrow.alignment = BoxContainer.ALIGNMENT_CENTER
-		wrap.add_child(lrow)
-		var llabel := Label.new()
-		llabel.name = "TdmLoadoutLabel"
-		llabel.text = _tdm_loadout_line()
-		llabel.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		StencilStyle.apply_body(llabel, 18, StencilStyle.TEXT, 2)
-		lrow.add_child(llabel)
-		var change := Button.new()
-		change.name = "ModeLoadoutChange"
-		change.text = "CHANGE LOADOUT"
-		StencilStyle.style_button(change)
-		change.add_theme_font_size_override("font_size", 18)
-		change.custom_minimum_size = Vector2(220, 54)
-		change.pressed.connect(_on_change_loadout_pressed)
-		lrow.add_child(change)
-	return wrap
+	desc.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vb.add_child(desc)
+	var b := _menu_button("SELECTED" if mode_id == _selected_mode else "SELECT")
+	b.name = "ModeStart_" + mode_id
+	b.custom_minimum_size.x = 0
+	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	b.disabled = not GameModeManager.is_implemented(mode_id)
+	if b.disabled:
+		b.text = "UNAVAILABLE"
+	_paint_button(b, Color("27d9ef"), mode_id == _selected_mode)
+	b.pressed.connect(_select_mode.bind(mode_id))
+	vb.add_child(b)
+	return card
 
 
 ## One-line summary of the active loadout for the TDM row: name,
@@ -744,7 +666,7 @@ func _on_change_loadout_pressed() -> void:
 	_on_loadouts()
 
 
-func _on_mode_start_pressed(mode_id: String) -> void:
+func _launch_mode(mode_id: String) -> void:
 	_click()
 	if not GameModeManager.is_implemented(mode_id):
 		if _mode_status_label != null:
@@ -752,25 +674,25 @@ func _on_mode_start_pressed(mode_id: String) -> void:
 		return
 	match mode_id:
 		"tower_defense":
-			_open_td_setup()
+			_on_td_setup_confirmed(TowerDefenseSetup.get_tool())
 		"tdm":
 			var main := get_tree().current_scene
 			if main != null and main.has_method("start_sp_mode"):
 				if bool(main.call("start_sp_mode", "tdm")):
 					return
 				if _mode_status_label != null:
-					_mode_status_label.text = "COULD NOT START TDM — SEE LOG."
+					_deploy_status.text = "COULD NOT START TDM — SEE LOG."
 			elif _mode_status_label != null:
-				_mode_status_label.text = "COULD NOT START TDM — MAIN MISSING."
+				_deploy_status.text = "COULD NOT START TDM — MAIN MISSING."
 		"zombies":
 			var main_z := get_tree().current_scene
 			if main_z != null and main_z.has_method("start_sp_mode"):
 				if bool(main_z.call("start_sp_mode", "zombies")):
 					return
 				if _mode_status_label != null:
-					_mode_status_label.text = "COULD NOT START ZOMBIES — SEE LOG."
+					_deploy_status.text = "COULD NOT START ZOMBIES — SEE LOG."
 			elif _mode_status_label != null:
-				_mode_status_label.text = "COULD NOT START ZOMBIES — MAIN MISSING."
+				_deploy_status.text = "COULD NOT START ZOMBIES — MAIN MISSING."
 		"mp_tdm":
 			var main := get_tree().current_scene
 			if main != null and main.has_method("open_multiplayer_menu"):
@@ -817,6 +739,8 @@ func _on_loadout_picker_closed(picker: Node) -> void:
 		picker.queue_free()
 	if _mode_overlay != null and _mode_overlay.visible:
 		_rebuild_mode_rows()
+	if _deploy_panel.visible:
+		_refresh_deploy()
 
 
 # Goal 6 PROGRESSION (coordinator): stats screen entry (menu wiring for
@@ -859,6 +783,10 @@ func _input(event: InputEvent) -> void:
 			return
 		if _td_setup != null and is_instance_valid(_td_setup):
 			return  # TD setup owns its own BACK button.
+		if _deploy_panel != null and _deploy_panel.visible:
+			_close_deploy()
+			get_viewport().set_input_as_handled()
+			return
 		if _options_panel != null and _options_panel.visible:
 			_options_panel.visible = false
 			_focus_menu_button("OptionsButton")
@@ -953,7 +881,7 @@ func _load_settings() -> void:
 	_master.value = float(cfg.get_value("ui", "master_vol", 0.9))
 	_music.value = float(cfg.get_value("ui", "music_vol", 0.7))
 	_quality.selected = int(cfg.get_value("ui", "quality", 2))
-	_map_select.selected = int(cfg.get_value("ui", "map", 0))
+	_map_select.selected = clampi(int(cfg.get_value("ui", "map", 0)), 0, MAP_KEYS.size() - 1)
 	_on_map_selected(_map_select.selected)
 	_apply_volumes()
 	_on_quality(_quality.selected)
@@ -963,3 +891,160 @@ func _click() -> void:
 	var s := get_node_or_null("/root/Sfx")
 	if s != null and s.has_method("play_2d"):
 		s.play_2d("ui_click")
+
+
+func _build_deploy() -> void:
+	_deploy_panel = _screen("DeployPanel", Color("ded6c5"))
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_deploy_panel.add_child(scroll)
+	var vb := VBoxContainer.new()
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vb.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vb.add_theme_constant_override("separation", 24)
+	scroll.add_child(vb)
+	vb.add_child(_label("■   DUSTLINE  /  MISSION PREPARATION", 14, Color("9b400f")))
+	_deploy_title = _label("PREPARE TO DEPLOY", 38, Color("14212b"))
+	vb.add_child(_deploy_title)
+	_deploy_columns = GridContainer.new()
+	_deploy_columns.columns = 2
+	_deploy_columns.add_theme_constant_override("h_separation", 28)
+	_deploy_columns.add_theme_constant_override("v_separation", 24)
+	vb.add_child(_deploy_columns)
+	var preview := VBoxContainer.new()
+	preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_deploy_columns.add_child(preview)
+	var art := _map_art("factory")
+	_deploy_preview = art
+	art.custom_minimum_size = Vector2(0, 240)
+	preview.add_child(art)
+	_deploy_preview_label = _label("FACTORY", 25, Color("14212b"))
+	preview.add_child(_deploy_preview_label)
+	_deploy_desc = _label("", 18, Color("354753"))
+	_deploy_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	preview.add_child(_deploy_desc)
+	var controls := VBoxContainer.new()
+	controls.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	controls.add_theme_constant_override("separation", 14)
+	_deploy_columns.add_child(controls)
+	controls.add_child(_label("MODE", 15, Color("354753")))
+	_deploy_mode = OptionButton.new()
+	_deploy_mode.name = "DeployMode"
+	for id in ["tdm", "tower_defense", "zombies"]:
+		_deploy_mode.add_item(str(GameModeManager.MODES[id]["name"]))
+	_deploy_mode.item_selected.connect(func(i: int) -> void:
+		_selected_mode = ["tdm", "tower_defense", "zombies"][i]
+		_refresh_deploy())
+	_deploy_control(controls, _deploy_mode)
+	controls.add_child(_label("MAP", 15, Color("354753")))
+	_map_select = OptionButton.new()
+	_map_select.name = "DeployMap"
+	for key in MAP_KEYS:
+		_map_select.add_item(key.replace("_", " ").to_upper())
+	_map_select.item_selected.connect(func(i: int) -> void:
+		_on_map_selected(i)
+		_refresh_deploy())
+	_deploy_control(controls, _map_select)
+	controls.add_child(_label("LOADOUT", 15, Color("354753")))
+	_deploy_loadout = _menu_button("ASSAULT  ›")
+	_deploy_loadout.name = "DeployLoadout"
+	_deploy_loadout.pressed.connect(_on_loadouts)
+	_deploy_control(controls, _deploy_loadout)
+	controls.add_child(_label("TRAVERSAL", 15, Color("354753")))
+	_deploy_tool = OptionButton.new()
+	_deploy_tool.name = "DeployTraversal"
+	for tool in DEPLOY_TOOLS:
+		_deploy_tool.add_item(tool.replace("grapple", "grapple hook").to_upper())
+	_deploy_control(controls, _deploy_tool)
+	_deploy_tool.item_selected.connect(_set_deploy_tool)
+	var deploy := _menu_button("▸   DEPLOY")
+	deploy.name = "DeployButton"
+	deploy.custom_minimum_size.x = 0
+	deploy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_paint_button(deploy, StencilStyle.ORANGE, true)
+	deploy.pressed.connect(func() -> void:
+		_set_deploy_tool(_deploy_tool.selected)
+		_launch_mode(_selected_mode))
+	controls.add_child(deploy)
+	_deploy_status = _label("", 17, Color("932f18"))
+	_deploy_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(_deploy_status)
+	var fill := Control.new()
+	fill.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vb.add_child(fill)
+	var back := _menu_button("‹  BACK")
+	back.custom_minimum_size.x = 150
+	back.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	back.pressed.connect(_close_deploy)
+	vb.add_child(back)
+
+
+func _deploy_control(parent: Control, control: Button) -> void:
+	control.custom_minimum_size = Vector2(0, 52)
+	control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	control.add_theme_font_size_override("font_size", 19)
+	_paint_button(control, StencilStyle.ORANGE)
+	parent.add_child(control)
+
+
+func _on_mode_start_pressed(mode_id: String) -> void:
+	if not GameModeManager.is_implemented(mode_id):
+		_mode_status_label.text = "THIS MODE IS NOT AVAILABLE."
+		return
+	if mode_id.begins_with("mp_"):
+		_launch_mode(mode_id)
+		return
+	_selected_mode = mode_id
+	_mode_overlay.visible = false
+	_deploy_panel.visible = true
+	_refresh_deploy()
+	_layout_stack()
+	InputBindings.grab_first_focus(_deploy_panel)
+
+
+func _refresh_deploy() -> void:
+	_deploy_mode.select(["tdm", "tower_defense", "zombies"].find(_selected_mode))
+	_deploy_desc.text = str(GameModeManager.MODES[_selected_mode]["desc"])
+	var forced := _selected_mode != "tdm"
+	_map_select.disabled = forced
+	_deploy_preview_label.text = ("TOWER DEFENSE" if _selected_mode == "tower_defense" else "ZOMBIES TOWN") if forced else MAP_KEYS[_map_select.selected].replace("_", " ").to_upper()
+	var preview_key: String = MAP_KEYS[_map_select.selected]
+	if forced:
+		preview_key = "tower_defense" if _selected_mode == "tower_defense" else "zombies_flat"
+	_deploy_preview.texture = load("res://assets/ui/maps/" + preview_key + ".png")
+	var entry := Loadouts.get_active_loadout()
+	_deploy_loadout.text = str(entry.get("name", "Assault")).to_upper() + "  ›"
+	_deploy_loadout.disabled = _selected_mode == "tower_defense"
+	var tool := TowerDefenseSetup.get_tool() if _selected_mode == "tower_defense" else str(entry.get("traversal", "grapple"))
+	_deploy_tool.select(maxi(0, DEPLOY_TOOLS.find(tool)))
+	_deploy_tool.set_item_disabled(3, _selected_mode == "tower_defense")
+	_deploy_tool.disabled = _selected_mode == "zombies"
+	if _selected_mode == "zombies":
+		_deploy_tool.select(3)
+	_deploy_status.text = "Zombies uses its own starting gear. Traversal is disabled by default." if _selected_mode == "zombies" else ""
+
+
+func _set_deploy_tool(index: int) -> void:
+	if _selected_mode == "zombies":
+		return
+	var tool: String = DEPLOY_TOOLS[index]
+	if _selected_mode == "tower_defense":
+		TowerDefenseSetup.set_tool(tool)
+		TowerDefenseSetup.save_selection()
+	else:
+		var entry := Loadouts.get_active_loadout()
+		if not entry.is_empty():
+			Loadouts.update_loadout(str(entry["name"]), str(entry["primary"]), str(entry["secondary"]), str(entry.get("forge_preset", "")), tool)
+
+
+func _close_deploy() -> void:
+	_deploy_panel.visible = false
+	_mode_overlay.visible = true
+	_rebuild_mode_rows()
+	InputBindings.grab_first_focus(_mode_overlay)
+
+
+func _map_art(key: String) -> TextureRect:
+	var art := _art()
+	art.texture = load("res://assets/ui/maps/" + key + ".png")
+	return art
