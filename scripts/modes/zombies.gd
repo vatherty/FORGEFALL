@@ -1,20 +1,23 @@
 # FORGEFALL — Zombies mode (Gameplay Rework, Zombies worker).
 #
-# CoD-style Zombies, Forgefall-flavored. Town-like first map (SAME
-# flow/structure and price balance as BO2's Town — small town, central
-# street, key buildings, two Mystery Box spots, Pack-a-Punch in a
-# central exposed spot — but Forgefall's OWN names/art: no copied
-# Activision names, signage, or assets). No power needed.
+# Classic-style horde Zombies, Forgefall-flavored. Town-like first map:
+# the SPATIAL LAYOUT matches the classic Town reference (same streets,
+# building footprints, placements, flow, beats) while EVERY item /
+# object / dressing / sign / name in it is Forgefall-original voxel work.
+# Small town, central street, key buildings, two Mystery Box spots,
+# Pack-a-Punch in a central exposed spot — all Forgefall's OWN names
+# and art: no copied third-party names, signage, textures, or assets.
+# No power needed. Layout 1:1 with the reference; contents all-different.
 #
-# POINTS ECONOMY (BO2 balance reference — these numbers ARE the spec):
+# POINTS ECONOMY (locked reference balance table — these numbers ARE the spec):
 #   hit 10; lethal torso 60; lethal limb 50; lethal explosive 50;
 #   lethal neck 70; lethal headshot 100; lethal melee 130;
 #   barrier board 10 (rebuild cap 40, scaling to 490 by round);
 #   revive grants 5% of the downed player's points;
 #   Carpenter 200; Nuke 400.
-# Doors: buyable, BO2-style costs. Perks: contents RANDOMIZED per run,
+# Doors: buyable, reference-table costs. Perks: contents RANDOMIZED per run,
 # ALWAYS a health perk somewhere; Forgefall's own perk pool (own names,
-# own effects) with BO2 prices as the balance reference. Wall buys:
+# own effects) with reference-table prices as the balance reference. Wall buys:
 # RANDOM per run (each chalk spot gets a random weapon per run).
 # Mystery Box: 950, random weapon from EVERYTHING (all base weapons +
 # all installed weapon mods), moves on teddy bear. Pack-a-Punch: 5000
@@ -70,7 +73,7 @@ signal player_downed(player_id: int)
 signal player_revived(player_id: int)
 signal zombies_run_over()
 
-# --- Points economy (BO2 balance reference) -------------------------------
+# --- Points economy (locked reference balance table) ------------------------
 const POINTS_HIT := 10
 const POINTS_KILL_TORSO := 60
 const POINTS_KILL_LIMB := 50
@@ -90,7 +93,7 @@ const POINTS_NUKE := 400
 const BOX_COST := 950
 const PAP_COST := 5000
 const REPAP_COST := 2000
-const TEDDY_CHANCE := 0.10  # Forgefall tuning (not a BO2 number): box moves on teddy
+const TEDDY_CHANCE := 0.10  # Forgefall tuning (not a reference-table number): box moves on teddy
 const WALL_BUY_AMMO_RESERVE := 60
 
 ## Weak custom-made starter weapon: barely dents anything (8 dmg).
@@ -102,7 +105,7 @@ const REPAP_UPGRADES: Array[String] = [
 ]
 const ALL_TRAVERSAL_TOOLS: Array[String] = ["grapple", "jetpack", "portal"]
 
-## Perk pool — Forgefall's OWN names/effects; BO2 prices are the
+## Perk pool — Forgefall's OWN names/effects; reference-table prices are the
 ## balance reference (see header). Exactly one health perk.
 const PERK_POOL: Array[Dictionary] = [
 	{"id": "bulwark_brew", "name": "Bulwark Brew", "desc": "Max health 100 -> 250.", "cost": 2500, "effect": "health"},
@@ -120,7 +123,7 @@ const PERK_POOL: Array[Dictionary] = [
 ]
 const HEALTH_PERK_ID := "bulwark_brew"
 
-## Perk-machine spots (5): Forgefall building names, NOT BO2's.
+## Perk-machine spots (5): Forgefall building names, all-original.
 const MACHINE_SPOTS: Array[Dictionary] = [
 	{"id": "bank", "name": "Ironhold Bank", "pos": Vector3(-20, 0, -7.2)},
 	{"id": "smithy", "name": "Emberworks Smithy", "pos": Vector3(0, 0, -7.2)},
@@ -136,8 +139,8 @@ const WALL_BUY_SPOTS: Array[Dictionary] = [
 	{"id": "chalk_south", "pos": Vector3(-6, 0, 2)},
 	{"id": "chalk_east", "pos": Vector3(26, 0, 2)},
 ]
-## Wall-buy candidate pool (BO2 prices as reference: M14 500,
-## Olympia 500, B23R 900, MP5 1000; ammo 250). Distinct per run.
+## Wall-buy candidate pool (reference prices: 500 / 500 / 900 / 1000;
+## ammo 250). Distinct per run.
 const WALL_BUY_POOL: Array[Dictionary] = [
 	{"weapon_id": "ar7", "price": 500, "ammo_price": 250},
 	{"weapon_id": "sg12", "price": 500, "ammo_price": 250},
@@ -151,7 +154,7 @@ const BOX_SPOTS: Array[Dictionary] = [
 	{"id": "box_east", "pos": Vector3(14, 0, 0)},
 ]
 
-## Buyable doors (BO2-style costs): blocking volumes until bought.
+## Buyable doors (reference-table costs): blocking volumes until bought.
 const DOOR_DEFS: Array[Dictionary] = [
 	{"id": "north_alley", "name": "North Alley Gate", "cost": 750, "pos": Vector3(-10, 0, -8), "size": Vector3(4, 3, 0.6)},
 	{"id": "south_alley", "name": "South Alley Gate", "cost": 1000, "pos": Vector3(10, 0, 8), "size": Vector3(4, 3, 0.6)},
@@ -209,6 +212,8 @@ var _self_revive_player := -1
 var _enemy_track: Dictionary = {}    # instance_id -> {hp, dead}
 
 var _town: Node3D = null
+var _shared_unit_box: BoxMesh = null
+var _mat_cache := {}
 var _interactables: Array[Dictionary] = []  # {node, kind, id, pos, label}
 var _door_nodes: Dictionary = {}     # door_id -> {root, body}
 var _barrier_nodes: Dictionary = {}  # barrier_id -> {planks}
@@ -541,7 +546,7 @@ func owned_perks(player_id: int = 0) -> Array:
 	return (_ensure_player(player_id).get("perks", []) as Array).duplicate()
 
 
-## Quick Revive analog ("Lifeline"): 500 solo / 1500 co-op (BO2 reference).
+## Solo/co-op revive-perk analog ("Lifeline"): 500 solo / 1500 co-op (reference).
 func quick_revive_cost() -> int:
 	return 500 if player_count <= 1 else 1500
 
@@ -874,7 +879,7 @@ func down_player(player_id: int = 0) -> bool:
 	var had_lifeline := has_perk(player_id, "lifeline")
 	var had_ghost := has_perk(player_id, "ghost_twin")
 	p["downed"] = true
-	# Downing strips perks (BO2 rules). PAP on weapons is kept.
+	# Downing strips perks (classic rules). PAP on weapons is kept.
 	p["perks"] = []
 	player_downed.emit(player_id)
 	if (had_lifeline or had_ghost) and player_count <= 1:
@@ -1149,20 +1154,30 @@ func _teardown_town() -> void:
 
 
 func _mat(color: Color, emissive: Color = Color(0, 0, 0), energy: float = 0.0) -> StandardMaterial3D:
+	# Shared-material cache: hundreds of voxel boxes share a handful
+	# of materials instead of allocating one per box.
+	var key := "%s|%s|%f" % [color.to_html(), emissive.to_html(), energy]
+	if _mat_cache.has(key):
+		return _mat_cache[key]
 	var m := StandardMaterial3D.new()
 	m.albedo_color = color
 	if energy > 0.0:
 		m.emission_enabled = true
 		m.emission = emissive
 		m.emission_energy_multiplier = energy
+	_mat_cache[key] = m
 	return m
 
 
 func _box_mesh(parent: Node, size: Vector3, pos: Vector3, material: StandardMaterial3D) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = size
-	mi.mesh = bm
+	# One shared unit box, scaled per instance: same voxel look, far
+	# less mesh memory than a unique BoxMesh per prop.
+	if _shared_unit_box == null:
+		_shared_unit_box = BoxMesh.new()
+		_shared_unit_box.size = Vector3.ONE
+	mi.mesh = _shared_unit_box
+	mi.scale = size
 	mi.material_override = material
 	mi.position = pos
 	parent.add_child(mi)
@@ -1209,16 +1224,20 @@ func _build_town() -> void:
 	_town = Node3D.new()
 	_town.name = "ZombiesTown"
 	add_child(_town)
-	# Street slab.
+	# Street slab + sidewalks + alley slabs (all visual; the flat map
+	# ground underneath is the walk surface).
 	_box_mesh(_town, Vector3(72, 0.2, 10), Vector3(0, 0.05, 0), _mat(Color(0.16, 0.16, 0.18)))
-	# Buildings (solid + signed).
+	_box_mesh(_town, Vector3(72, 0.15, 3), Vector3(0, 0.07, 6.5), _mat(Color(0.30, 0.29, 0.27)))
+	_box_mesh(_town, Vector3(72, 0.15, 3), Vector3(0, 0.07, -6.5), _mat(Color(0.30, 0.29, 0.27)))
+	for alley_x in [-9.5, 10.0]:
+		for alley_z in [-13.0, 13.0]:
+			_box_mesh(_town, Vector3(3, 0.12, 10), Vector3(alley_x, 0.06, alley_z), _mat(Color(0.20, 0.19, 0.18)))
+	# Buildings: HOLLOW shells with enterable interiors (same
+	# footprints / placements as the reference layout — the layout is
+	# 1:1, the contents are all Forgefall-original).
 	for b in BUILDINGS:
-		var center: Vector3 = b.get("center")
-		var size: Vector3 = b.get("size")
-		var col: Color = b.get("color")
-		_solid(_town, size, center + Vector3(0, size.y * 0.5, 0), _mat(col))
-		var facing_z := -1.0 if center.z < 0 else 1.0
-		_label(_town, str(b.get("name", "")), center + Vector3(0, size.y + 0.8, facing_z * (size.z * 0.5 + 0.4)), 40)
+		_build_building(b)
+	_build_street_dressing()
 	# Doors (blocking volumes until bought).
 	for d in DOOR_DEFS:
 		var did := str(d.get("id", ""))
@@ -1280,6 +1299,14 @@ func _build_town() -> void:
 	pap_root.add_child(cyl)
 	_pap_label = _label(pap_root, "PACK-A-PUNCH\n5000 PTS", Vector3(0, 2.2, 0), 30)
 	_interact(_town, "pap", "pap", Vector3(0, 0, 0))
+	var pap_light := OmniLight3D.new()
+	pap_light.name = "PapLight"
+	pap_light.position = Vector3(0, 2.6, 0)
+	pap_light.light_color = Color(1.0, 0.55, 0.15)
+	pap_light.light_energy = 1.6
+	pap_light.omni_range = 13.0
+	pap_light.shadow_enabled = false
+	_town.add_child(pap_light)
 	# Barrier windows (6): frame + planks.
 	for b in BARRIER_DEFS:
 		var bid := str(b.get("id", ""))
@@ -1292,6 +1319,325 @@ func _build_town() -> void:
 			planks.append(plank)
 		_barrier_nodes[bid] = {"planks": planks}
 		_interact(_town, "barrier", bid, bpos)
+
+
+# --- Town remake: hollow buildings, interiors, street dressing ----------
+# Layout is 1:1 with the reference (same footprints / placements /
+# beats); every item, prop, sign, and interior is Forgefall-original
+# voxel work. Buildings are hollow shells: segmented front walls with
+# a doorway gap, solid back/side walls, a room-divider partition with
+# a wide gap, a visual-only roof, one interior light each, and
+# per-building props. Street dressing is visual-only except for a
+# few solid crates / cart beds / planters, all placed clear of
+# spawns, interact points, and door volumes.
+
+## One prop box. `solid` props get a StaticBody3D (they block);
+## visual props are mesh-only (they never block movement).
+func _prop(parent: Node, size: Vector3, pos: Vector3, material: StandardMaterial3D, solid: bool, prop_name: String) -> Node:
+	if solid:
+		var body := _solid(parent, size, pos, material)
+		body.name = prop_name
+		return body
+	var mi := _box_mesh(parent, size, pos, material)
+	mi.name = prop_name
+	return mi
+
+
+func _build_building(b: Dictionary) -> void:
+	var center: Vector3 = b.get("center")
+	var size: Vector3 = b.get("size")
+	var col: Color = b.get("color")
+	var w := size.x
+	var h := size.y
+	var d := size.z
+	var facing := 1.0 if center.z < 0 else -1.0  # toward the street (z = 0)
+	var front_z := center.z + facing * d * 0.5
+	var back_z := center.z - facing * d * 0.5
+	var x0 := center.x - w * 0.5
+	var x1 := center.x + w * 0.5
+	var wall_t := 0.4
+	# Doorway is offset +3 m from the building centre so the perk
+	# machine (which sits at the centre, in front of the facade)
+	# never blocks the entrance.
+	var door_x := center.x + 3.0
+	var door_w := 2.0
+	var door_h := 2.6
+	var key := str(b.get("name", "")).to_lower()
+	var root := Node3D.new()
+	root.name = "Building_" + key.replace(" ", "_").replace("&", "and")
+	_town.add_child(root)
+	var shell := Node3D.new()
+	shell.name = "Shell"
+	root.add_child(shell)
+	var interior := Node3D.new()
+	interior.name = "Interior"
+	root.add_child(interior)
+	# Interior floor (visual).
+	var floor := _box_mesh(interior, Vector3(w - 0.8, 0.2, d - 0.8),
+		center + Vector3(0, 0.1, 0), _mat(Color(0.38, 0.32, 0.26)))
+	floor.name = "InteriorProp_Floor"
+	# Front wall: two solid segments flanking the doorway + lintel.
+	var left_w := (door_x - door_w * 0.5) - x0
+	if left_w > 0.05:
+		var seg := _solid(shell, Vector3(left_w, h, wall_t),
+			Vector3(x0 + left_w * 0.5, h * 0.5, front_z), _mat(col))
+		seg.name = "WallFrontLeft"
+		if left_w >= 1.6:
+			var win := _box_mesh(shell, Vector3(minf(1.4, left_w - 0.6), 1.2, 0.12),
+				Vector3(x0 + left_w * 0.5, 1.9, front_z + facing * 0.28),
+				_mat(Color(1.0, 0.72, 0.30), Color(1.0, 0.65, 0.25), 1.6))
+			win.name = "WindowFrontLeft"
+	var right_w := x1 - (door_x + door_w * 0.5)
+	if right_w > 0.05:
+		var seg2 := _solid(shell, Vector3(right_w, h, wall_t),
+			Vector3(door_x + door_w * 0.5 + right_w * 0.5, h * 0.5, front_z), _mat(col))
+		seg2.name = "WallFrontRight"
+		if right_w >= 1.6:
+			var win2 := _box_mesh(shell, Vector3(minf(1.4, right_w - 0.6), 1.2, 0.12),
+				Vector3(door_x + door_w * 0.5 + right_w * 0.5, 1.9, front_z + facing * 0.28),
+				_mat(Color(1.0, 0.72, 0.30), Color(1.0, 0.65, 0.25), 1.6))
+			win2.name = "WindowFrontRight"
+	var lintel := _solid(shell, Vector3(door_w, h - door_h, wall_t),
+		Vector3(door_x, door_h + (h - door_h) * 0.5, front_z), _mat(col))
+	lintel.name = "WallLintel"
+	var frame_l := _box_mesh(shell, Vector3(0.25, door_h + 0.1, 0.55),
+		Vector3(door_x - door_w * 0.5 - 0.125, (door_h + 0.1) * 0.5, front_z),
+		_mat(Color(0.25, 0.19, 0.12)))
+	frame_l.name = "DoorFrameLeft"
+	var frame_r := _box_mesh(shell, Vector3(0.25, door_h + 0.1, 0.55),
+		Vector3(door_x + door_w * 0.5 + 0.125, (door_h + 0.1) * 0.5, front_z),
+		_mat(Color(0.25, 0.19, 0.12)))
+	frame_r.name = "DoorFrameRight"
+	# Back + side walls (solid).
+	var back := _solid(shell, Vector3(w, h, wall_t),
+		Vector3(center.x, h * 0.5, back_z), _mat(col))
+	back.name = "WallBack"
+	var side_w := _solid(shell, Vector3(wall_t, h, d),
+		Vector3(x0, h * 0.5, center.z), _mat(col))
+	side_w.name = "WallSideWest"
+	var side_e := _solid(shell, Vector3(wall_t, h, d),
+		Vector3(x1, h * 0.5, center.z), _mat(col))
+	side_e.name = "WallSideEast"
+	# Roof: visual only (walls already enclose; no roof collision).
+	var roof := _box_mesh(shell, Vector3(w + 0.6, 0.4, d + 0.6),
+		Vector3(center.x, h + 0.2, center.z), _mat(col.darkened(0.25)))
+	roof.name = "Roof"
+	# Room divider: solid partition with a wide 2.4 m gap at mid-depth
+	# (reads as two rooms; the gap keeps the horde able to follow).
+	var px := center.x - 2.5
+	var gap_half := 1.2
+	var z_lo := minf(back_z, front_z)
+	var z_hi := maxf(back_z, front_z)
+	var seg_a_len := (center.z - gap_half) - z_lo
+	var seg_b_len := z_hi - (center.z + gap_half)
+	var part_a := _solid(shell, Vector3(0.3, 2.6, seg_a_len),
+		Vector3(px, 1.3, z_lo + seg_a_len * 0.5), _mat(col.darkened(0.1)))
+	part_a.name = "PartitionA"
+	var part_b := _solid(shell, Vector3(0.3, 2.6, seg_b_len),
+		Vector3(px, 1.3, center.z + gap_half + seg_b_len * 0.5), _mat(col.darkened(0.1)))
+	part_b.name = "PartitionB"
+	# Sign + awning over the doorway (Forgefall-original text).
+	var sign := _label(root, str(b.get("name", "")),
+		center + Vector3(0, h + 0.8, facing * (d * 0.5 + 0.4)), 40)
+	sign.name = "BuildingSign"
+	var awning := _box_mesh(shell, Vector3(door_w + 1.0, 0.15, 1.4),
+		Vector3(door_x, 2.95, front_z + facing * 0.8), _mat(Color(0.45, 0.25, 0.15)))
+	awning.name = "Awning"
+	var post_l := _box_mesh(shell, Vector3(0.18, 2.9, 0.18),
+		Vector3(door_x - door_w * 0.5 - 0.35, 1.45, front_z + facing * 1.35),
+		_mat(Color(0.25, 0.19, 0.12)))
+	post_l.name = "AwningPostLeft"
+	var post_r := _box_mesh(shell, Vector3(0.18, 2.9, 0.18),
+		Vector3(door_x + door_w * 0.5 + 0.35, 1.45, front_z + facing * 1.35),
+		_mat(Color(0.25, 0.19, 0.12)))
+	post_r.name = "AwningPostRight"
+	# One interior light per building (no shadows) + hanging bulb.
+	var light := OmniLight3D.new()
+	light.name = "InteriorLight"
+	light.position = center + Vector3(0, h - 1.0, 0)
+	light.light_color = Color(1.0, 0.75, 0.45)
+	light.light_energy = 1.4
+	light.omni_range = 15.0
+	light.shadow_enabled = false
+	interior.add_child(light)
+	var bulb := _box_mesh(interior, Vector3(0.35, 0.25, 0.35),
+		center + Vector3(0, h - 1.3, 0),
+		_mat(Color(1.0, 0.8, 0.45), Color(1.0, 0.7, 0.3), 2.0))
+	bulb.name = "InteriorProp_Bulb"
+	_build_interior_props(key, interior, center, size, facing, front_z)
+
+
+## Per-building interior dressing. `off` = metres inside from the
+## front wall; interior z = front_z - facing * off. All coords are
+## axis-aligned and kept clear of the doorway (door_x = centre + 3)
+## and the partition gap (x = centre - 2.5, z = centre +/- 1.2).
+func _build_interior_props(key: String, parent: Node, center: Vector3, size: Vector3, facing: float, front_z: float) -> void:
+	var cx := center.x
+	var d := size.z
+	var iz := func(off: float) -> float:
+		return front_z - facing * off
+	var wood := _mat(Color(0.45, 0.33, 0.20))
+	var wood_d := _mat(Color(0.32, 0.23, 0.14))
+	var steel := _mat(Color(0.45, 0.48, 0.52))
+	var gold := _mat(Color(0.85, 0.70, 0.25), Color(0.9, 0.75, 0.2), 0.6)
+	var cloth := _mat(Color(0.55, 0.20, 0.18))
+	var green := _mat(Color(0.25, 0.45, 0.25))
+	if key.contains("bank"):
+		_prop(parent, Vector3(5.0, 1.1, 0.9), Vector3(cx, 0.55, iz.call(2.4)), wood, true, "InteriorProp_Counter")
+		_prop(parent, Vector3(2.2, 2.4, 0.3), Vector3(cx, 1.2, iz.call(d - 0.6)), steel, false, "InteriorProp_Vault")
+		_prop(parent, Vector3(1.2, 1.2, 0.1), Vector3(cx, 1.2, iz.call(d - 0.85)), gold, false, "InteriorProp_VaultDoor")
+		_prop(parent, Vector3(1.6, 0.75, 0.8), Vector3(cx - 3.5, 0.375, iz.call(4.5)), wood, true, "InteriorProp_DeskA")
+		_prop(parent, Vector3(1.6, 0.75, 0.8), Vector3(cx + 3.5, 0.375, iz.call(4.5)), wood, true, "InteriorProp_DeskB")
+		_prop(parent, Vector3(0.45, 0.9, 0.45), Vector3(cx - 3.5, 0.45, iz.call(5.6)), wood_d, false, "InteriorProp_ChairA")
+		_prop(parent, Vector3(0.45, 0.9, 0.45), Vector3(cx + 3.5, 0.45, iz.call(5.6)), wood_d, false, "InteriorProp_ChairB")
+		for i in 4:
+			_prop(parent, Vector3(0.35, 0.25, 0.35),
+				Vector3(cx - 1.5 + float(i) * 1.0, 1.22, iz.call(2.4)), gold, false, "InteriorProp_Coins%d" % i)
+		_prop(parent, Vector3(0.9, 0.9, 0.9), Vector3(cx + 4.5, 0.45, iz.call(d - 1.2)), steel, true, "InteriorProp_SafeA")
+		_prop(parent, Vector3(0.9, 0.9, 0.9), Vector3(cx + 4.5, 0.45, iz.call(d - 2.4)), steel, true, "InteriorProp_SafeB")
+		_prop(parent, Vector3(0.8, 1.4, 0.6), Vector3(cx - 5.5, 0.7, iz.call(d - 1.0)), wood_d, true, "InteriorProp_Filing")
+		_prop(parent, Vector3(3.0, 0.06, 2.0), Vector3(cx, 0.23, iz.call(5.5)), cloth, false, "InteriorProp_Rug")
+	elif key.contains("smithy"):
+		_prop(parent, Vector3(2.2, 1.2, 1.6), Vector3(cx - 3.5, 0.6, iz.call(d - 1.6)), _mat(Color(0.35, 0.32, 0.30)), true, "InteriorProp_Hearth")
+		_prop(parent, Vector3(1.8, 0.2, 1.2), Vector3(cx - 3.5, 1.3, iz.call(d - 1.6)), _mat(Color(1.0, 0.45, 0.10), Color(1.0, 0.5, 0.1), 2.2), false, "InteriorProp_HearthGlow")
+		_prop(parent, Vector3(1.0, 0.75, 0.55), Vector3(cx, 0.375, iz.call(5.0)), steel, true, "InteriorProp_Anvil")
+		_prop(parent, Vector3(2.6, 0.9, 0.9), Vector3(cx + 3.2, 0.45, iz.call(d - 1.4)), wood, true, "InteriorProp_Workbench")
+		_prop(parent, Vector3(2.0, 1.4, 0.12), Vector3(cx - 4.8, 1.4, iz.call(5.0)), wood_d, false, "InteriorProp_ToolRack")
+		for i in 3:
+			_prop(parent, Vector3(0.08, 0.9, 0.08),
+				Vector3(cx - 5.5 + float(i) * 0.7, 1.3, iz.call(5.0)), steel, false, "InteriorProp_Tool%d" % i)
+		_prop(parent, Vector3(0.8, 1.0, 0.8), Vector3(cx - 4.5, 0.5, iz.call(2.5)), wood, true, "InteriorProp_BarrelA")
+		_prop(parent, Vector3(0.8, 1.0, 0.8), Vector3(cx + 4.5, 0.5, iz.call(2.5)), wood, true, "InteriorProp_BarrelB")
+		_prop(parent, Vector3(1.4, 0.5, 0.7), Vector3(cx + 1.5, 0.25, iz.call(4.0)), steel, false, "InteriorProp_Trough")
+		_prop(parent, Vector3(2.0, 1.2, 0.12), Vector3(cx + 1.0, 1.2, iz.call(d - 0.4)), wood_d, false, "InteriorProp_WeaponRack")
+		for i in 3:
+			_prop(parent, Vector3(0.1, 1.0, 0.1),
+				Vector3(cx + 0.3 + float(i) * 0.7, 1.2, iz.call(d - 0.55)), steel, false, "InteriorProp_Blade%d" % i)
+		for i in 3:
+			_prop(parent, Vector3(0.6, 0.4, 0.6),
+				Vector3(cx - 1.8 + float(i) * 0.7, 0.2, iz.call(d - 1.0)), _mat(Color(0.12, 0.12, 0.12)), false, "InteriorProp_Coal%d" % i)
+	elif key.contains("chapel"):
+		for i in 4:
+			_prop(parent, Vector3(2.8, 0.55, 0.55), Vector3(cx, 0.275, iz.call(3.5 + float(i) * 1.3)), wood, true, "InteriorProp_Pew%d" % i)
+		_prop(parent, Vector3(2.0, 1.0, 0.9), Vector3(cx, 0.5, iz.call(d - 1.3)), _mat(Color(0.60, 0.58, 0.55)), true, "InteriorProp_Altar")
+		for i in 6:
+			_prop(parent, Vector3(0.12, 0.35, 0.12),
+				Vector3(cx - 0.7 + float(i) * 0.28, 1.17, iz.call(d - 1.3)),
+				_mat(Color(1.0, 0.85, 0.5), Color(1.0, 0.8, 0.4), 1.8), false, "InteriorProp_Candle%d" % i)
+		_prop(parent, Vector3(0.6, 1.2, 0.5), Vector3(cx + 2.5, 0.6, iz.call(d - 2.6)), wood, false, "InteriorProp_Lectern")
+		_prop(parent, Vector3(2.0, 0.06, 4.0), Vector3(cx, 0.23, iz.call(5.5)), cloth, false, "InteriorProp_Rug")
+		_prop(parent, Vector3(1.6, 1.8, 0.1), Vector3(cx, 2.2, iz.call(d - 0.3)), _mat(Color(0.85, 0.35, 0.25), Color(0.9, 0.4, 0.3), 1.2), false, "InteriorProp_StainedGlass")
+		_prop(parent, Vector3(0.7, 0.8, 0.5), Vector3(cx - 3.8, 0.4, iz.call(d - 1.2)), wood_d, true, "InteriorProp_OfferingBox")
+	elif key.contains("tavern"):
+		_prop(parent, Vector3(5.0, 1.1, 0.9), Vector3(cx, 0.55, iz.call(d - 1.8)), wood, true, "InteriorProp_Bar")
+		for i in 4:
+			_prop(parent, Vector3(0.4, 0.6, 0.4),
+				Vector3(cx - 2.0 + float(i) * 1.3, 0.3, iz.call(d - 2.9)), wood_d, false, "InteriorProp_Stool%d" % i)
+		_prop(parent, Vector3(1.4, 0.75, 1.4), Vector3(cx - 3.5, 0.375, iz.call(3.5)), wood, true, "InteriorProp_TableA")
+		_prop(parent, Vector3(1.4, 0.75, 1.4), Vector3(cx + 3.5, 0.375, iz.call(3.5)), wood, true, "InteriorProp_TableB")
+		_prop(parent, Vector3(1.4, 0.75, 1.4), Vector3(cx, 0.375, iz.call(5.5)), wood, true, "InteriorProp_TableC")
+		for i in 6:
+			_prop(parent, Vector3(0.14, 0.2, 0.14),
+				Vector3(cx - 3.8 + float(i) * 1.4, 0.85, iz.call(3.5 if i < 3 else 5.5)),
+				_mat(Color(0.55, 0.42, 0.25)), false, "InteriorProp_Mug%d" % i)
+		_prop(parent, Vector3(1.8, 1.6, 0.5), Vector3(cx - 5.9, 0.8, iz.call(5.0)), _mat(Color(0.40, 0.36, 0.34)), false, "InteriorProp_Fireplace")
+		_prop(parent, Vector3(1.0, 0.6, 0.3), Vector3(cx - 5.9, 0.7, iz.call(5.0)), _mat(Color(1.0, 0.5, 0.1), Color(1.0, 0.55, 0.1), 2.0), false, "InteriorProp_Fire")
+		_prop(parent, Vector3(2.4, 1.5, 0.3), Vector3(cx + 2.0, 1.4, iz.call(d - 0.45)), wood_d, false, "InteriorProp_Shelf")
+		for i in 6:
+			_prop(parent, Vector3(0.18, 0.45, 0.18),
+				Vector3(cx + 1.2 + float(i) * 0.35, 1.5, iz.call(d - 0.65)),
+				_mat(Color(0.25, 0.55, 0.30)), false, "InteriorProp_Bottle%d" % i)
+		_prop(parent, Vector3(0.9, 0.9, 0.9), Vector3(cx + 5.0, 0.45, iz.call(2.2)), wood, true, "InteriorProp_CrateA")
+		_prop(parent, Vector3(0.9, 0.9, 0.9), Vector3(cx + 5.0, 0.45, iz.call(3.4)), wood, true, "InteriorProp_CrateB")
+	elif key.contains("goods"):
+		_prop(parent, Vector3(0.7, 1.8, 2.2), Vector3(cx - 4.8, 0.9, iz.call(5.0)), wood, true, "InteriorProp_ShelfA")
+		_prop(parent, Vector3(2.2, 1.8, 0.7), Vector3(cx - 1.5, 0.9, iz.call(d - 1.0)), wood, true, "InteriorProp_ShelfB")
+		_prop(parent, Vector3(2.2, 1.8, 0.7), Vector3(cx + 2.5, 0.9, iz.call(d - 1.0)), wood, true, "InteriorProp_ShelfC")
+		for i in 8:
+			_prop(parent, Vector3(0.5, 0.4, 0.5),
+				Vector3(cx - 4.8, 0.5 + float(i % 3) * 0.55, iz.call(4.0 + float(i / 3) * 1.2)),
+				_mat(Color(0.65, 0.55, 0.35)), false, "InteriorProp_Goods%d" % i)
+		_prop(parent, Vector3(3.0, 1.0, 0.8), Vector3(cx, 0.5, iz.call(2.6)), wood, true, "InteriorProp_Counter")
+		for i in 4:
+			_prop(parent, Vector3(0.7, 0.6, 0.7),
+				Vector3(cx - 4.5 + float(i) * 0.9, 0.3, iz.call(2.2)), _mat(Color(0.60, 0.52, 0.38)), false, "InteriorProp_Sack%d" % i)
+		_prop(parent, Vector3(1.0, 1.0, 1.0), Vector3(cx + 4.5, 0.5, iz.call(3.0)), wood, true, "InteriorProp_CrateA")
+		_prop(parent, Vector3(1.0, 1.0, 1.0), Vector3(cx + 4.5, 0.5, iz.call(4.3)), wood, true, "InteriorProp_CrateB")
+		_prop(parent, Vector3(0.8, 0.8, 0.8), Vector3(cx + 4.5, 1.4, iz.call(3.0)), wood, false, "InteriorProp_CrateC")
+		_prop(parent, Vector3(0.4, 0.3, 0.4), Vector3(cx + 0.8, 1.15, iz.call(2.6)), steel, false, "InteriorProp_Scale")
+		var board := _label(parent, "TODAY: FRESH BREAD", Vector3(cx, 2.0, iz.call(d - 0.35)), 24)
+		board.name = "InteriorProp_Chalkboard"
+	else:  # waystation
+		_prop(parent, Vector3(2.4, 0.5, 0.6), Vector3(cx - 2.5, 0.25, iz.call(3.0)), wood, true, "InteriorProp_BenchA")
+		_prop(parent, Vector3(2.4, 0.5, 0.6), Vector3(cx + 2.5, 0.25, iz.call(3.0)), wood, true, "InteriorProp_BenchB")
+		_prop(parent, Vector3(2.6, 1.05, 0.8), Vector3(cx, 0.525, iz.call(d - 1.6)), wood, true, "InteriorProp_TicketCounter")
+		_prop(parent, Vector3(2.2, 1.4, 0.1), Vector3(cx - 2.0, 1.6, iz.call(d - 0.35)), _mat(Color(0.75, 0.72, 0.65)), false, "InteriorProp_Timetable")
+		for i in 3:
+			_prop(parent, Vector3(1.8, 0.08, 0.08),
+				Vector3(cx - 2.0, 1.9 - float(i) * 0.35, iz.call(d - 0.45)), _mat(Color(0.2, 0.2, 0.2)), false, "InteriorProp_TimetableLine%d" % i)
+		for i in 4:
+			_prop(parent, Vector3(0.7 + float(i % 2) * 0.3, 0.5, 0.5),
+				Vector3(cx - 4.3 + float(i) * 0.9, 0.25, iz.call(5.2)), cloth, false, "InteriorProp_Luggage%d" % i)
+		_prop(parent, Vector3(1.0, 1.0, 1.0), Vector3(cx + 4.5, 0.5, iz.call(2.4)), wood, true, "InteriorProp_CrateA")
+		_prop(parent, Vector3(1.0, 1.0, 1.0), Vector3(cx + 4.5, 0.5, iz.call(3.7)), wood, true, "InteriorProp_CrateB")
+		_prop(parent, Vector3(0.3, 0.4, 0.3), Vector3(cx, 1.9, iz.call(5.0)), _mat(Color(1.0, 0.8, 0.4), Color(1.0, 0.75, 0.3), 1.8), false, "InteriorProp_Lantern")
+		for i in 3:
+			_prop(parent, Vector3(0.45, 0.9, 0.45),
+				Vector3(cx - 1.5 + float(i) * 1.5, 0.45, iz.call(7.0)), wood_d, false, "InteriorProp_Chair%d" % i)
+		_prop(parent, Vector3(0.6, 0.6, 0.1), Vector3(cx + 4.8, 2.0, iz.call(5.0)), _mat(Color(0.85, 0.85, 0.80)), false, "InteriorProp_Clock")
+
+
+## Street dressing: lamps, benches, crates, ore carts, barrels,
+## signs (Forgefall-original text), debris, planters, fences, and a
+## town board. Visual-only except a few solid crates / cart beds /
+## planters, all placed clear of spawns, interact points, and doors.
+func _build_street_dressing() -> void:
+	var root := Node3D.new()
+	root.name = "StreetDressing"
+	_town.add_child(root)
+	var wood := _mat(Color(0.45, 0.33, 0.20))
+	var rust := _mat(Color(0.55, 0.30, 0.18))
+	var lamp_glow := _mat(Color(1.0, 0.80, 0.45), Color(1.0, 0.75, 0.35), 2.0)
+	for lamp_pos in [Vector3(-32, 0, -4), Vector3(32, 0, 4), Vector3(-32, 0, 4), Vector3(32, 0, -4), Vector3(-18, 0, 4.2), Vector3(18, 0, -4.2)]:
+		_prop(root, Vector3(0.22, 3.4, 0.22), lamp_pos + Vector3(0, 1.7, 0), _mat(Color(0.20, 0.20, 0.22)), false, "StreetProp_LampPole")
+		_prop(root, Vector3(0.65, 0.35, 0.65), lamp_pos + Vector3(0, 3.55, 0), lamp_glow, false, "StreetProp_LampHead")
+		_prop(root, Vector3(0.8, 0.12, 0.8), lamp_pos + Vector3(0, 3.8, 0), _mat(Color(0.20, 0.20, 0.22)), false, "StreetProp_LampCap")
+	for bench_pos in [Vector3(-22, 0, 4.2), Vector3(22, 0, -4.2), Vector3(-4, 0, -4.2), Vector3(4, 0, 4.2)]:
+		_prop(root, Vector3(1.8, 0.15, 0.6), bench_pos + Vector3(0, 0.5, 0), wood, false, "StreetProp_BenchSeat")
+		_prop(root, Vector3(1.8, 0.7, 0.12), bench_pos + Vector3(0, 0.85, 0.3), wood, false, "StreetProp_BenchBack")
+	for cluster in [Vector3(-34, 0, -2), Vector3(34, 0, 2), Vector3(-10, 0, 4.5), Vector3(12, 0, -4.5)]:
+		_prop(root, Vector3(1.1, 1.1, 1.1), cluster + Vector3(0, 0.55, 0), wood, true, "StreetProp_CrateBig")
+		_prop(root, Vector3(0.8, 0.8, 0.8), cluster + Vector3(1.0, 0.4, 0.5), wood, false, "StreetProp_CrateSmall")
+	for cart_pos in [Vector3(-33, 0, 2), Vector3(33, 0, -2)]:
+		_prop(root, Vector3(2.4, 0.35, 1.3), cart_pos + Vector3(0, 0.75, 0), wood, true, "StreetProp_CartBed")
+		for wheel_off in [Vector3(-0.9, 0.3, 0.7), Vector3(0.9, 0.3, 0.7), Vector3(-0.9, 0.3, -0.7), Vector3(0.9, 0.3, -0.7)]:
+			_prop(root, Vector3(0.2, 0.6, 0.6), cart_pos + wheel_off, _mat(Color(0.20, 0.20, 0.22)), false, "StreetProp_CartWheel")
+		_prop(root, Vector3(0.9, 0.7, 0.9), cart_pos + Vector3(-0.4, 1.25, 0), rust, false, "StreetProp_CartLoad")
+	for barrel_pos in [Vector3(-30, 0, -4.5), Vector3(30, 0, 4.5), Vector3(-16, 0, -4.5), Vector3(16, 0, 4.5), Vector3(-36, 0, 0), Vector3(36, 0, 0), Vector3(-3, 0, 4.8), Vector3(3, 0, -4.8)]:
+		_prop(root, Vector3(0.75, 0.95, 0.75), barrel_pos + Vector3(0, 0.475, 0), rust, false, "StreetProp_Barrel")
+	# Signposts with Forgefall-original text.
+	_prop(root, Vector3(0.15, 2.6, 0.15), Vector3(-6, 1.3, -4.8), wood, false, "StreetProp_SignPoleA")
+	_prop(root, Vector3(1.8, 0.6, 0.1), Vector3(-6, 2.3, -4.8), _mat(Color(0.75, 0.70, 0.55)), false, "StreetProp_SignBoardA")
+	var sign_a := _label(root, "FORGEFALL SQUARE", Vector3(-6, 2.3, -4.8), 24)
+	sign_a.name = "StreetSignA"
+	_prop(root, Vector3(0.15, 2.6, 0.15), Vector3(17, 1.3, 4.8), wood, false, "StreetProp_SignPoleB")
+	_prop(root, Vector3(1.8, 0.6, 0.1), Vector3(17, 2.3, 4.8), _mat(Color(0.75, 0.70, 0.55)), false, "StreetProp_SignBoardB")
+	var sign_b := _label(root, "MARKET ROW ->", Vector3(17, 2.3, 4.8), 24)
+	sign_b.name = "StreetSignB"
+	# Town board near the plaza.
+	_prop(root, Vector3(1.6, 1.8, 0.15), Vector3(4.5, 1.2, 4.5), wood, false, "StreetProp_TownBoard")
+	var board := _label(root, "TOWN BOARD — HUNT AT DUSK", Vector3(4.5, 2.5, 4.5), 22)
+	board.name = "StreetSignBoard"
+	for debris_pos in [Vector3(-27, 0, 3.5), Vector3(-15, 0, -4.3), Vector3(5, 0, 4.6), Vector3(24, 0, 3.8), Vector3(-24, 0, -4.2), Vector3(28, 0, -3.5), Vector3(-35, 0, 3), Vector3(35, 0, -3), Vector3(8, 0, -4.6), Vector3(-8, 0, 4.6)]:
+		_prop(root, Vector3(0.9, 0.12, 0.6), debris_pos + Vector3(0, 0.06, 0), _mat(Color(0.30, 0.26, 0.22)), false, "StreetProp_Debris")
+	for planter_pos in [Vector3(3, 0, 3), Vector3(-3, 0, 3), Vector3(3, 0, -3), Vector3(-3, 0, -3)]:
+		_prop(root, Vector3(1.1, 0.55, 1.1), planter_pos + Vector3(0, 0.275, 0), _mat(Color(0.50, 0.42, 0.35)), true, "StreetProp_Planter")
+		_prop(root, Vector3(0.9, 0.25, 0.9), planter_pos + Vector3(0, 0.65, 0), _mat(Color(0.25, 0.45, 0.25)), false, "StreetProp_PlanterTop")
+	for fence_z in [-5.4, 5.4]:
+		for fence_range in [[-34.0, -20.0], [-12.0, 4.0], [16.0, 34.0]]:
+			var fx0: float = fence_range[0]
+			var fx1: float = fence_range[1]
+			_prop(root, Vector3(fx1 - fx0, 0.7, 0.15), Vector3((fx0 + fx1) * 0.5, 0.35, fence_z), wood, false, "StreetProp_Fence")
 
 
 func _update_box_visuals() -> void:
