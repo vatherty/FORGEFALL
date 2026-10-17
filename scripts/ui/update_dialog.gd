@@ -44,13 +44,15 @@ func _build() -> void:
 	add_child(center)
 
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(640, 0)
-	panel.add_theme_stylebox_override("panel", StencilStyle.panel_accent())
+	StencilStyle.install_menu(panel)
+	panel.custom_minimum_size = Vector2(minf(720, get_viewport().get_visible_rect().size.x - 48), 0)
+	panel.add_theme_stylebox_override("panel", StencilStyle.panel(Color(0.02, 0.025, 0.03, 0.9), Color(0.5, 0.5, 0.45, 0.3), 1))
 	center.add_child(panel)
 
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 12)
 	panel.add_child(vb)
+	StencilStyle.eyebrow(vb, "GAME UPDATES")
 
 	_title = Label.new()
 	_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -61,7 +63,7 @@ func _build() -> void:
 	vb.add_child(_version_l)
 
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(600, 170)
+	scroll.custom_minimum_size = Vector2(0, 170)
 	vb.add_child(scroll)
 	_changelog = Label.new()
 	StencilStyle.apply_body(_changelog, 18, StencilStyle.TEXT_DIM, 2)
@@ -70,7 +72,7 @@ func _build() -> void:
 	scroll.add_child(_changelog)
 
 	_progress = ProgressBar.new()
-	_progress.custom_minimum_size = Vector2(600, 26)
+	_progress.custom_minimum_size = Vector2(0, 26)
 	_progress.show_percentage = false
 	_progress.visible = false
 	vb.add_child(_progress)
@@ -87,6 +89,7 @@ func _build() -> void:
 	vb.add_child(row)
 
 	_primary = _dlg_button("DOWNLOAD UPDATE")
+	StencilStyle.primary_button(_primary)
 	_primary.pressed.connect(_on_primary)
 	row.add_child(_primary)
 	_settings_btn = _dlg_button("OPEN SETTINGS")
