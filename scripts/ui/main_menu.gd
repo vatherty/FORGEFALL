@@ -43,7 +43,7 @@ var _gyro: CheckButton
 var _quality: OptionButton
 var _update_status: Label
 var _map_select: OptionButton
-const MAP_KEYS := ["dustline", "foundry", "outpost", "cinder_city", "tower_defense"]
+const MAP_KEYS := ["dustline", "foundry", "outpost", "cinder_city", "tower_defense", "factory"]
 # Goal 6 PROGRESSION (Worker B): persistent loadout picker overlay scene.
 const LOADOUT_PICKER_SCENE := "res://scenes/ui/loadout_picker.tscn"
 # Mode-select overlay (Gameplay Rework): one overlay reused for the
@@ -104,9 +104,15 @@ func _layout_stack() -> void:
 
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
+	InputBindings.ensure_loaded()
 	_build()
 	_load_settings()
 	_hook_updater()
+	# Controller: menus need an initial focus owner or D-pad nav has
+	# nowhere to move FROM (Godot focus starts on nothing). Single
+	# Player is the first entry.
+	if not _menu_buttons.is_empty():
+		_menu_buttons[0].grab_focus()
 
 
 func _hook_updater() -> void:
@@ -229,6 +235,7 @@ func _build() -> void:
 	_map_select.add_item("OUTPOST", 2)
 	_map_select.add_item("CINDER CITY", 3)
 	_map_select.add_item("TOWER DEFENSE", 4)
+	_map_select.add_item("FACTORY", 5)
 	_map_select.selected = 0
 	StencilStyle.style_button(_map_select)
 	_map_select.item_selected.connect(_on_map_selected)
@@ -424,9 +431,18 @@ func _build_options() -> void:
 	_update_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	upd_row.add_child(_update_status)
 
+	# CONTROLS: full keyboard + gamepad remapping (v0.6.1). Opens the
+	# RebindMenu overlay; BACK returns here.
+	var controls := _menu_button("CONTROLS...")
+	controls.custom_minimum_size = Vector2(280, 54)
+	controls.pressed.connect(_on_controls)
+	var cc := CenterContainer.new()
+	cc.add_child(controls)
+	vb.add_child(cc)
+
 	var back := _menu_button("BACK")
 	back.custom_minimum_size = Vector2(200, 54)
-	back.pressed.connect(func() -> void: _options_panel.visible = false)
+	back.pressed.connect(func() -> void: _options_panel.visible = false; _focus_menu_button("OptionsButton"))
 	var bc := CenterContainer.new()
 	bc.add_child(back)
 	vb.add_child(bc)
@@ -611,12 +627,14 @@ func _open_mode_select(scope: String) -> void:
 		_mode_status_label.text = ""
 	_rebuild_mode_rows()
 	_mode_overlay.visible = true
+	InputBindings.grab_first_focus(_mode_overlay)
 
 
 func _close_mode_select() -> void:
 	_click()
 	if _mode_overlay != null:
 		_mode_overlay.visible = false
+	_focus_menu_button("MultiplayerButton" if _mode_overlay_scope == "mp" else "SinglePlayerButton")
 
 
 func _rebuild_mode_rows() -> void:
@@ -829,9 +847,58 @@ func _on_creator_menu_closed(menu: Node) -> void:
 		menu.queue_free()
 
 
+func _input(event: InputEvent) -> void:
+	if event.is_action_pressed("ui_cancel"):
+		# The rebind screen / an open picker owns the press when open.
+		if get_node_or_null("RebindMenu") != null:
+			return
+		var picker := get_node_or_null("LoadoutPicker")
+		if picker != null and picker is Control and (picker as Control).visible and picker.has_method("close"):
+			picker.call("close")
+			get_viewport().set_input_as_handled()
+			return
+		if _td_setup != null and is_instance_valid(_td_setup):
+			return  # TD setup owns its own BACK button.
+		if _options_panel != null and _options_panel.visible:
+			_options_panel.visible = false
+			_focus_menu_button("OptionsButton")
+			get_viewport().set_input_as_handled()
+			return
+		if _mode_overlay != null and _mode_overlay.visible:
+			_close_mode_select()
+			get_viewport().set_input_as_handled()
+			return
+
+
+func _focus_menu_button(btn_name: String) -> void:
+	for b in _menu_buttons:
+		if b.name == btn_name:
+			b.grab_focus()
+			return
+
+
 func _on_options() -> void:
 	_click()
 	_options_panel.visible = not _options_panel.visible
+	if _options_panel.visible:
+		InputBindings.grab_first_focus(_options_panel)
+	else:
+		_focus_menu_button("OptionsButton")
+
+
+func _on_controls() -> void:
+	_click()
+	var menu := RebindMenu.open_in(self)
+	if menu.has_signal("closed"):
+		menu.connect("closed", _on_rebind_closed)
+
+
+func _on_rebind_closed() -> void:
+	# Back from CONTROLS: focus returns to the Options panel.
+	if _options_panel != null and _options_panel.visible:
+		InputBindings.grab_first_focus(_options_panel)
+	else:
+		_focus_menu_button("OptionsButton")
 
 
 func _on_quit() -> void:
