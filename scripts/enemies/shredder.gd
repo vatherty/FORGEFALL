@@ -4,7 +4,8 @@
 # SHREDDER — fast melee shredder. No gun: twin voxel blades, the fastest
 # enemy on foot (8.2 m/s — still slower than the player's 11 m/s sprint,
 # so it is always kiteable), paper HP (50). Charges the player, winds up a
-# 0.45s telegraphed slash at <= 2.4m, then needs 0.9s to recover.
+# 0.45s telegraphed slash at <= 2.4m, then LUNGES (a short dash toward
+# the player) as the blades chop, then needs 0.9s to recover.
 # A slash lands 18 damage in a 2.8m frontal arc — dodgeable by sprinting
 # past, jumping back, or killing it mid-windup (flinch cancels the slash).
 # Role: punishes standing still / ADS-camping; forces movement.
@@ -41,6 +42,10 @@ func _configure() -> void:
 	body_radius = 0.32
 	body_height = 1.65
 	body_scale = Vector3(0.92, 1.0, 0.92)  # slim silhouette
+
+
+func behaviour_tags() -> Array:
+	return ["melee", "lunge_slash", "telegraphed_slash", "weave_charge", "flinch_cancels"]
 
 
 func _debris_colors() -> Array:
@@ -90,6 +95,7 @@ func _ai_physics(delta: float) -> void:
 			wish_dir = (dir + perp * sin(_zig_phase) * 0.3).normalized()
 			wish_speed = speed
 			if see and dist <= MELEE_TRIGGER:
+				begin_telegraph(WINDUP_TIME, "slash")
 				_set_state(State.WINDUP)
 			elif not see and _lost_t > LOST_SIGHT_TIMEOUT:
 				# Lost the player: hunt the last known position.
@@ -105,7 +111,13 @@ func _ai_physics(delta: float) -> void:
 			face_target = pp
 			_t += delta
 			if _t >= WINDUP_TIME:
-				_resolve_slash(pp, dist)
+				# Lunge: a short dash toward the player as the blades chop.
+				var lunge: Vector3 = pp - global_position
+				lunge.y = 0.0
+				if lunge.length_squared() > 0.01:
+					velocity += lunge.normalized() * 6.0
+				trigger_strike()
+				_resolve_slash()
 				_set_state(State.RECOVER)
 
 		State.RECOVER:
@@ -121,22 +133,10 @@ func _ai_physics(delta: float) -> void:
 				_set_state(State.CHARGE)
 
 
-func _resolve_slash(pp: Vector3, dist: float) -> void:
-	# Slash connects only if the player is still in range AND in front.
-	if dist > MELEE_HIT_RANGE:
-		Sfx.play_3d("slide_whoosh", global_position, -2.0)  # whiff
-		return
-	var to_p: Vector3 = pp - global_position
-	to_p.y = 0.0
-	var fwd := -global_transform.basis.z
-	if to_p.length_squared() < 0.01 or fwd.dot(to_p.normalized()) < MELEE_FRONT_DOT:
-		Sfx.play_3d("slide_whoosh", global_position, -2.0)  # dodged behind
-		return
-	var p := _player_node()
-	if p != null and p.has_method("take_damage"):
-		p.take_damage(damage * float(director_mods.get("dmg_mult", 1.0)),
-			global_position + fwd * 1.5, false)
-		Sfx.play_3d("impact_flesh", global_position)
+func _resolve_slash() -> void:
+	# Slash connects only if the player is still in range AND in front
+	# (shared melee_hit: same numbers as before, one code path).
+	melee_hit(MELEE_HIT_RANGE, MELEE_FRONT_DOT, damage)
 
 
 func _set_state(s: int) -> void:
