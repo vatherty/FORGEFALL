@@ -1,7 +1,7 @@
 # scripts/ui/main_menu.gd
 # FORGEFALL — main menu (Worker 6: HUD/UI).
 # Dark military menu: stencil FORGEFALL title, voxel-cube motif strip,
-# DEPLOY / MULTIPLAYER / LOADOUTS (persistent loadout picker, Goal 6) /
+# SINGLE PLAYER / MULTIPLAYER / LOADOUTS (persistent loadout picker, Goal 6) /
 # OPTIONS / QUIT. Options: sensitivity, master + music volume, gyro toggle
 # (stub), quality -> viewport scale.
 # LAYOUT (Deck screenshot fix): ONE vertical flow — a VBoxContainer inside
@@ -15,6 +15,20 @@
 # the tagline above and the footer below — the footer text
 # "…Colin's playtest build" landed on top of the LOADOUT button.)
 # Settings persist to user://forge_settings.cfg (NOT the DeepSeek config).
+#
+# Gameplay Rework (menu + TDM worker): the menu is a START MENU with
+# two top entries — SINGLE PLAYER and MULTIPLAYER — each opening a
+# MODE SELECT (SP: Tower Defense / TDM / Zombies; MP: the multiplayer
+# versions). Mode entries route through the GameModeManager REGISTRY
+# (GameModeManager.modes_for_scope / is_implemented): an entry whose
+# implementation has not landed shows NOT AVAILABLE (disabled, never
+# a crash, never a silent fallback). TDM's row shows the active
+# loadout (weapons + exactly-one traversal tool) with a CHANGE
+# LOADOUT button into the shared loadout picker. TD's START opens the
+# TD worker's TowerDefenseSetup overlay; CONFIRM starts the TD run.
+# The old DEPLOY + legacy MODE selector (survival/domination/endless)
+# are gone: legacy modes still run via Main.start_game() for the
+# integration suites, but the menu no longer offers them.
 extends Control
 
 const SETTINGS_PATH := "user://forge_settings.cfg"
@@ -28,14 +42,21 @@ var _music: HSlider
 var _gyro: CheckButton
 var _quality: OptionButton
 var _update_status: Label
-# Goal 3 CONTENT: game-mode selector (Survival / Domination / Endless).
-var _mode_select: OptionButton
-var _mode_desc: Label
-var _mode_best: Label
 var _map_select: OptionButton
-const MAP_KEYS := ["dustline", "foundry", "outpost"]
+const MAP_KEYS := ["dustline", "foundry", "outpost", "cinder_city", "tower_defense"]
 # Goal 6 PROGRESSION (Worker B): persistent loadout picker overlay scene.
 const LOADOUT_PICKER_SCENE := "res://scenes/ui/loadout_picker.tscn"
+# Mode-select overlay (Gameplay Rework): one overlay reused for the
+# SP and MP selects; rows are rebuilt on every open from the registry.
+var _mode_overlay: PanelContainer
+var _mode_overlay_scope: String = "sp"
+var _mode_overlay_rows: VBoxContainer
+var _mode_status_label: Label
+# TD pre-run setup overlay (TD worker's TowerDefenseSetup) + its BACK
+# button (the setup itself has no cancel path; this button is the
+# menu's, added on top of the setup so the player can back out).
+var _td_setup: Control = null
+var _td_setup_back: Button = null
 # Menu-stack layout refs (see _layout_stack).
 var _scroll: ScrollContainer
 var _stack: VBoxContainer
@@ -206,57 +227,21 @@ func _build() -> void:
 	_map_select.add_item("DUSTLINE", 0)
 	_map_select.add_item("FOUNDRY", 1)
 	_map_select.add_item("OUTPOST", 2)
+	_map_select.add_item("CINDER CITY", 3)
+	_map_select.add_item("TOWER DEFENSE", 4)
 	_map_select.selected = 0
 	StencilStyle.style_button(_map_select)
 	_map_select.item_selected.connect(_on_map_selected)
 	map_row.add_child(_map_select)
 
-	# Mode selector (Goal 3, Worker C): same row pattern as the map picker.
-	# Selection flows to GameModeManager.selected_mode immediately, so
-	# DEPLOY starts the chosen mode; it also persists via _save_settings().
-	var mode_row := HBoxContainer.new()
-	mode_row.name = "ModeRow"
-	mode_row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	mode_row.add_theme_constant_override("separation", 12)
-	mode_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	_stack.add_child(mode_row)
-	var mode_label := Label.new()
-	StencilStyle.apply_body(mode_label, 20, StencilStyle.TEXT, 2)
-	mode_label.text = "MODE"
-	mode_row.add_child(mode_label)
-	_mode_select = OptionButton.new()
-	for mid in ["survival", "domination", "endless", "base_defense"]:
-		_mode_select.add_item(str(GameModeManager.MODES[mid]["name"]))
-	StencilStyle.style_button(_mode_select)
-	_mode_select.item_selected.connect(_on_mode_selected)
-	mode_row.add_child(_mode_select)
-	_mode_desc = Label.new()
-	_mode_desc.name = "ModeDesc"
-	_mode_desc.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	StencilStyle.apply_body(_mode_desc, 18, StencilStyle.TEXT_DIM, 2)
-	_mode_desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_mode_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_mode_desc.custom_minimum_size = Vector2(380, 0)
-	_stack.add_child(_mode_desc)
-	_mode_best = Label.new()
-	_mode_best.name = "ModeBest"
-	_mode_best.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	StencilStyle.apply_body(_mode_best, 18, StencilStyle.ORANGE, 2)
-	_mode_best.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_stack.add_child(_mode_best)
-	# Labels only here — _on_mode_selected() would _save_settings() before
-	# the Options sliders exist (built later in _build_options()).
-	_mode_desc.text = str(GameModeManager.MODES["survival"]["desc"])
-	_mode_best.text = ""
-	# Empty best label takes no space — hidden labels are skipped by the
-	# VBox, which keeps the stack fitting short screens (Deck 1280x800).
-	_mode_best.visible = false
-
-	var deploy := _menu_button("DEPLOY")
-	deploy.name = "DeployButton"
-	deploy.pressed.connect(_on_deploy)
-	_stack.add_child(deploy)
-	_menu_buttons.append(deploy)
+	# Gameplay Rework: the two top entries. SINGLE PLAYER opens the SP
+	# mode select (Tower Defense / TDM / Zombies); MULTIPLAYER opens
+	# the MP mode select (the multiplayer versions).
+	var single_player := _menu_button("SINGLE PLAYER")
+	single_player.name = "SinglePlayerButton"
+	single_player.pressed.connect(_on_single_player)
+	_stack.add_child(single_player)
+	_menu_buttons.append(single_player)
 	var multiplayer := _menu_button("MULTIPLAYER")
 	multiplayer.name = "MultiplayerButton"
 	multiplayer.pressed.connect(_on_multiplayer)
@@ -320,6 +305,7 @@ func _build() -> void:
 	_stack.add_child(footer)
 
 	_build_options()
+	_build_mode_overlay()
 	_layout_stack()
 
 
@@ -474,39 +460,314 @@ func _on_map_selected(index: int) -> void:
 	_save_settings()
 
 
-func _on_mode_selected(index: int) -> void:
+## SINGLE PLAYER top entry: opens the SP mode select (Tower Defense
+## / TDM / Zombies). Rows route through the GameModeManager registry.
+func _on_single_player() -> void:
 	_click()
-	var ids := ["survival", "domination", "endless", "base_defense"]
-	var mid: String = ids[clampi(index, 0, ids.size() - 1)]
-	GameModeManager.selected_mode = mid
-	if _mode_desc != null:
-		_mode_desc.text = str(GameModeManager.MODES[mid]["desc"])
-	if _mode_best != null:
-		if mid == "endless":
-			var best := GameModeManager.load_best()
-			var bs: int = int(best.get("best_score", 0))
-			_mode_best.text = ("ENDLESS BEST: %d  (WAVE %d)" % [bs, int(best.get("best_wave", 0))]) if bs > 0 else "ENDLESS BEST: —"
-		else:
-			_mode_best.text = ""
-		_mode_best.visible = not _mode_best.text.is_empty()
-	_save_settings()
+	_open_mode_select("sp")
 
 
-func _on_deploy() -> void:
+## MULTIPLAYER top entry: opens the MP mode select (the multiplayer
+## versions of the modes). mp_tdm routes to the existing MP menu.
+func _on_multiplayer() -> void:
 	_click()
+	_open_mode_select("mp")
+
+
+## TD pre-run setup: the traversal-choice overlay (TowerDefenseSetup,
+## built in code — no scene). CONFIRM saves the choice and starts the
+## run via _on_td_setup_confirmed. The menu-shell worker owns this
+## menu's overall shape; this branch is the TD plug-in point.
+func _open_td_setup() -> void:
+	var existing := get_node_or_null("TDSetup")
+	if existing != null and is_instance_valid(existing):
+		_td_setup = existing as Control
+		if existing.has_method("open"):
+			existing.call("open")
+	else:
+		var setup := TowerDefenseSetup.new()
+		setup.name = "TDSetup"
+		add_child(setup)
+		_td_setup = setup
+		if setup.has_signal("setup_confirmed") and not setup.is_connected("setup_confirmed", _on_td_setup_confirmed):
+			setup.connect("setup_confirmed", _on_td_setup_confirmed)
+		if setup.has_method("open"):
+			setup.call("open")
+	# BACK: the setup itself has no cancel path. This button is the
+	# menu's (added after the setup so it draws on top); it closes the
+	# setup and returns to the SP mode select.
+	if _td_setup_back == null or not is_instance_valid(_td_setup_back):
+		_td_setup_back = Button.new()
+		_td_setup_back.name = "TDSetupBackButton"
+		_td_setup_back.text = "BACK"
+		_td_setup_back.set_anchors_preset(Control.PRESET_TOP_LEFT)
+		_td_setup_back.offset_left = 16
+		_td_setup_back.offset_top = 16
+		_td_setup_back.offset_right = 156
+		_td_setup_back.offset_bottom = 72
+		StencilStyle.style_button(_td_setup_back)
+		_td_setup_back.add_theme_font_size_override("font_size", 22)
+		_td_setup_back.pressed.connect(_on_td_setup_back)
+		add_child(_td_setup_back)
+	_td_setup_back.visible = true
+
+
+func _on_td_setup_back() -> void:
+	_click()
+	_close_td_setup()
+
+
+func _close_td_setup() -> void:
+	if _td_setup != null and is_instance_valid(_td_setup):
+		_td_setup.queue_free()
+	_td_setup = null
+	if _td_setup_back != null and is_instance_valid(_td_setup_back):
+		_td_setup_back.queue_free()
+	_td_setup_back = null
+
+
+func _on_td_setup_confirmed(_tool: String) -> void:
 	var main := get_tree().current_scene
+	if main != null and main.has_method("start_sp_mode"):
+		# start_sp_mode frees this menu on success. On refusal (map
+		# missing) the menu stays: close the setup, keep the select.
+		if bool(main.call("start_sp_mode", "tower_defense")):
+			return
+		_close_td_setup()
+		return
 	if main != null and main.has_method("start_game"):
 		main.start_game()
 	else:
-		# Fallback: worker 1's main scene. Coordinator: keep this path in sync.
 		get_tree().change_scene_to_file("res://scenes/main.tscn")
 
 
-func _on_multiplayer() -> void:
+# --- Mode select overlay (Gameplay Rework) --------------------------------
+# One overlay for the SP and MP selects. Rows are rebuilt from the
+# GameModeManager registry on every open, so a mode that lands later
+# (Zombies / MP co-op) flips from NOT AVAILABLE to START with no menu
+# change. NOT AVAILABLE entries are disabled, never a crash, never a
+# silent fallback into another mode.
+
+func _build_mode_overlay() -> void:
+	_mode_overlay = PanelContainer.new()
+	_mode_overlay.name = "ModeSelectOverlay"
+	_mode_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_mode_overlay.add_theme_stylebox_override("panel", StencilStyle.panel_accent())
+	_mode_overlay.visible = false
+	add_child(_mode_overlay)
+	var scroll := ScrollContainer.new()
+	scroll.name = "ModeSelectScroll"
+	scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_mode_overlay.add_child(scroll)
+	var root := VBoxContainer.new()
+	root.name = "ModeSelectRoot"
+	root.alignment = BoxContainer.ALIGNMENT_CENTER
+	root.add_theme_constant_override("separation", 10)
+	scroll.add_child(root)
+	var title := Label.new()
+	title.name = "ModeSelectTitle"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	StencilStyle.apply_title(title, 36, StencilStyle.ORANGE, 4)
+	root.add_child(title)
+	var sub := Label.new()
+	sub.name = "ModeSelectSubtitle"
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	StencilStyle.apply_body(sub, 18, StencilStyle.TEXT_DIM, 2)
+	sub.text = "CHOOSE A MODE"
+	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	root.add_child(sub)
+	_mode_overlay_rows = VBoxContainer.new()
+	_mode_overlay_rows.name = "ModeRows"
+	_mode_overlay_rows.add_theme_constant_override("separation", 12)
+	root.add_child(_mode_overlay_rows)
+	_mode_status_label = Label.new()
+	_mode_status_label.name = "ModeStatus"
+	_mode_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_mode_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	StencilStyle.apply_body(_mode_status_label, 18, StencilStyle.ORANGE, 2)
+	root.add_child(_mode_status_label)
+	var back := _menu_button("BACK")
+	back.name = "ModeBackButton"
+	back.pressed.connect(_close_mode_select)
+	root.add_child(back)
+
+
+func _open_mode_select(scope: String) -> void:
+	_mode_overlay_scope = scope
+	if _mode_overlay == null:
+		_build_mode_overlay()
+	# MP worker: flip the MP modes to implemented through the
+	# registry (MPModes.ensure_registered) so the MP select reads
+	# AVAILABLE as soon as the implementations exist. Runtime load
+	# (never a bare MPModes reference): this file must parse before
+	# the new script lands in the class cache.
+	var mp_script := load("res://scripts/net/mp_modes.gd") as GDScript
+	if mp_script != null:
+		mp_script.call("ensure_registered")
+	var title := _mode_overlay.get_node_or_null("ModeSelectScroll/ModeSelectRoot/ModeSelectTitle") as Label
+	if title != null:
+		title.text = "SINGLE PLAYER" if scope == "sp" else "MULTIPLAYER"
+	if _mode_status_label != null:
+		_mode_status_label.text = ""
+	_rebuild_mode_rows()
+	_mode_overlay.visible = true
+
+
+func _close_mode_select() -> void:
 	_click()
-	var main := get_tree().current_scene
-	if main != null and main.has_method("open_multiplayer_menu"):
-		main.open_multiplayer_menu()
+	if _mode_overlay != null:
+		_mode_overlay.visible = false
+
+
+func _rebuild_mode_rows() -> void:
+	if _mode_overlay_rows == null:
+		return
+	for child in _mode_overlay_rows.get_children():
+		_mode_overlay_rows.remove_child(child)
+		child.queue_free()
+	for mode_id in GameModeManager.modes_for_scope(_mode_overlay_scope):
+		_mode_overlay_rows.add_child(_build_mode_row(mode_id))
+
+
+func _build_mode_row(mode_id: String) -> Control:
+	var wrap := VBoxContainer.new()
+	wrap.name = "ModeRow_" + mode_id
+	wrap.add_theme_constant_override("separation", 4)
+	var row := HBoxContainer.new()
+	row.name = "ModeRowInner_" + mode_id
+	row.add_theme_constant_override("separation", 12)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	wrap.add_child(row)
+	var name_lbl := Label.new()
+	name_lbl.name = "ModeName_" + mode_id
+	name_lbl.text = str(GameModeManager.MODES[mode_id]["name"])
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	StencilStyle.apply_body(name_lbl, 22, StencilStyle.TEXT, 2)
+	row.add_child(name_lbl)
+	var implemented := GameModeManager.is_implemented(mode_id)
+	var status := Label.new()
+	status.name = "ModeStatus_" + mode_id
+	status.text = "AVAILABLE" if implemented else "NOT AVAILABLE"
+	StencilStyle.apply_body(status, 18, StencilStyle.GREEN if implemented else StencilStyle.TEXT_DIM, 2)
+	row.add_child(status)
+	var btn := Button.new()
+	btn.name = "ModeStart_" + mode_id
+	if not implemented:
+		btn.text = "NOT AVAILABLE"
+		btn.disabled = true
+		btn.tooltip_text = "This mode's implementation has not landed yet."
+	elif mode_id == "tdm":
+		btn.text = "START MATCH"
+	else:
+		btn.text = "START"
+	StencilStyle.style_button(btn)
+	btn.add_theme_font_size_override("font_size", 20)
+	btn.custom_minimum_size = Vector2(220, 54)
+	btn.pressed.connect(_on_mode_start_pressed.bind(mode_id))
+	row.add_child(btn)
+	var desc := Label.new()
+	desc.name = "ModeDesc_" + mode_id
+	desc.text = str(GameModeManager.MODES[mode_id]["desc"])
+	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	StencilStyle.apply_body(desc, 17, StencilStyle.TEXT_DIM, 2)
+	wrap.add_child(desc)
+	if _mode_overlay_scope == "sp" and mode_id == "tdm":
+		var lrow := HBoxContainer.new()
+		lrow.name = "TdmLoadoutRow"
+		lrow.add_theme_constant_override("separation", 12)
+		lrow.alignment = BoxContainer.ALIGNMENT_CENTER
+		wrap.add_child(lrow)
+		var llabel := Label.new()
+		llabel.name = "TdmLoadoutLabel"
+		llabel.text = _tdm_loadout_line()
+		llabel.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		StencilStyle.apply_body(llabel, 18, StencilStyle.TEXT, 2)
+		lrow.add_child(llabel)
+		var change := Button.new()
+		change.name = "ModeLoadoutChange"
+		change.text = "CHANGE LOADOUT"
+		StencilStyle.style_button(change)
+		change.add_theme_font_size_override("font_size", 18)
+		change.custom_minimum_size = Vector2(220, 54)
+		change.pressed.connect(_on_change_loadout_pressed)
+		lrow.add_child(change)
+	return wrap
+
+
+## One-line summary of the active loadout for the TDM row: name,
+## weapons, and the exactly-one traversal tool. Guarded: no Loadouts
+## autoload (headless / bare tree) -> a dash, never a crash.
+func _tdm_loadout_line() -> String:
+	var lo := get_node_or_null("/root/Loadouts")
+	if lo == null or not lo.has_method("get_active_loadout"):
+		return "LOADOUT: —"
+	var entry: Dictionary = lo.call("get_active_loadout")
+	if entry.is_empty():
+		return "LOADOUT: —"
+	var primary := str(entry.get("primary", ""))
+	var secondary := str(entry.get("secondary", ""))
+	if lo.has_method("get_weapon_display_name"):
+		var ptxt := str(lo.call("get_weapon_display_name", primary))
+		if not ptxt.is_empty():
+			primary = ptxt
+		var stxt := str(lo.call("get_weapon_display_name", secondary))
+		if not stxt.is_empty():
+			secondary = stxt
+	var trav := str(entry.get("traversal", "grapple"))
+	if lo.has_method("get_traversal_display_name"):
+		var ttxt := str(lo.call("get_traversal_display_name", trav))
+		if not ttxt.is_empty():
+			trav = ttxt
+	return "LOADOUT: %s — %s / %s · Traversal: %s" % [str(entry.get("name", "?")), primary, secondary, trav]
+
+
+func _on_change_loadout_pressed() -> void:
+	_click()
+	_on_loadouts()
+
+
+func _on_mode_start_pressed(mode_id: String) -> void:
+	_click()
+	if not GameModeManager.is_implemented(mode_id):
+		if _mode_status_label != null:
+			_mode_status_label.text = "NOT AVAILABLE YET."
+		return
+	match mode_id:
+		"tower_defense":
+			_open_td_setup()
+		"tdm":
+			var main := get_tree().current_scene
+			if main != null and main.has_method("start_sp_mode"):
+				if bool(main.call("start_sp_mode", "tdm")):
+					return
+				if _mode_status_label != null:
+					_mode_status_label.text = "COULD NOT START TDM — SEE LOG."
+			elif _mode_status_label != null:
+				_mode_status_label.text = "COULD NOT START TDM — MAIN MISSING."
+		"zombies":
+			var main_z := get_tree().current_scene
+			if main_z != null and main_z.has_method("start_sp_mode"):
+				if bool(main_z.call("start_sp_mode", "zombies")):
+					return
+				if _mode_status_label != null:
+					_mode_status_label.text = "COULD NOT START ZOMBIES — SEE LOG."
+			elif _mode_status_label != null:
+				_mode_status_label.text = "COULD NOT START ZOMBIES — MAIN MISSING."
+		"mp_tdm":
+			var main := get_tree().current_scene
+			if main != null and main.has_method("open_multiplayer_menu"):
+				main.open_multiplayer_menu("mp_tdm")
+		"mp_tower_defense":
+			var main_td := get_tree().current_scene
+			if main_td != null and main_td.has_method("open_multiplayer_menu"):
+				main_td.open_multiplayer_menu("mp_tower_defense")
+		"mp_zombies":
+			var main_z2 := get_tree().current_scene
+			if main_z2 != null and main_z2.has_method("open_multiplayer_menu"):
+				main_z2.open_multiplayer_menu("mp_zombies")
+		_:
+			if _mode_status_label != null:
+				_mode_status_label.text = "NOT AVAILABLE YET."
 
 
 # Goal 5 Worker B: puzzle-room entry (menu wiring for THIS button only).
@@ -536,6 +797,8 @@ func _on_loadouts() -> void:
 func _on_loadout_picker_closed(picker: Node) -> void:
 	if picker != null and is_instance_valid(picker):
 		picker.queue_free()
+	if _mode_overlay != null and _mode_overlay.visible:
+		_rebuild_mode_rows()
 
 
 # Goal 6 PROGRESSION (coordinator): stats screen entry (menu wiring for
@@ -625,12 +888,6 @@ func _load_settings() -> void:
 	_quality.selected = int(cfg.get_value("ui", "quality", 2))
 	_map_select.selected = int(cfg.get_value("ui", "map", 0))
 	_on_map_selected(_map_select.selected)
-	var saved_mode := str(cfg.get_value("game", "mode", "survival"))
-	var ids := ["survival", "domination", "endless", "base_defense"]
-	var midx := ids.find(saved_mode)
-	if midx >= 0:
-		_mode_select.selected = midx
-		_on_mode_selected(midx)
 	_apply_volumes()
 	_on_quality(_quality.selected)
 
