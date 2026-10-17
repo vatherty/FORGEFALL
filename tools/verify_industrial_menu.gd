@@ -21,7 +21,7 @@ func run() -> void:
 		await settle()
 		var grid = menu._mode_overlay_rows.get_child(0)
 		check(grid.get_child_count() == 3, "all single player modes appear at " + str(resolution))
-		check(grid.columns == (3 if resolution.x >= 900 else 1), "mode cards adapt to width " + str(resolution))
+		check(grid.columns == 1, "mode list stays vertical at " + str(resolution))
 		check(not menu._scroll.visible, "home navigation hidden during selection")
 		for card in grid.get_children():
 			check(card.size.x >= 240, "card has readable width: " + card.name)
@@ -29,7 +29,7 @@ func run() -> void:
 		menu._on_mode_start_pressed("tdm")
 		await settle()
 		check(menu._deploy_panel.visible and not menu._mode_overlay.visible, "continue opens deployment")
-		check(menu._deploy_columns.columns == (2 if resolution.x >= 900 else 1), "deployment adapts to width")
+		check(menu._deploy_columns.columns == 1, "deployment adapts to width")
 		check(not menu._deploy_tool.disabled, "TDM traversal selectable")
 		menu._selected_mode = "zombies"
 		menu._refresh_deploy()
