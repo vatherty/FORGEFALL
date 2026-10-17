@@ -380,12 +380,12 @@ func _build_ammo() -> void:
 	_full().add_child(box)
 	_weapon_label = Label.new()
 	_weapon_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	StencilStyle.apply_body(_weapon_label, _scaled_font(26), StencilStyle.TEXT_DIM, 3)
+	StencilStyle.apply_hud_body(_weapon_label, _scaled_font(26), StencilStyle.TEXT_DIM, 3)
 	_weapon_label.text = "—"
 	box.add_child(_weapon_label)
 	_ammo_caption = Label.new()
 	_ammo_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	StencilStyle.apply_body(_ammo_caption, _scaled_font(20), StencilStyle.TEXT_DIM, 3)
+	StencilStyle.apply_hud_body(_ammo_caption, _scaled_font(20), StencilStyle.TEXT_DIM, 3)
 	_ammo_caption.text = "AMMO"
 	box.add_child(_ammo_caption)
 	_ammo_label = Label.new()
@@ -413,7 +413,7 @@ func _build_health() -> void:
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_full().add_child(box)
 	_hp_caption = Label.new()
-	StencilStyle.apply_body(_hp_caption, _scaled_font(20), StencilStyle.TEXT_DIM, 3)
+	StencilStyle.apply_hud_body(_hp_caption, _scaled_font(20), StencilStyle.TEXT_DIM, 3)
 	_hp_caption.text = "HEALTH"
 	box.add_child(_hp_caption)
 	_hp_label = Label.new()
@@ -492,7 +492,7 @@ func _build_killfeed() -> void:
 	for i in KILLFEED_POOL:
 		var l := Label.new()
 		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		StencilStyle.apply_body(l, _scaled_font(22), StencilStyle.TEXT, 2)
+		StencilStyle.apply_hud_body(l, _scaled_font(22), StencilStyle.TEXT, 2)
 		l.modulate.a = 0.0
 		l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_killfeed_box.add_child(l)
@@ -521,7 +521,7 @@ func _build_banner() -> void:
 	vb.add_child(_banner_title)
 	_banner_sub = Label.new()
 	_banner_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	StencilStyle.apply_body(_banner_sub, _scaled_font(28), StencilStyle.ORANGE, 4)
+	StencilStyle.apply_hud_body(_banner_sub, _scaled_font(28), StencilStyle.ORANGE, 4)
 	vb.add_child(_banner_sub)
 
 
@@ -555,19 +555,19 @@ func _build_pips() -> void:
 		p.add_child(vb)
 		var ic := Label.new()
 		ic.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		StencilStyle.apply_body(ic, _scaled_font(32), StencilStyle.TEXT_DIM, 0)
+		StencilStyle.apply_hud_body(ic, _scaled_font(32), StencilStyle.TEXT_DIM, 0)
 		ic.text = STREAK_ICONS[i]
 		vb.add_child(ic)
 		_pip_icons.append(ic)
 		var nm := Label.new()
 		nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		StencilStyle.apply_body(nm, _scaled_font(20), StencilStyle.TEXT_DIM, 2)
+		StencilStyle.apply_hud_body(nm, _scaled_font(20), StencilStyle.TEXT_DIM, 2)
 		nm.text = STREAK_NAMES[i]
 		vb.add_child(nm)
 		_pip_names.append(nm)
 		var ky := Label.new()
 		ky.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		StencilStyle.apply_body(ky, _scaled_font(20), StencilStyle.TEXT_DIM, 2)
+		StencilStyle.apply_hud_body(ky, _scaled_font(20), StencilStyle.TEXT_DIM, 2)
 		ky.name = "StatusHint"
 		vb.add_child(ky)
 		_pip_keys.append(ky)
@@ -605,7 +605,7 @@ func _build_topbar() -> void:
 	_topbar.offset_top = 80
 	_topbar.offset_bottom = 114
 	_topbar.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	StencilStyle.apply_body(_topbar, _scaled_font(26), StencilStyle.TEXT, 3)
+	StencilStyle.apply_hud_body(_topbar, _scaled_font(26), StencilStyle.TEXT, 3)
 	_topbar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_full().add_child(_topbar)
 
@@ -692,7 +692,7 @@ func _build_uav() -> void:
 	_uav_label.offset_top = 280
 	_uav_label.offset_right = 316
 	_uav_label.offset_bottom = 312
-	StencilStyle.apply_body(_uav_label, _scaled_font(24), StencilStyle.ORANGE, 3)
+	StencilStyle.apply_hud_body(_uav_label, _scaled_font(24), StencilStyle.ORANGE, 3)
 	_uav_label.text = "UAV ACTIVE"
 	_uav_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_uav_label.visible = false
@@ -762,7 +762,7 @@ func _build_forge() -> void:
 	# The label stays wired (hidden) so re-enabling budget later is a
 	# one-line change; costs are still computed and shown in Forge.
 	_forge_budget_label.visible = false
-	StencilStyle.apply_body(_forge_budget_label, _scaled_font(20), StencilStyle.TEXT, 2)
+	StencilStyle.apply_hud_body(_forge_budget_label, _scaled_font(20), StencilStyle.TEXT, 2)
 	header.add_child(_forge_budget_label)
 
 	_forge_input = LineEdit.new()
@@ -814,7 +814,7 @@ func _build_touch_hints() -> void:
 	_touch_hints.offset_top = -160
 	_touch_hints.offset_bottom = -120
 	_touch_hints.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	StencilStyle.apply_body(_touch_hints, _scaled_font(18), StencilStyle.TEXT_DIM, 2)
+	StencilStyle.apply_hud_body(_touch_hints, _scaled_font(18), StencilStyle.TEXT_DIM, 2)
 	_touch_hints.text = ""
 	_touch_hints.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_touch_hints.visible = false
@@ -1429,29 +1429,29 @@ func _apply_ui_scale() -> void:
 	_health_bar_w = _scaled_size(HEALTH_BAR_W)
 	if _hp_bar != null:
 		_hp_bar.custom_minimum_size = Vector2(_health_bar_w, 16)
-	StencilStyle.apply_body(_weapon_label, _scaled_font(26), StencilStyle.TEXT_DIM, 3)
-	StencilStyle.apply_body(_ammo_caption, _scaled_font(20), StencilStyle.TEXT_DIM, 3)
+	StencilStyle.apply_hud_body(_weapon_label, _scaled_font(26), StencilStyle.TEXT_DIM, 3)
+	StencilStyle.apply_hud_body(_ammo_caption, _scaled_font(20), StencilStyle.TEXT_DIM, 3)
 	StencilStyle.apply_title(_ammo_label, _scaled_font(56), StencilStyle.TEXT, 3)
 	StencilStyle.apply_title(_reload_label, _scaled_font(30), StencilStyle.ORANGE, 4)
-	StencilStyle.apply_body(_hp_caption, _scaled_font(20), StencilStyle.TEXT_DIM, 3)
+	StencilStyle.apply_hud_body(_hp_caption, _scaled_font(20), StencilStyle.TEXT_DIM, 3)
 	StencilStyle.apply_title(_hp_label, _scaled_font(40), StencilStyle.TEXT, 3)
 	for l in _kf_labels:
-		StencilStyle.apply_body(l, _scaled_font(22), StencilStyle.TEXT, 2)
+		StencilStyle.apply_hud_body(l, _scaled_font(22), StencilStyle.TEXT, 2)
 	StencilStyle.apply_title(_banner_title, _scaled_font(64), StencilStyle.TEXT, 6)
-	StencilStyle.apply_body(_banner_sub, _scaled_font(28), StencilStyle.ORANGE, 4)
+	StencilStyle.apply_hud_body(_banner_sub, _scaled_font(28), StencilStyle.ORANGE, 4)
 	for i in 3:
 		_pips[i].custom_minimum_size = Vector2(_scaled_size(128), _scaled_size(104))
-		StencilStyle.apply_body(_pip_icons[i], _scaled_font(32), StencilStyle.TEXT_DIM, 0)
-		StencilStyle.apply_body(_pip_names[i], _scaled_font(20), StencilStyle.TEXT_DIM, 2)
-		StencilStyle.apply_body(_pip_keys[i], _scaled_font(20), StencilStyle.TEXT_DIM, 2)
+		StencilStyle.apply_hud_body(_pip_icons[i], _scaled_font(32), StencilStyle.TEXT_DIM, 0)
+		StencilStyle.apply_hud_body(_pip_names[i], _scaled_font(20), StencilStyle.TEXT_DIM, 2)
+		StencilStyle.apply_hud_body(_pip_keys[i], _scaled_font(20), StencilStyle.TEXT_DIM, 2)
 		_style_pip(i, _pip_unlocked[i])
-	StencilStyle.apply_body(_topbar, _scaled_font(26), StencilStyle.TEXT, 3)
-	StencilStyle.apply_body(_uav_label, _scaled_font(24), StencilStyle.ORANGE, 3)
+	StencilStyle.apply_hud_body(_topbar, _scaled_font(26), StencilStyle.TEXT, 3)
+	StencilStyle.apply_hud_body(_uav_label, _scaled_font(24), StencilStyle.ORANGE, 3)
 	if _forge_budget_label != null:
-		StencilStyle.apply_body(_forge_budget_label, _scaled_font(20), StencilStyle.TEXT, 2)
+		StencilStyle.apply_hud_body(_forge_budget_label, _scaled_font(20), StencilStyle.TEXT, 2)
 	if _forge_feed != null:
 		_forge_feed.add_theme_font_size_override("normal_font_size", _scaled_font(17))
-	StencilStyle.apply_body(_touch_hints, _scaled_font(18), StencilStyle.TEXT_DIM, 2)
+	StencilStyle.apply_hud_body(_touch_hints, _scaled_font(18), StencilStyle.TEXT_DIM, 2)
 	_update_health_display()
 
 
