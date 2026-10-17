@@ -2,8 +2,9 @@
 # Worker A: BASE DEFENSE mode.
 # Usage: godot --headless --path <project> --script res://tools/verify_v059_base_defense.gd
 # Covers:
-#   1. Registration: GameModeManager.MODES has "base_defense"; main_menu.gd
-#      lists it in all three mode arrays (build / select / load).
+#   1. Registration: GameModeManager.MODES has "base_defense" (legacy:
+#      still registered + startable, hidden from the new menu — the
+#      new Single/Multiplayer selects must NOT list it).
 #   2. Pure assault math: assault_split() values for no-defense,
 #      fully-absorbed, and partial-overflow cases.
 #   3. Full loop via Game signals: build phase -> combat wave -> core
@@ -125,7 +126,10 @@ func _process(_delta: float) -> bool:
 			var f := FileAccess.open("res://scripts/ui/main_menu.gd", FileAccess.READ)
 			if f != null:
 				src = f.get_as_text()
-			_check(src.count("base_defense") >= 3, "main_menu.gd lists base_defense in build/select/load arrays (>=3 hits)")
+			# Base Defense is LEGACY: still registered + startable via
+			# GameModeManager, but hidden from the new Single/Multiplayer
+			# mode selects — the new menu must NOT list it.
+			_check(not src.contains("base_defense"), "main_menu.gd does NOT list base_defense (legacy mode, hidden from the new menu)")
 			var s0: Dictionary = _bd_script.assault_split(5, 1, 0)
 			_check(is_equal_approx(float(s0["incoming"]), 30.0) and is_equal_approx(float(s0["absorbed"]), 0.0) and is_equal_approx(float(s0["overflow"]), 30.0), "assault_split: 5 enemies, 0 structures -> 30 incoming, 0 absorbed, 30 overflow")
 			var s1: Dictionary = _bd_script.assault_split(5, 1, 4)
