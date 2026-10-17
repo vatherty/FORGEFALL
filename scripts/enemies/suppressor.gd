@@ -4,11 +4,15 @@
 # SUPPRESSOR — long-range area-denial gunner. Holds a 30–40m band and lays
 # down sustained 6-round suppression bursts with HIGH spread: it is not
 # trying to hit you, it is trying to make the open ground uninhabitable.
-# Distinct from the Marksman (one precise 22-dmg crack, long telegraph)
-# and the Brute (close LMG barrage): the Suppressor pins campers from
-# across the map and forces repositioning into cover. Counterplay: its
-# bursts are inaccurate (move + it mostly misses), it is slow, and its
-# 0.7s pre-burst telegraph + long cooldown leave big punish windows.
+# NEW (rework): the burst SWEEPS — the aim point walks laterally across
+# the player's position during the burst, so standing still in the open
+# gets progressively more dangerous while a single sidestep clears the
+# whole sweep. Distinct from the Marksman (one precise 22-dmg crack,
+# long telegraph) and the Brute (close LMG barrage): the Suppressor pins
+# campers from across the map and forces repositioning into cover.
+# Counterplay: its bursts are inaccurate (move + it mostly misses), it
+# is slow, and its 0.7s pre-burst telegraph + long cooldown leave big
+# punish windows.
 
 class_name Suppressor
 extends EnemyBase
@@ -36,6 +40,7 @@ var _reposition_t := 0.0
 var _move_pos := Vector3.ZERO
 var _strafe_dir := 1.0
 var _strafe_t := 0.0
+var _sweep_phase := 0.0  # rework: burst sweep oscillator
 
 
 func _configure() -> void:
@@ -50,6 +55,10 @@ func _configure() -> void:
 	preferred_range = 35.0
 	body_radius = 0.34
 	body_height = 1.7
+
+
+func behaviour_tags() -> Array:
+	return ["ranged", "suppression_sweep", "long_range_band", "reposition", "area_denial"]
 
 
 func _debris_colors() -> Array:
@@ -109,6 +118,7 @@ func _set_state(s: int) -> void:
 	state = s
 	_t = 0.0
 	wish_speed = 0.0
+	aim_offset = Vector3.ZERO  # sweep ends when the state ends
 	if s != State.HOLD:
 		aiming = false
 		_aim_t = 0.0
@@ -143,7 +153,16 @@ func _update_burst(delta: float, pp: Vector3, dist: float, see: bool) -> void:
 	if gun_burst_left > 0:
 		aiming = true
 		face_target = pp
+		# Sweep: the aim point walks laterally across the player during
+		# the burst (via base aim_offset, consumed by fire_hitscan).
+		_sweep_phase += delta
+		var to_p: Vector3 = pp - global_position
+		to_p.y = 0.0
+		if to_p.length_squared() > 0.01:
+			var perp := Vector3(-to_p.z, 0, to_p.x).normalized()
+			aim_offset = perp * sin(_sweep_phase * 2.2) * 2.5
 		return
+	aim_offset = Vector3.ZERO
 	if _aim_t > 0.0:
 		aiming = true
 		face_target = pp
@@ -151,12 +170,15 @@ func _update_burst(delta: float, pp: Vector3, dist: float, see: bool) -> void:
 		_aim_t -= delta
 		if _aim_t <= 0.0:
 			gun_trigger(BURST_COUNT)
+			trigger_strike()
+			_sweep_phase = 0.0
 		return
 	aiming = false
 	_fire_t -= delta
 	if _fire_t <= 0.0 and see and dist < SIGHT_RANGE:
 		_fire_t = randf_range(SHOT_COOLDOWN_MIN, SHOT_COOLDOWN_MAX)
 		_aim_t = AIM_TELEGRAPH
+		begin_telegraph(AIM_TELEGRAPH, "suppress")
 
 
 func _pick_reposition(pp: Vector3) -> void:
