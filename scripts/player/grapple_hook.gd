@@ -3,8 +3,8 @@
 #   DIRECT PULL — anchor within ~35 deg of straight up + player slow:
 #     48 m/s^2 toward the anchor with gravity x0.2 (yanks the operative
 #     off the ground). Anything else is PENDULUM.
-#   PENDULUM — Spider-Man rope constraint (distance <= rope length),
-#     reel-in shortens the rope 6 m/s while the grapple action is held,
+#   PENDULUM — powered reel-in preserves tangential swing momentum,
+#     accelerating toward the anchor while the grapple is attached,
 #     and wish input pumps the swing (tangential acceleration, capped).
 # Release (action released, jump, or reaching the anchor) keeps momentum.
 # Safety: NEVER pulls the player through the floor — clamp_floor() pins the
@@ -24,7 +24,7 @@ const PULL_DIRECT_MAX_ANGLE_DEG := 35.0  # anchor within this of straight up
 const PULL_DIRECT_MAX_SPEED := 5.0     # ...and player slower than this
 const PULL_MAX_SPEED := 30.0
 const PULL_RELEASE_DIST := 1.5
-const REEL_SPEED := 10.0
+const REEL_SPEED := 16.0
 const ROPE_MIN := 2.0
 const SWING_PUMP_ACCEL := 12.0          # tangential accel from wish while swinging
 const SWING_PUMP_MAX_TANGENTIAL := 20.0  # tangential speed cap for pumping
@@ -148,6 +148,18 @@ func apply_grapple(delta: float, vel: Vector3, wish := Vector3.ZERO) -> Vector3:
 	else:
 		var to_p := (_player.global_position + Vector3(0.0, 1.0, 0.0)) - _anchor
 		var dist := to_p.length()
+		if dist < PULL_RELEASE_DIST:
+			release()
+			return vel
+		# An attached grapple is an powered winch, even on oblique shots.
+		# Accelerate only the radial component, preserving swing momentum.
+		if dist > 0.001:
+			var inward := -to_p / dist
+			var radial_speed := vel.dot(inward)
+			var desired := minf(REEL_SPEED, maxf(0.0, dist - PULL_RELEASE_DIST) * 6.0)
+			if radial_speed < desired:
+				vel += inward * minf(PULL_ACCEL * delta, desired - radial_speed)
+		_rope_len = maxf(ROPE_MIN, _rope_len - REEL_SPEED * delta)
 		# Swing pumping (v0.6.0): project wish onto the plane
 		# perpendicular to the rope and accelerate along it. Purely
 		# tangential, so the rope constraint (distance <= rope_len)
@@ -166,8 +178,6 @@ func apply_grapple(delta: float, vel: Vector3, wish := Vector3.ZERO) -> Vector3:
 					if ts > SWING_PUMP_MAX_TANGENTIAL:
 						vel = radial * radial_vel \
 							+ tan_vel.normalized() * SWING_PUMP_MAX_TANGENTIAL
-		if Input.is_action_pressed("grapple"):
-			_rope_len = maxf(ROPE_MIN, _rope_len - REEL_SPEED * delta)
 		if dist > _rope_len and dist > 0.001:
 			var radial := to_p / dist
 			var outward := vel.dot(radial)
