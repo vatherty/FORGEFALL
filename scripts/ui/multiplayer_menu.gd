@@ -59,7 +59,7 @@ const MAX_NAME_LEN := 16
 
 ## Map keys MUST mirror Main.MAPS in scripts/core/main.gd (Main is not a
 ## class_name, so the menu cannot read it directly — keep in sync).
-const MAP_KEYS := ["dustline", "foundry", "outpost", "cinder_city", "tower_defense"]
+const MAP_KEYS := ["dustline", "foundry", "outpost", "cinder_city", "tower_defense", "factory"]
 ## Mode keys: the three MP modes (MP worker). Main._on_mp_start routes
 ## each to its real start path (co-op TD / PvP TDM + bots / co-op
 ## Zombies); the registry (GameModeManager) marks all three implemented.
@@ -113,6 +113,9 @@ func _ready() -> void:
 	_load_settings()
 	_wire_multiplayer_signals()
 	_show_browse()
+	# Controller (v0.6.1): initial focus so D-pad + Confirm work with
+	# no mouse (text fields skipped — focus there pops the keyboard).
+	InputBindings.grab_first_focus(self)
 
 
 func _process(_delta: float) -> void:
