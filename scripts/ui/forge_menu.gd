@@ -661,6 +661,11 @@ func _get_forge() -> Node:
 
 # ------------------------------------------------------------------ API
 func open() -> void:
+	# Forge gate (Gameplay Rework): the menu cannot even open outside
+	# Tower Defense. The ForgeManager pipeline is gated too, so this
+	# is the UI layer of the same single gate (ForgeGate).
+	if not ForgeGate.can_build():
+		return
 	# Windows mouse capture: menu open -> cursor VISIBLE + erase mouse
 	# bindings so menu clicks can't fire. (HUD's watchdog re-syncs the
 	# mode + bindings every frame, so this is belt-and-braces for the
