@@ -73,6 +73,12 @@ func _process(_delta: float) -> bool:
 				"wall-run triggers beside a wall without sprint held")
 			Input.action_release("move_forward")
 			_player.call("_end_wallrun")
+			# The merged wall-run blocks SAME-WALL reattachment until
+			# landing / a different wall (intentional, covered by
+			# verify_wallrun_momentum). This check is about the forward
+			# ray, so clear the test-induced block before the head-on run.
+			_player.set("_wallrun_blocked_normal", Vector3.ZERO)
+			_player.set("_wallrun_detach_cooldown", 0.0)
 			# Head-on approach: face the wall, fly straight at it. The side
 			# rays run parallel to the wall face and miss; the forward ray
 			# must catch it.
