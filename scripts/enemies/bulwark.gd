@@ -5,6 +5,9 @@
 # shield and holds 10m, firing 3-round bursts. Frontal BODY shots deal
 # only 25% damage (the shield eats them); HEADSHOTS bypass the shield
 # (the head is above the plate) and FLANK/REAR shots deal full damage.
+# NEW (rework): a SHIELD BASH — if the player gets within 2.6m it winds
+# up 0.6s (shield drawn back, lamp lit), then bashes for 16 damage in a
+# 3m frontal arc. Back off or sidestep during the wind-up to dodge it.
 # Role: teaches positioning — headshot it, flank it, or ignore it and
 # kill its friends first; frontal mag-dumps are a trap. Counterplay is
 # always available: it is slow (3.6), it never takes cover, and its
@@ -13,7 +16,7 @@
 class_name Bulwark
 extends EnemyBase
 
-enum State { SPAWN, ADVANCE, COMBAT }
+enum State { SPAWN, ADVANCE, COMBAT, BASH, RECOVER }
 
 const BURST_COUNT := 3
 const FIRE_COOLDOWN_MIN := 1.6
@@ -25,6 +28,11 @@ const FRONTAL_MULT := 0.25  # frontal body shots deal 25% damage
 const STRAFE_TIME_MIN := 1.2
 const STRAFE_TIME_MAX := 2.4
 const LOST_SIGHT_TIMEOUT := 3.0
+const BASH_TRIGGER := 2.6    # rework: shield-bash trigger range
+const BASH_WINDUP := 0.6     # rework: readable bash telegraph
+const BASH_DAMAGE := 16.0    # rework: bash damage on a connecting hit
+const BASH_COOLDOWN := 4.0   # rework: seconds between bashes
+const BASH_RECOVER := 1.0    # rework: breathing room after a bash
 
 var state: int = State.SPAWN
 var _t := 0.0
@@ -33,6 +41,8 @@ var _strafe_t := 0.0
 var _fire_t := 0.0
 var _aim_t := 0.0
 var _lost_t := 0.0
+var _bash_t := 0.0
+var _bash_cooldown := 0.0
 
 
 func _configure() -> void:
@@ -48,6 +58,10 @@ func _configure() -> void:
 	body_radius = 0.40
 	body_height = 1.8
 	body_scale = Vector3(1.15, 1.05, 1.1)  # wide silhouette: the shield wall
+
+
+func behaviour_tags() -> Array:
+	return ["ranged", "shield_frontal", "bash_melee", "flankable", "slow_advance"]
 
 
 func _debris_colors() -> Array:
@@ -76,6 +90,8 @@ func _on_activated() -> void:
 	_strafe_t = 0.0
 	_aim_t = 0.0
 	_lost_t = 0.0
+	_bash_t = 0.0
+	_bash_cooldown = 1.5  # no instant bash on spawn — the player gets a look first
 	aiming = false
 
 
@@ -91,6 +107,8 @@ func _ai_physics(delta: float) -> void:
 		_lost_t = 0.0
 	else:
 		_lost_t += delta
+	if _bash_cooldown > 0.0:
+		_bash_cooldown -= delta
 
 	match state:
 		State.SPAWN:
@@ -106,6 +124,8 @@ func _ai_physics(delta: float) -> void:
 			face_target = pp
 			wish_dir = nav_direction_to(pp, delta)
 			wish_speed = speed
+			if _try_bash(see, dist):
+				return
 			if see and dist <= HOLD_RANGE:
 				_set_state(State.COMBAT)
 			elif not see and _lost_t > LOST_SIGHT_TIMEOUT:
@@ -113,10 +133,42 @@ func _ai_physics(delta: float) -> void:
 
 		State.COMBAT:
 			face_target = pp
+			if _try_bash(see, dist):
+				return
 			_update_strafe(delta, pp, dist)
 			_update_fire(delta, pp, dist, see)
 			if _lost_t > LOST_SIGHT_TIMEOUT:
 				_set_state(State.ADVANCE)
+
+		State.BASH:
+			# Planted, shield drawn back — the 0.6s dodge window.
+			aiming = true
+			wish_dir = Vector3.ZERO
+			face_target = pp
+			_bash_t -= delta
+			if _bash_t <= 0.0:
+				trigger_strike()
+				melee_hit(3.0, 0.3, BASH_DAMAGE)
+				_bash_cooldown = BASH_COOLDOWN
+				_set_state(State.RECOVER)
+
+		State.RECOVER:
+			aiming = false
+			wish_dir = Vector3.ZERO
+			face_target = pp
+			_t += delta
+			if _t >= BASH_RECOVER:
+				_set_state(State.COMBAT)
+
+
+func _try_bash(see: bool, dist: float) -> bool:
+	# Close-in, LOS, cooldown respected.
+	if _bash_cooldown > 0.0 or not see or dist > BASH_TRIGGER:
+		return false
+	_bash_t = BASH_WINDUP
+	begin_telegraph(BASH_WINDUP, "bash")
+	_set_state(State.BASH)
+	return true
 
 
 func _set_state(s: int) -> void:
@@ -158,9 +210,11 @@ func _update_fire(delta: float, pp: Vector3, dist: float, see: bool) -> void:
 		_aim_t -= delta
 		if _aim_t <= 0.0:
 			gun_trigger(BURST_COUNT)
+			trigger_strike()
 		return
 	aiming = false
 	_fire_t -= delta
 	if _fire_t <= 0.0 and see and dist < SIGHT_RANGE:
 		_fire_t = randf_range(FIRE_COOLDOWN_MIN, FIRE_COOLDOWN_MAX)
 		_aim_t = AIM_TELEGRAPH
+		begin_telegraph(AIM_TELEGRAPH, "aim")
