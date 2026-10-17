@@ -61,12 +61,13 @@ const LOOK_SENS := 0.0022  # radians of view per dragged pixel
 const ADS_SENS_MULT := 0.6
 # GAMEPAD LOOK (Steam Deck / Xbox-style pad): the right stick is POLLED every
 # frame in _process, not event-driven — JoypadMotion events only fire when the
-# axis value CHANGES, so a held stick would stop turning the camera. Polling
-# also matches the InputMap deadzone (0.2). The stick deflection (0..1 after
-# deadzone rescale) is a turn RATE: GAMEPAD_LOOK_SPEED radians/sec at full
-# deflection, converted to radians once (deflection * rate * delta) and fed
-# to add_look(). LOOK_SENS is NOT applied here — it is pixels->radians only.
-const GAMEPAD_DEADZONE := 0.2
+# axis value CHANGES, so a held stick would stop turning the camera. The
+# dead zone is NOT a local constant: InputBindings.deadzone is the one
+# tunable (Options > CONTROLS slider, persisted), shared with the InputMap
+# action deadzones. The stick deflection (0..1 after deadzone rescale) is
+# a turn RATE: GAMEPAD_LOOK_SPEED radians/sec at full deflection,
+# converted to radians once (deflection * rate * delta) and fed to
+# add_look(). LOOK_SENS is NOT applied here — it is pixels->radians only.
 const GAMEPAD_LOOK_SPEED := 2.8  # rad/s at full deflection (~160 deg/s)
 const PITCH_LIMIT_DEG := 89.0
 const FOV_NORMAL := 75.0
@@ -209,9 +210,9 @@ func _unhandled_input(event: InputEvent) -> void:
 
 # Gamepad right-stick look: deadzone-rescale one raw axis (-1..1) to 0..1.
 func _gamepad_axis(raw: float) -> float:
-	if absf(raw) < GAMEPAD_DEADZONE:
+	if absf(raw) < InputBindings.deadzone:
 		return 0.0
-	return (absf(raw) - GAMEPAD_DEADZONE) / (1.0 - GAMEPAD_DEADZONE) * signf(raw)
+	return (absf(raw) - InputBindings.deadzone) / (1.0 - InputBindings.deadzone) * signf(raw)
 
 
 # Gamepad look entry (testable without hardware): convert a right-stick
@@ -229,7 +230,7 @@ func _update_gamepad_look(delta: float) -> void:
 	for dev in Input.get_connected_joypads():
 		var rx := Input.get_joy_axis(dev, JOY_AXIS_RIGHT_X)
 		var ry := Input.get_joy_axis(dev, JOY_AXIS_RIGHT_Y)
-		if absf(rx) >= GAMEPAD_DEADZONE or absf(ry) >= GAMEPAD_DEADZONE:
+		if absf(rx) >= InputBindings.deadzone or absf(ry) >= InputBindings.deadzone:
 			_apply_gamepad_look(rx, ry, delta)
 			break
 
@@ -390,6 +391,7 @@ func _physics_process(delta: float) -> void:
 	_update_sprint(wish)
 	_update_crouch_slide(delta, wish)
 	_update_wallrun(delta, wish)
+	_update_tool_switch()
 	_update_grapple_input()
 	_update_portal_input()
 	_update_jump()
@@ -432,7 +434,7 @@ func _update_sprint(wish: Vector3) -> void:
 func _update_crouch_slide(delta: float, wish: Vector3) -> void:
 	var hspeed := Vector2(velocity.x, velocity.z).length()
 	# Slide: sprint + crouch tap at speed.
-	if Input.is_action_just_pressed("crouch") and _sprinting \
+	if _crouch_tapped() and _sprinting \
 			and hspeed >= SLIDE_MIN_SPEED and is_on_floor() and not _sliding:
 		_sliding = true
 		_slide_time = 0.0
@@ -445,7 +447,7 @@ func _update_crouch_slide(delta: float, wish: Vector3) -> void:
 		if _slide_time > SLIDE_MAX_TIME or hspeed < SLIDE_END_SPEED or not is_on_floor():
 			_sliding = false
 		return
-	_crouching = Input.is_action_pressed("crouch") and is_on_floor() \
+	_crouching = _crouch_held() and is_on_floor() \
 		and not _sprinting and wish.length() < 0.9
 
 
@@ -565,6 +567,43 @@ func _wall_ray_for_side() -> RayCast3D:
 func _end_wallrun() -> void:
 	_wallrunning = false
 	_wallrun_time = 0.0
+
+
+## Crouch held / tapped through EITHER the crouch or the slide action.
+## Slide defaults share crouch's binding, so a default setup behaves
+## exactly as before; a rebound slide button still crouches (a slide
+## is a crouch entered at speed — one input, not two buttons to hold).
+func _crouch_held() -> bool:
+	return (InputMap.has_action("crouch") and Input.is_action_pressed("crouch")) \
+		or (InputMap.has_action("slide") and Input.is_action_pressed("slide"))
+
+
+func _crouch_tapped() -> bool:
+	return (InputMap.has_action("crouch") and Input.is_action_just_pressed("crouch")) \
+		or (InputMap.has_action("slide") and Input.is_action_just_pressed("slide"))
+
+
+## tool_switch (V / D-pad Left): cycle the ACTIVE traversal tool through
+## the run's allowed set. Previously there was no in-game switch input —
+## the tool could only change via the loadout menu. "none" cycles to the
+## first allowed tool (Zombies with tools disabled has an empty allowed
+## set and this is a no-op).
+func _update_tool_switch() -> void:
+	if InputMap.has_action("tool_switch") and Input.is_action_just_pressed("tool_switch"):
+		_cycle_traversal_tool()
+
+
+func _cycle_traversal_tool() -> void:
+	var order: Array[String] = ["grapple", "jetpack", "portal"]
+	var candidates: Array[String] = []
+	for t in order:
+		if _allowed_traversal_tools.has(t):
+			candidates.append(t)
+	if candidates.is_empty():
+		return
+	var idx := candidates.find(_traversal_tool)
+	var next_tool: String = candidates[(idx + 1) % candidates.size()] if idx >= 0 else candidates[0]
+	set_traversal_tool(next_tool)
 
 
 func _update_grapple_input() -> void:
@@ -820,7 +859,7 @@ func _update_landing(pre_vy: float) -> void:
 		# here: audio is owned by the Sound worker; the slide-entry
 		# whoosh stays on the grounded tap path only.
 		var hspeed := Vector2(velocity.x, velocity.z).length()
-		if Input.is_action_pressed("crouch") and hspeed >= SLIDE_MIN_SPEED \
+		if _crouch_held() and hspeed >= SLIDE_MIN_SPEED \
 				and not _sliding:
 			_sliding = true
 			_slide_time = 0.0
