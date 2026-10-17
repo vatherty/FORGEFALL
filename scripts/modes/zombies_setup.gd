@@ -31,6 +31,7 @@ var _confirm_button: Button = null
 
 
 func _ready() -> void:
+	StencilStyle.install_menu(self)
 	add_to_group("zombies_setup")
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -57,29 +58,31 @@ static func apply_to_player(player: Node) -> bool:
 
 
 func _build() -> void:
-	var dim := ColorRect.new()
-	dim.name = "Dim"
-	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	dim.color = Color(0.0, 0.0, 0.0, 0.55)
-	dim.mouse_filter = Control.MOUSE_FILTER_STOP
-	add_child(dim)
+	StencilStyle.cinematic_background(self, "industrial")
 
 	var panel := PanelContainer.new()
 	panel.name = "Panel"
-	panel.set_anchors_preset(Control.PRESET_CENTER)
-	panel.offset_left = -360
-	panel.offset_right = 360
-	panel.offset_top = -150
-	panel.offset_bottom = 150
+	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	panel.offset_left = 24
+	panel.offset_right = -24
+	panel.offset_top = 24
+	panel.offset_bottom = -24
 	add_child(panel)
 
 	var vb := VBoxContainer.new()
 	vb.name = "VBox"
-	panel.add_child(vb)
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(scroll)
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vb)
+	vb.add_theme_constant_override("separation", 16)
+	StencilStyle.eyebrow(vb, "ZOMBIES DEPLOYMENT")
 
 	var title := Label.new()
 	title.name = "Title"
 	title.text = "ZOMBIES SETUP"
+	StencilStyle.apply_title(title, 36, StencilStyle.TEXT, 0)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(title)
 
@@ -100,6 +103,7 @@ func _build() -> void:
 	_confirm_button = Button.new()
 	_confirm_button.name = "ConfirmButton"
 	_confirm_button.text = "CONFIRM — DEPLOY"
+	StencilStyle.primary_button(_confirm_button)
 	_confirm_button.pressed.connect(_on_confirm)
 	vb.add_child(_confirm_button)
 
