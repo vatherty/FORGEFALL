@@ -1,9 +1,11 @@
 # FORGEFALL — scripts/enemies/grunt.gd
 # Worker 4 (enemy AI + waves).
 #
-# GRUNT — the backbone militia rifleman. Advances to preferred range, strafes
-# and fires aimed bursts, takes cover below 50% HP (peek-and-fire), and flanks
-# when the player camps in one spot. Throws telegraphed grenades at wave >= 4
+# GRUNT — the backbone militia rifleman. BOUNDING OVERWATCH advance
+# (rework): moves in bounds, then plants, aims (telegraphed) and fires —
+# never a straight run at the player. In combat: strafes and fires aimed
+# bursts, takes cover below 50% HP (peek-and-fire), and flanks when the
+# player camps in one spot. Throws telegraphed grenades at wave >= 4
 # (or when the Forge director enables grenadiers).
 
 class_name Grunt
@@ -41,6 +43,8 @@ var _still_t := 0.0
 var _still_ref := Vector3.ZERO
 var _lost_t := 0.0
 var _grenade_t := 0.0
+var _bound_t := 0.0       # rework: bounding-overwatch phase timer
+var _bound_move := true   # rework: true = moving bound, false = planted firing bound
 
 
 func _configure() -> void:
@@ -55,6 +59,10 @@ func _configure() -> void:
 	preferred_range = 15.0
 	body_radius = 0.34
 	body_height = 1.7
+
+
+func behaviour_tags() -> Array:
+	return ["ranged", "bounding_advance", "strafe", "cover_peek", "flank", "grenade"]
 
 
 func _debris_colors() -> Array:
@@ -73,6 +81,8 @@ func _on_activated() -> void:
 	_still_ref = player_pos()
 	_lost_t = 0.0
 	_grenade_t = randf_range(4.0, 8.0)
+	_bound_t = 1.0
+	_bound_move = true
 	aiming = false
 
 
@@ -107,9 +117,21 @@ func _ai_physics(delta: float) -> void:
 				_set_state(State.ADVANCE)
 
 		State.ADVANCE:
-			aiming = false
 			face_target = pp
-			wish_dir = nav_direction_to(pp, delta)
+			# Bounding overwatch: MOVE bound (advance) alternates with a
+			# SET bound (planted, aimed, firing). Never a straight run.
+			_bound_t -= delta
+			if _bound_t <= 0.0:
+				_bound_move = not _bound_move
+				_bound_t = 1.3 if _bound_move else 1.0
+			if _bound_move:
+				aiming = false
+				wish_dir = nav_direction_to(pp, delta)
+				wish_speed = speed
+			else:
+				aiming = true
+				wish_dir = Vector3.ZERO
+				_update_fire(delta, pp, dist, see)
 			if see and dist <= preferred_range:
 				_set_state(State.COMBAT)
 			elif hp < max_hp * 0.5 and _find_cover():
@@ -199,12 +221,14 @@ func _update_fire(delta: float, pp: Vector3, dist: float, see: bool) -> void:
 		_aim_t -= delta
 		if _aim_t <= 0.0:
 			gun_trigger(BURST_COUNT)
+			trigger_strike()  # recoil kick pose on the burst
 		return
 	aiming = false
 	_fire_t -= delta
 	if _fire_t <= 0.0 and see and dist < SIGHT_RANGE:
 		_fire_t = randf_range(FIRE_COOLDOWN_MIN, FIRE_COOLDOWN_MAX)
 		_aim_t = AIM_TELEGRAPH  # telegraphed aim before the burst
+		begin_telegraph(AIM_TELEGRAPH, "aim")
 
 
 func _track_camp(delta: float, pp: Vector3, see: bool) -> void:
@@ -264,6 +288,7 @@ func _update_peek(delta: float, pp: Vector3, dist: float, see: bool) -> void:
 			if see:
 				_aim_t = 0.0
 				gun_trigger(BURST_COUNT)
+				trigger_strike()
 
 
 func _try_grenade(delta: float, pp: Vector3, dist: float, see: bool) -> void:
