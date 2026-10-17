@@ -4,6 +4,7 @@ extends Control
 
 const SETTINGS_PATH := "user://forge_settings.cfg"
 
+var _options_dim: ColorRect
 var _options_panel: PanelContainer
 var _options_vb: VBoxContainer
 var _sens: HSlider
@@ -68,12 +69,15 @@ func _layout_stack() -> void:
 	if _mode_overlay_rows != null and _mode_overlay_rows.get_child_count() > 0:
 		var grid := _mode_overlay_rows.get_child(0) as GridContainer
 		if grid != null:
-			grid.columns = 3 if size.x >= 900 else 1
+			grid.columns = 1
 	if _deploy_columns != null:
-		_deploy_columns.columns = 2 if size.x >= 900 else 1
+		_deploy_columns.columns = 1
+		_deploy_columns.custom_minimum_size.x = minf(470, maxf(300, size.x - 96))
+		_deploy_desc.custom_minimum_size.x = minf(470, maxf(300, size.x - 96))
 
 
 func _ready() -> void:
+	StencilStyle.install_menu(self)
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	InputBindings.ensure_loaded()
 	TowerDefenseSetup.load_selection()
@@ -233,14 +237,15 @@ func _screen(name_: String, color: Color) -> PanelContainer:
 	var panel := PanelContainer.new()
 	panel.name = name_
 	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var style := StencilStyle.panel(color, color, 0)
-	style.content_margin_left = 32
-	style.content_margin_right = 32
-	style.content_margin_top = 28
-	style.content_margin_bottom = 28
+	var style := StencilStyle.panel(Color.TRANSPARENT, Color.TRANSPARENT, 0)
+	style.content_margin_left = 48
+	style.content_margin_right = 48
+	style.content_margin_top = 48
+	style.content_margin_bottom = 32
 	panel.add_theme_stylebox_override("panel", style)
 	panel.visible = false
 	add_child(panel)
+	StencilStyle.cinematic_background(panel)
 	return panel
 
 
@@ -259,31 +264,34 @@ func _menu_button(text: String) -> Button:
 func _size_options_panel() -> void:
 	if _options_panel == null:
 		return
-	# Viewport-sized, centered — never fixed 600x560, so it cannot clip on
-	# short screens (Deck windowed) or hang off a portrait phone.
-	var vp := size
-	if vp.x <= 0 or vp.y <= 0:
-		return
-	var pw := minf(600.0, vp.x * 0.92)
-	var ph := minf(560.0, vp.y * 0.92)
-	_options_panel.offset_left = -pw / 2.0
-	_options_panel.offset_right = pw / 2.0
-	_options_panel.offset_top = -ph / 2.0
-	_options_panel.offset_bottom = ph / 2.0
+	_options_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	if _options_vb != null:
-		# Fill the panel so the VBox's CENTER alignment centers the
-		# options; if content is taller, the VBox grows past this and the
-		# ScrollContainer scrolls instead of clipping.
-		_options_vb.custom_minimum_size = Vector2(maxf(0.0, pw - 28.0), maxf(0.0, ph - 20.0))
+		_options_vb.custom_minimum_size = Vector2(0, maxf(0, size.y - 96))
+		for row in _options_vb.find_children("*", "HBoxContainer", true, false):
+			if row.has_meta("settings_row"):
+				row.custom_minimum_size.x = minf(580, maxf(300, size.x - 96))
 
 
 func _build_options() -> void:
+	_options_dim = ColorRect.new()
+	_options_dim.name = "OptionsDim"
+	_options_dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_options_dim.color = Color(0, 0, 0, 0.0)
+	_options_dim.visible = false
+	add_child(_options_dim)
 	_options_panel = PanelContainer.new()
 	_options_panel.name = "OptionsPanel"
+	_options_panel.visibility_changed.connect(func() -> void: _options_dim.visible = _options_panel.visible)
 	_options_panel.set_anchors_preset(Control.PRESET_CENTER)
-	_options_panel.add_theme_stylebox_override("panel", StencilStyle.panel_accent())
+	var options_style := StencilStyle.panel(Color.TRANSPARENT, Color.TRANSPARENT, 0)
+	options_style.content_margin_left = 48
+	options_style.content_margin_right = 48
+	options_style.content_margin_top = 48
+	options_style.content_margin_bottom = 32
+	_options_panel.add_theme_stylebox_override("panel", options_style)
 	_options_panel.visible = false
 	add_child(_options_panel)
+	StencilStyle.cinematic_background(_options_panel, "armory")
 	var opt_scroll := ScrollContainer.new()
 	opt_scroll.name = "OptionsScroll"
 	opt_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -291,16 +299,17 @@ func _build_options() -> void:
 	var vb := VBoxContainer.new()
 	vb.name = "OptionsStack"
 	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	vb.alignment = BoxContainer.ALIGNMENT_CENTER
-	vb.add_theme_constant_override("separation", 10)
+	vb.alignment = BoxContainer.ALIGNMENT_BEGIN
+	vb.add_theme_constant_override("separation", 20)
 	opt_scroll.add_child(vb)
 	_options_vb = vb
 
 	var head := Label.new()
-	StencilStyle.apply_title(head, 30, StencilStyle.ORANGE, 4)
-	head.text = "OPTIONS"
-	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	StencilStyle.apply_title(head, 48, StencilStyle.TEXT, 0)
+	head.text = "SETTINGS"
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	vb.add_child(head)
+
 
 	_sens = _slider_row(vb, "SENSITIVITY", 0.5, 3.0, 0.05, 1.0)
 	_sens.value_changed.connect(func(_v: float) -> void: _save_settings())
@@ -310,6 +319,9 @@ func _build_options() -> void:
 	_music.value_changed.connect(func(_v: float) -> void: _apply_volumes(); _save_settings())
 
 	var gyro_row := HBoxContainer.new()
+	gyro_row.set_meta("settings_row", true)
+	gyro_row.custom_minimum_size.x = 580
+	gyro_row.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	vb.add_child(gyro_row)
 	var gl := Label.new()
 	StencilStyle.apply_body(gl, 20, StencilStyle.TEXT, 2)
@@ -322,6 +334,9 @@ func _build_options() -> void:
 	gyro_row.add_child(_gyro)
 
 	var q_row := HBoxContainer.new()
+	q_row.set_meta("settings_row", true)
+	q_row.custom_minimum_size.x = 580
+	q_row.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	vb.add_child(q_row)
 	var ql := Label.new()
 	StencilStyle.apply_body(ql, 20, StencilStyle.TEXT, 2)
@@ -340,10 +355,13 @@ func _build_options() -> void:
 	var upd_head := Label.new()
 	StencilStyle.apply_body(upd_head, 20, StencilStyle.ORANGE, 2)
 	upd_head.text = "GAME UPDATES"
-	upd_head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	upd_head.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	vb.add_child(upd_head)
 
 	var upd_row := HBoxContainer.new()
+	upd_row.set_meta("settings_row", true)
+	upd_row.custom_minimum_size.x = 580
+	upd_row.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	upd_row.add_theme_constant_override("separation", 12)
 	vb.add_child(upd_row)
 	var ub := Button.new()
@@ -366,20 +384,52 @@ func _build_options() -> void:
 	var controls := _menu_button("CONTROLS...")
 	controls.custom_minimum_size = Vector2(280, 54)
 	controls.pressed.connect(_on_controls)
-	var cc := CenterContainer.new()
+	var cc := HBoxContainer.new()
 	cc.add_child(controls)
 	vb.add_child(cc)
 
 	var back := _menu_button("BACK")
 	back.custom_minimum_size = Vector2(200, 54)
 	back.pressed.connect(func() -> void: _options_panel.visible = false; _focus_menu_button("OptionsButton"))
-	var bc := CenterContainer.new()
+	var bc := HBoxContainer.new()
 	bc.add_child(back)
 	vb.add_child(bc)
+	StencilStyle.navigation_button(back)
+	back.text = "‹  BACK"
+	var tabs := TabContainer.new()
+	tabs.name = "SettingsTabs"
+	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vb.add_child(tabs)
+	vb.move_child(tabs, 1)
+	var audio := VBoxContainer.new()
+	audio.name = "AUDIO"
+	audio.add_theme_constant_override("separation", 24)
+	tabs.add_child(audio)
+	var display := VBoxContainer.new()
+	display.name = "DISPLAY"
+	display.add_theme_constant_override("separation", 24)
+	tabs.add_child(display)
+	var input := VBoxContainer.new()
+	input.name = "CONTROLS"
+	input.add_theme_constant_override("separation", 24)
+	tabs.add_child(input)
+	_master.get_parent().reparent(audio)
+	_music.get_parent().reparent(audio)
+	q_row.reparent(display)
+	upd_head.reparent(display)
+	upd_row.reparent(display)
+	_sens.get_parent().reparent(input)
+	gyro_row.reparent(input)
+	cc.reparent(input)
+	vb.move_child(bc, vb.get_child_count() - 1)
+
 
 
 func _slider_row(parent: Control, label_text: String, mn: float, mx: float, step: float, val: float) -> HSlider:
 	var row := HBoxContainer.new()
+	row.set_meta("settings_row", true)
+	row.custom_minimum_size.x = 580
+	row.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	parent.add_child(row)
 	var l := Label.new()
 	StencilStyle.apply_body(l, 20, StencilStyle.TEXT, 2)
@@ -391,7 +441,7 @@ func _slider_row(parent: Control, label_text: String, mn: float, mx: float, step
 	s.max_value = mx
 	s.step = step
 	s.value = val
-	s.custom_minimum_size = Vector2(280, 30)
+	s.custom_minimum_size = Vector2(140, 30)
 	s.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	StencilStyle.style_slider(s)
 	row.add_child(s)
@@ -506,16 +556,19 @@ func _build_mode_overlay() -> void:
 	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	root.add_theme_constant_override("separation", 20)
 	scroll.add_child(root)
-	root.add_child(_label("■   FIELD TERMINAL  /  SELECT YOUR OPERATION", 14, Color("27d9ef")))
-	var title := _label("SINGLE PLAYER", 40)
+	root.add_child(_label("FORGEFALL / PLAY", 13, StencilStyle.TEXT_DIM))
+	var title := _label("SINGLE PLAYER", 48)
 	title.name = "ModeSelectTitle"
 	root.add_child(title)
 	_mode_overlay_rows = VBoxContainer.new()
 	_mode_overlay_rows.name = "ModeRows"
-	_mode_overlay_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_mode_overlay_rows.add_theme_constant_override("separation", 16)
+	_mode_overlay_rows.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	_mode_overlay_rows.custom_minimum_size.x = 440
+	_mode_overlay_rows.add_theme_constant_override("separation", 8)
 	root.add_child(_mode_overlay_rows)
-	_mode_status_label = _label("", 18, StencilStyle.ORANGE)
+	_mode_status_label = _label("Your squad against enemy bots.", 18, StencilStyle.TEXT_DIM)
+	_mode_status_label.custom_minimum_size.x = 440
+	_mode_status_label.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	_mode_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	root.add_child(_mode_status_label)
 	var spacer := Control.new()
@@ -526,6 +579,7 @@ func _build_mode_overlay() -> void:
 	var back := _menu_button("‹  BACK")
 	back.name = "ModeBackButton"
 	back.custom_minimum_size.x = 150
+	StencilStyle.navigation_button(back)
 	back.pressed.connect(_close_mode_select)
 	actions.add_child(back)
 	var fill := Control.new()
@@ -534,7 +588,7 @@ func _build_mode_overlay() -> void:
 	var next := _menu_button("CONTINUE  ›")
 	next.name = "ModeContinueButton"
 	next.custom_minimum_size.x = 220
-	_paint_button(next, Color("27d9ef"), true)
+	StencilStyle.primary_button(next)
 	next.pressed.connect(func() -> void: _on_mode_start_pressed(_selected_mode))
 	actions.add_child(next)
 
@@ -546,7 +600,7 @@ func _open_mode_select(scope: String) -> void:
 		mp_script.call("ensure_registered")
 	var title := _mode_overlay.get_node("ModeSelectScroll/ModeSelectRoot/ModeSelectTitle") as Label
 	title.text = "SINGLE PLAYER" if scope == "sp" else "MULTIPLAYER"
-	_mode_status_label.text = ""
+	_mode_status_label.text = "Your squad against enemy bots."
 	_selected_mode = "tdm" if scope == "sp" else "mp_tdm"
 	_rebuild_mode_rows()
 	_scroll.visible = false
@@ -569,7 +623,7 @@ func _rebuild_mode_rows() -> void:
 		child.queue_free()
 	var grid := GridContainer.new()
 	grid.name = "ModeCards"
-	grid.columns = 3 if size.x >= 900 else 1
+	grid.columns = 1
 	grid.add_theme_constant_override("h_separation", 16)
 	grid.add_theme_constant_override("v_separation", 16)
 	_mode_overlay_rows.add_child(grid)
@@ -584,6 +638,7 @@ func _rebuild_mode_rows() -> void:
 
 func _select_mode(mode_id: String) -> void:
 	_selected_mode = mode_id
+	_mode_status_label.text = str(GameModeManager.MODES[mode_id]["desc"])
 	_rebuild_mode_rows()
 	var selected := _mode_overlay_rows.find_child("ModeStart_" + mode_id, true, false) as Button
 	if selected != null:
@@ -591,47 +646,14 @@ func _select_mode(mode_id: String) -> void:
 
 
 func _build_mode_row(mode_id: String) -> Control:
-	var card := PanelContainer.new()
-	card.name = "ModeRow_" + mode_id
-	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var accent := Color("27d9ef") if mode_id == _selected_mode else Color("405263")
-	card.add_theme_stylebox_override("panel", StencilStyle.panel(Color("162b3b"), accent, 2))
-	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 12)
-	card.add_child(vb)
-	var preview_key := "factory"
-	if "tower" in mode_id:
-		preview_key = "tower_defense"
-	elif "zombies" in mode_id:
-		preview_key = "zombies_flat"
-	var art := _map_art(preview_key)
-	art.custom_minimum_size = Vector2(0, 145)
-	vb.add_child(art)
-	var title := _label(str(GameModeManager.MODES[mode_id]["name"]), 22)
-	title.name = "ModeName_" + mode_id
-	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	vb.add_child(title)
-	var short_desc := "Your squad against enemy bots."
-	if "tower" in mode_id:
-		short_desc = "Build on the lanes, then defend the core."
-	elif "zombies" in mode_id:
-		short_desc = "Horde survival. Buy doors, perks, and weapons."
-	var desc := _label(short_desc, 16, Color("b3c6d4"))
-	desc.name = "ModeDesc_" + mode_id
-	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	desc.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	vb.add_child(desc)
-	var b := _menu_button("SELECTED" if mode_id == _selected_mode else "SELECT")
-	b.name = "ModeStart_" + mode_id
-	b.custom_minimum_size.x = 0
-	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	b.disabled = not GameModeManager.is_implemented(mode_id)
-	if b.disabled:
-		b.text = "UNAVAILABLE"
-	_paint_button(b, Color("27d9ef"), mode_id == _selected_mode)
-	b.pressed.connect(_select_mode.bind(mode_id))
-	vb.add_child(b)
-	return card
+	var button := Button.new()
+	button.name = "ModeStart_" + mode_id
+	button.text = str(GameModeManager.MODES[mode_id]["name"])
+	button.custom_minimum_size = Vector2(440, 62)
+	button.disabled = not GameModeManager.is_implemented(mode_id)
+	StencilStyle.navigation_button(button, mode_id == _selected_mode)
+	button.pressed.connect(_select_mode.bind(mode_id))
+	return button
 
 
 ## One-line summary of the active loadout for the TDM row: name,
@@ -894,7 +916,7 @@ func _click() -> void:
 
 
 func _build_deploy() -> void:
-	_deploy_panel = _screen("DeployPanel", Color("ded6c5"))
+	_deploy_panel = _screen("DeployPanel", Color.TRANSPARENT)
 	var scroll := ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_deploy_panel.add_child(scroll)
@@ -903,31 +925,19 @@ func _build_deploy() -> void:
 	vb.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	vb.add_theme_constant_override("separation", 24)
 	scroll.add_child(vb)
-	vb.add_child(_label("■   DUSTLINE  /  MISSION PREPARATION", 14, Color("9b400f")))
-	_deploy_title = _label("PREPARE TO DEPLOY", 38, Color("14212b"))
+	_deploy_title = _label("PREPARE TO DEPLOY", 48)
 	vb.add_child(_deploy_title)
+	var gap := Control.new()
+	gap.custom_minimum_size.y = 32
+	vb.add_child(gap)
 	_deploy_columns = GridContainer.new()
-	_deploy_columns.columns = 2
-	_deploy_columns.add_theme_constant_override("h_separation", 28)
-	_deploy_columns.add_theme_constant_override("v_separation", 24)
+	_deploy_columns.columns = 1
+	_deploy_columns.custom_minimum_size.x = 470
+	_deploy_columns.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	vb.add_child(_deploy_columns)
-	var preview := VBoxContainer.new()
-	preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_deploy_columns.add_child(preview)
-	var art := _map_art("factory")
-	_deploy_preview = art
-	art.custom_minimum_size = Vector2(0, 240)
-	preview.add_child(art)
-	_deploy_preview_label = _label("FACTORY", 25, Color("14212b"))
-	preview.add_child(_deploy_preview_label)
-	_deploy_desc = _label("", 18, Color("354753"))
-	_deploy_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	preview.add_child(_deploy_desc)
 	var controls := VBoxContainer.new()
-	controls.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	controls.add_theme_constant_override("separation", 14)
+	controls.add_theme_constant_override("separation", 12)
 	_deploy_columns.add_child(controls)
-	controls.add_child(_label("MODE", 15, Color("354753")))
 	_deploy_mode = OptionButton.new()
 	_deploy_mode.name = "DeployMode"
 	for id in ["tdm", "tower_defense", "zombies"]:
@@ -935,8 +945,7 @@ func _build_deploy() -> void:
 	_deploy_mode.item_selected.connect(func(i: int) -> void:
 		_selected_mode = ["tdm", "tower_defense", "zombies"][i]
 		_refresh_deploy())
-	_deploy_control(controls, _deploy_mode)
-	controls.add_child(_label("MAP", 15, Color("354753")))
+	_deploy_row(controls, "MODE", _deploy_mode)
 	_map_select = OptionButton.new()
 	_map_select.name = "DeployMap"
 	for key in MAP_KEYS:
@@ -944,46 +953,70 @@ func _build_deploy() -> void:
 	_map_select.item_selected.connect(func(i: int) -> void:
 		_on_map_selected(i)
 		_refresh_deploy())
-	_deploy_control(controls, _map_select)
-	controls.add_child(_label("LOADOUT", 15, Color("354753")))
-	_deploy_loadout = _menu_button("ASSAULT  ›")
+	_deploy_row(controls, "MAP", _map_select)
+	_deploy_loadout = Button.new()
 	_deploy_loadout.name = "DeployLoadout"
+	_deploy_loadout.text = "ASSAULT  ›"
 	_deploy_loadout.pressed.connect(_on_loadouts)
-	_deploy_control(controls, _deploy_loadout)
-	controls.add_child(_label("TRAVERSAL", 15, Color("354753")))
+	_deploy_row(controls, "LOADOUT", _deploy_loadout)
 	_deploy_tool = OptionButton.new()
 	_deploy_tool.name = "DeployTraversal"
 	for tool in DEPLOY_TOOLS:
 		_deploy_tool.add_item(tool.replace("grapple", "grapple hook").to_upper())
-	_deploy_control(controls, _deploy_tool)
 	_deploy_tool.item_selected.connect(_set_deploy_tool)
-	var deploy := _menu_button("▸   DEPLOY")
-	deploy.name = "DeployButton"
-	deploy.custom_minimum_size.x = 0
-	deploy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_paint_button(deploy, StencilStyle.ORANGE, true)
-	deploy.pressed.connect(func() -> void:
-		_set_deploy_tool(_deploy_tool.selected)
-		_launch_mode(_selected_mode))
-	controls.add_child(deploy)
-	_deploy_status = _label("", 17, Color("932f18"))
+	_deploy_row(controls, "TRAVERSAL", _deploy_tool)
+	_deploy_preview_label = _label("", 16, StencilStyle.TEXT_DIM)
+	_deploy_desc = _label("", 18, StencilStyle.TEXT_DIM)
+	_deploy_desc.custom_minimum_size.x = 470
+	_deploy_desc.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	_deploy_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(_deploy_desc)
+	_deploy_preview = _map_art("factory")
+	_deploy_preview.visible = false
+	vb.add_child(_deploy_preview)
+	vb.add_child(_deploy_preview_label)
+	_deploy_status = _label("", 17, StencilStyle.ORANGE)
 	_deploy_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(_deploy_status)
 	var fill := Control.new()
 	fill.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	vb.add_child(fill)
+	var actions := HBoxContainer.new()
+	vb.add_child(actions)
 	var back := _menu_button("‹  BACK")
 	back.custom_minimum_size.x = 150
-	back.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	StencilStyle.navigation_button(back)
 	back.pressed.connect(_close_deploy)
-	vb.add_child(back)
+	actions.add_child(back)
+	var space := Control.new()
+	space.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_child(space)
+	var deploy := _menu_button("DEPLOY  ›")
+	deploy.name = "DeployButton"
+	deploy.custom_minimum_size.x = 210
+	StencilStyle.primary_button(deploy)
+	deploy.pressed.connect(func() -> void:
+		_set_deploy_tool(_deploy_tool.selected)
+		_launch_mode(_selected_mode))
+	actions.add_child(deploy)
+
+
+func _deploy_row(parent: Control, text: String, control: Button) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 20)
+	parent.add_child(row)
+	var label := _label(text, 17, StencilStyle.TEXT_DIM)
+	label.custom_minimum_size.x = 120
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(label)
+	_deploy_control(row, control)
 
 
 func _deploy_control(parent: Control, control: Button) -> void:
 	control.custom_minimum_size = Vector2(0, 52)
 	control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	control.add_theme_font_size_override("font_size", 19)
-	_paint_button(control, StencilStyle.ORANGE)
+	StencilStyle.style_button(control)
 	parent.add_child(control)
 
 
