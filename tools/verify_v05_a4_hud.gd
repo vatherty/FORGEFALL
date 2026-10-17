@@ -119,10 +119,14 @@ func _check_vignette_health() -> void:
 	_hud.call("_on_health_changed", 25.0, 100.0)
 	_check((_hud.get("_hp_label") as Label).text == "25 / 100", "health readout shows '25 / 100'")
 	var fill := _hud.get("_hp_bar_fill") as ColorRect
-	_check(fill.size.x > 60.0 and fill.size.x < 80.0, "health bar fill ~quarter (got %.1f)" % fill.size.x)
+	# v0.6.1 UiScale: the bar width is resolution-scaled
+	# (_health_bar_w = 280 * UiScale), so assert FRACTIONS of the
+	# scaled width, not absolute pixels (headless 1280x720 -> 0.667x).
+	var bar_w := float(_hud.get("_health_bar_w"))
+	_check(absf(fill.size.x - bar_w * 0.25) < 1.0, "health bar fill ~quarter of scaled width (got %.1f, bar %.1f)" % [fill.size.x, bar_w])
 	_check(fill.color == _ss.health_color(0.25), "low health bar is red")
 	_hud.call("_on_health_changed", 100.0, 100.0)
-	_check((_hud.get("_hp_bar_fill") as ColorRect).size.x > 279.0, "full health fills the bar")
+	_check(absf((_hud.get("_hp_bar_fill") as ColorRect).size.x - bar_w) < 1.0, "full health fills the scaled bar")
 	_check((_hud.get("_hp_bar_fill") as ColorRect).color == _ss.health_color(1.0), "full health bar is green")
 
 
