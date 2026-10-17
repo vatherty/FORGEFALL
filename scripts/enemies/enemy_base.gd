@@ -15,6 +15,15 @@
 # same choke point as the player. fire_hitscan passes self as the
 # attacker so the player's thorns reflects to the shooter.
 #
+# ENEMIES REWORK (2026-10-16): unified attack telegraph
+# (begin_telegraph / is_winding_up / telegraph_progress) — every
+# attack in every subclass announces its wind-up through this one
+# channel, and VoxelSoldier.animate_full renders it (pose + lamp).
+# Shared melee resolution (melee_hit / melee_blast) so slash, bash
+# and slam all use the same frontal-arc / falloff rules. Behaviour
+# tags (behaviour_tags) describe each type's real AI for verifiers.
+# Spawn / damage / D&D interfaces are UNCHANGED.
+#
 # Collision-layer contract (coordinate with worker 1 project.godot):
 #   layer 1 = world geometry, layer 2 = enemies, layer 3 = player.
 # Enemies collide physically ONLY with the world (mask 1). Enemy-enemy
@@ -159,6 +168,18 @@ var _death_tween: Tween = null
 # Spawn telegraph (C1): glowing column + sound for SPAWN_TELEGRAPH_TIME
 # after activate(). Enemy cannot move, aim, or fire while telegraphing.
 var _telegraph_t := 0.0
+# --- rework: unified ATTACK telegraph (distinct from the spawn telegraph
+# above) + procedural-animation drivers, written by subclasses / take_damage.
+# Subclasses call begin_telegraph() when an attack starts winding up;
+# _physics_process decays it; the soldier renders telegraph_progress().
+var attack_telegraph_t := 0.0
+var attack_telegraph_total := 0.0
+var attack_telegraph_kind := ""
+var anim_strike := 0.0   # 1.0 on the strike frame, decays over ~0.25s
+var anim_flinch := 0.0   # 1.0 on a damaging hit, decays over ~0.2s
+var anim_crouch := 0.0   # 1.0 while crouched (marksman aim)
+var anim_strafe := 0.0   # -1..1 lateral velocity vs facing (computed per tick)
+var aim_offset := Vector3.ZERO  # added to fire_hitscan's aim point (suppressor sweep)
 var _brute_step_accum := 0.0  # Goal 2: distance accumulator for brute footsteps
 var _telegraph_glow: MeshInstance3D
 var _telegraph_mat: StandardMaterial3D
@@ -170,6 +191,87 @@ func is_spawn_telegraphing() -> bool:
 
 func can_attack() -> bool:
 	return active and not dead and _telegraph_t <= 0.0
+
+
+# --- rework: unified attack telegraph + shared melee ---------------------
+## Start an attack wind-up of `duration` seconds. The soldier renders
+## telegraph_progress() as pose + lamp; is_winding_up() is the
+## verifier / AI read-out. duration <= 0 clears the telegraph.
+func begin_telegraph(duration: float, kind: String) -> void:
+	if duration <= 0.0:
+		attack_telegraph_t = 0.0
+		attack_telegraph_total = 0.0
+		attack_telegraph_kind = ""
+		return
+	attack_telegraph_t = duration
+	attack_telegraph_total = duration
+	attack_telegraph_kind = kind
+
+
+func is_winding_up() -> bool:
+	return attack_telegraph_t > 0.0
+
+
+## 0..1 elapsed fraction of the current wind-up (0 when none).
+func telegraph_progress() -> float:
+	if attack_telegraph_total <= 0.0:
+		return 0.0
+	return clampf(1.0 - attack_telegraph_t / attack_telegraph_total, 0.0, 1.0)
+
+
+## Call on the strike frame: drives the soldier's chop / lunge pose.
+func trigger_strike() -> void:
+	anim_strike = 1.0
+
+
+## Behaviour tags describing this type's real AI (overridden per type).
+## Used by verifiers to prove the types do NOT all just run at the
+## player. The base default is honest: no subclass may return it.
+func behaviour_tags() -> Array:
+	return ["run_at_player"]
+
+
+## Frontal-arc melee hit (shredder slash, bulwark bash): connects only
+## when the player is within `arc_range` AND inside the frontal cone
+## (`arc_dot` = min forward dot). Misses play the whiff sound.
+## Returns true on a connecting hit. Damage scales with director_mods.
+func melee_hit(arc_range: float, arc_dot: float, dmg: float) -> bool:
+	var p := _player_node()
+	if p == null or not p.has_method("take_damage"):
+		return false
+	var to_p: Vector3 = p.global_position - global_position
+	to_p.y = 0.0
+	var dist := to_p.length()
+	if dist > arc_range:
+		Sfx.play_3d("slide_whoosh", global_position, -2.0)
+		return false
+	var fwd := -global_transform.basis.z
+	if dist > 0.01 and fwd.dot(to_p.normalized()) < arc_dot:
+		Sfx.play_3d("slide_whoosh", global_position, -2.0)
+		return false
+	p.take_damage(dmg * float(director_mods.get("dmg_mult", 1.0)),
+		global_position + fwd * 1.5, false)
+	Sfx.play_3d("impact_flesh", global_position)
+	return true
+
+
+## Radial melee blast (brute slam): damage falls off linearly to ZERO
+## at the edge — sprinting out during the wind-up avoids it entirely.
+## No facing requirement (it is a ground shockwave, not a swing).
+func melee_blast(radius: float, max_dmg: float) -> void:
+	trigger_strike()
+	if ClassDB.class_exists("DebrisPool"):
+		DebrisPool.burst(global_position + Vector3(0, 0.3, 0),
+			_debris_colors(), 16, 5.0)
+	Sfx.play_3d("impact_flesh", global_position)
+	var p := _player_node()
+	if p == null or not p.has_method("take_damage"):
+		return
+	var d: float = p.global_position.distance_to(global_position)
+	if d < radius:
+		var fall := 1.0 - d / radius
+		p.take_damage(max_dmg * fall * float(director_mods.get("dmg_mult", 1.0)),
+			global_position, false)
 
 
 func _telegraph_color() -> Color:
@@ -300,6 +402,15 @@ func activate(spawn_pos: Vector3, wave: int, mods: Dictionary) -> void:
 	dead = false
 	headshot_last = false
 	_flinch = 0.0
+	attack_telegraph_t = 0.0
+	attack_telegraph_total = 0.0
+	attack_telegraph_kind = ""
+	anim_strike = 0.0
+	anim_flinch = 0.0
+	anim_crouch = 0.0
+	anim_strafe = 0.0
+	aim_offset = Vector3.ZERO
+	soldier.reset_pose()
 	_kb_hits = 0.0
 	last_hit_damage = 0.0
 	last_hit_flinch = 0.0
@@ -354,6 +465,15 @@ func _recycle() -> void:
 	last_damage_type = ""
 	last_damage_multiplier = 1.0
 	_telegraph_t = 0.0
+	attack_telegraph_t = 0.0
+	attack_telegraph_total = 0.0
+	attack_telegraph_kind = ""
+	anim_strike = 0.0
+	anim_flinch = 0.0
+	anim_crouch = 0.0
+	anim_strafe = 0.0
+	aim_offset = Vector3.ZERO
+	soldier.reset_pose()
 	if _telegraph_glow != null and is_instance_valid(_telegraph_glow):
 		_telegraph_glow.visible = false
 	active = false
@@ -453,6 +573,7 @@ func take_damage(amount: float, hit_position: Vector3, is_headshot: bool, attack
 		# than the single hardest hit — no pellet stunlock).
 		var fl := flinch_time_for(effective, is_headshot)
 		_flinch = maxf(_flinch, fl)
+		anim_flinch = 1.0  # rework: drives the soldier's hit-reaction pose
 		last_hit_flinch = fl
 		var kb_mag := knockback_for(effective, base_hp, is_headshot, _kb_hits)
 		_kb_hits += 1.0
@@ -573,9 +694,9 @@ func die() -> void:
 	# by the dead flag). A death event, not a hit: the HUD still solely
 	# owns the hit tick, so this never doubles a hit sound.
 	Sfx.play_3d("enemy_death", global_position, -4.0)
-	# Tip over (ragdoll-lite), then sink handled in _death_tick.
-	_death_tween = create_tween()
-	_death_tween.tween_property(soldier, "rotation:x", -PI * 0.48, DEATH_TIP_TIME)
+	# Death animation is code-driven in VoxelSoldier (knees buckle ->
+	# tip face-down -> settle), advanced by _death_tick through
+	# animate_full's death param; the sink is in _death_tick. No tween.
 	var mgr := get_parent()
 	if mgr != null and mgr.has_method("on_enemy_died"):
 		mgr.call("on_enemy_died", self)
@@ -756,7 +877,8 @@ func fire_hitscan(dmg: float, spread_deg: float, sound_id: String, tracer_color:
 	var muzzle: Vector3 = global_position + Vector3(0, 1.4 * body_scale.y, 0)
 	if rig.has("muzzle") and is_instance_valid(rig["muzzle"]):
 		muzzle = (rig["muzzle"] as Node3D).global_position
-	var aim_point: Vector3 = p.global_position + Vector3(0, 1.15, 0)
+	# aim_offset (suppressor sweep) shifts the aim point laterally.
+	var aim_point: Vector3 = p.global_position + Vector3(0, 1.15, 0) + aim_offset
 	var dir: Vector3 = (aim_point - muzzle).normalized()
 	var sr := deg_to_rad(spread_deg)
 	dir = dir.rotated(Vector3.UP, randf_range(-sr, sr))
@@ -802,8 +924,21 @@ func gun_update(delta: float, dmg: float, spread_deg: float, sound_id: String, t
 func _physics_process(delta: float) -> void:
 	if not active:
 		return
+	# Attack-telegraph / anim decays run FIRST: the spawn-telegraph
+	# block below returns early, and a wind-up must still expire while
+	# the enemy is spawn-telegraphing.
+	if attack_telegraph_t > 0.0:
+		attack_telegraph_t -= delta
+	if anim_strike > 0.0:
+		anim_strike = maxf(anim_strike - 4.0 * delta, 0.0)
+	if anim_flinch > 0.0:
+		anim_flinch = maxf(anim_flinch - 5.0 * delta, 0.0)
 	if dead:
 		_death_tick(delta)
+		# Code-driven death crumple, driven by _death_t progress.
+		if active and dead:
+			var death_p := clampf(_death_t / (DEATH_TIP_TIME + DEATH_SINK_TIME), 0.0, 1.0)
+			soldier.animate_full(delta, {"death": death_p})
 		return
 	# v0.5.8 D&D: sweep immunity-violating status effects before AI.
 	_sweep_immune_effects()
@@ -854,4 +989,14 @@ func _physics_process(delta: float) -> void:
 			_brute_step_accum = 0.0
 			Sfx.play_3d("footstep_brute", global_position, -5.0)
 	var planar := Vector2(velocity.x, velocity.z).length()
-	soldier.animate(delta, planar, aiming, false)
+	# Strafe lean: lateral velocity relative to facing, -1..1.
+	anim_strafe = 0.0
+	if planar > 0.5:
+		var fwd := -global_transform.basis.z
+		var right := fwd.cross(Vector3.UP)
+		if right.length_squared() > 0.001:
+			anim_strafe = clampf(velocity.dot(right.normalized()) / maxf(speed, 0.1), -1.0, 1.0)
+	var windup := telegraph_progress() if is_winding_up() else 0.0
+	soldier.animate_full(delta, {"speed": planar, "aiming": aiming,
+		"windup": windup, "strike": anim_strike, "flinch": anim_flinch,
+		"strafe": anim_strafe, "crouch": anim_crouch, "death": 0.0})
