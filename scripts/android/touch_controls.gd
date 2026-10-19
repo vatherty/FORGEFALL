@@ -27,6 +27,9 @@
 # the joystick zone, and the look zone per touch index. Buttons are visual-only
 # (mouse_filter IGNORE); this avoids depending on Control._gui_input capture
 # semantics across drags and on emulate_mouse_from_touch for multi-finger input.
+# Look deltas are computed per touch index from tracked last positions, NOT
+# from InputEventScreenDrag.relative (unreliable for multi-touch on mobile
+# browsers — it used to jump the view when a second finger was down).
 # No event is consumed, so HUD controls (worker 6) keep working underneath.
 #
 # Integration (worker 1 / main.gd):
@@ -59,6 +62,15 @@ var _view_size := Vector2.ZERO
 
 var _touches := {}            # touch index (int) -> String assignment
 var _btn_by_touch := {}       # touch index (int) -> int index into _btn_defs
+var _look_last := {}          # touch index (int) -> Vector2 last position for
+                              # "look" touches. Look deltas are computed HERE
+                              # (pos - last_pos per touch index), never from
+                              # InputEventScreenDrag.relative: on some mobile
+                              # browsers the engine's relative mixes touches,
+                              # which reads as the view "jumping to random
+                              # places" the moment a second finger is down.
+                              # Manual per-touch deltas are correct under every
+                              # engine behavior.
 var _joy_origin := Vector2.ZERO
 var _joy_vec := Vector2.ZERO  # reused, no per-event allocs
 var _joy_touch := -1
@@ -377,7 +389,11 @@ func _input(event: InputEvent) -> void:
 			_touch_end(t.index)
 	elif event is InputEventScreenDrag:
 		var dr := event as InputEventScreenDrag
-		_touch_move(dr.index, dr.position, dr.relative)
+		# NOTE: dr.relative is deliberately IGNORED — _touch_move()
+		# recomputes per-touch deltas from tracked positions (see
+		# _look_last). Engine relative is unreliable for multi-touch
+		# on mobile browsers.
+		_touch_move(dr.index, dr.position)
 
 
 func _touch_begin(index: int, pos: Vector2) -> void:
@@ -391,6 +407,13 @@ func _touch_begin(index: int, pos: Vector2) -> void:
 			_btn_down(d)
 			return
 	if pos.x < _view_size.x * JOY_ZONE_FRAC:
+		# Single-owner joystick: the FIRST touch in the zone owns the
+		# stick. A second finger landing in the zone while the stick is
+		# held is tracked but ignored ("joy_wait") — letting it steal
+		# _joy_origin mid-drag used to make movement jump wildly.
+		if _joy_touch != -1:
+			_touches[index] = "joy_wait"
+			return
 		_touches[index] = "joy"
 		_joy_touch = index
 		_joy_origin = pos
@@ -401,30 +424,47 @@ func _touch_begin(index: int, pos: Vector2) -> void:
 		_joy_knob.visible = true
 	else:
 		_touches[index] = "look"
+		_look_last[index] = pos
 
 
-func _touch_move(index: int, pos: Vector2, relative: Vector2) -> void:
+func _touch_move(index: int, pos: Vector2) -> void:
 	var kind := String(_touches.get(index, ""))
 	match kind:
 		"joy":
 			_update_joy(pos)
+		"joy_wait":
+			pass  # second finger in the stick zone: tracked, ignored.
 		"look":
-			_apply_look(relative)
+			# Per-touch delta from OUR tracked last position — the move
+			# stick's touch (or any other finger) can never leak into
+			# look, and a bogus engine relative can never jump the view.
+			var last: Vector2 = _look_last.get(index, pos)
+			_look_last[index] = pos
+			_apply_look(pos - last)
 		# "btn": hold stays engaged even if the finger slides off.
+		# unknown index (stale drag): ignored.
 
 
 func _touch_end(index: int) -> void:
 	var kind := String(_touches.get(index, ""))
 	_touches.erase(index)
+	_look_last.erase(index)
 	match kind:
 		"joy":
-			_release_joy()
+			# Defensive: only the owning touch releases the stick. A
+			# "joy_wait" touch ending here would otherwise kill a stick
+			# another finger is still holding.
+			if index == _joy_touch:
+				_release_joy()
+		"joy_wait":
+			pass  # was ignored the whole time; nothing to release.
 		"btn":
 			var bi := int(_btn_by_touch.get(index, -1))
 			_btn_by_touch.erase(index)
 			if bi >= 0:
 				_btn_up(_btn_defs[bi])
-		# "look": nothing to release.
+		# "look": nothing to release (last-pos already erased above).
+		# unknown index: nothing was tracked.
 
 
 func _update_joy(pos: Vector2) -> void:
@@ -604,3 +644,4 @@ func _release_all() -> void:
 			Input.action_release(StringName(d["action"]))
 	_touches.clear()
 	_btn_by_touch.clear()
+	_look_last.clear()
