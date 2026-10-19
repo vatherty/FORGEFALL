@@ -60,6 +60,14 @@ var _dialog: UpdateDialog = null
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	if OS.has_feature("web"):
+		# WEB PORT (2026-10-19): no update channel exists in a browser — no
+		# PackageInstaller, no self-replacing binary. Park the Android manager
+		# in DISABLED (same handoff pattern as PC, update_manager.gd untouched)
+		# so it never auto-checks version.json or pops its APK dialog.
+		_hand_off_android_updater()
+		state = State.DISABLED
+		return
 	if not is_pc_platform() or Tuning.UPDATE_BASE_URL.is_empty():
 		state = State.DISABLED
 		return
