@@ -3164,3 +3164,28 @@ After-idle: `_process` watches wall-clock frame gaps; a gap > 8s (tab suspended)
 Verification: tools/verify_web_warmup.gd (new) — 7/7: runner created, completes in 14 frames, all three pools built (ImpactFX 24, DebrisPool 120, TracerPool inst), room freed, second begin() refused. verify_web_port.gd extended with 10 source checks (coverage, progress, idle+honesty, no per-frame work, main.gd hook, touch-aim guards) — 26/26.
 Regressions: verify_forge_batch 143/143, verify_creator_fix 48/48, verify_updater_pc 65/0, 900-frame smoke clean.
 NOT done: no version bump, no publish/rebuild (ships in the next build); real-device feel (dual-touch aim while moving, first-use hitches) is Colin's on-device verdict.
+
+## v0.6.4 — Publish (2026-10-19, coordinator)
+iPhone web-port fixes (dual-touch aim + first-use/after-idle warmup), shipped as v0.6.4 / code 43. Web now joins the release flow as a fourth platform artifact.
+
+### The fixes (landed by fix worker, verified, no gameplay changes)
+- AIM: touch_controls.gd — look deltas computed per touch index from tracked last positions (engine InputEventScreenDrag.relative ignored on purpose: unreliable on mobile browsers with a 2nd finger down); single-owner joystick (2nd finger in stick zone = "joy_wait", ignored; only the owning touch releases the stick); clean release/cancel. New tools/verify_touch_aim.gd 10/10.
+- WARMUP: new scripts/core/web_warmup.gd, hooked in main.gd (web only) — main-menu "Warming up… N%" overlay over ~14 frames: three pools built early (ImpactFX 24, DebrisPool 120, TracerPool), then a throwaway SubViewport room renders one cube per VoxelBuilder palette color, the three enemy-only material variants (exact flag replicas), one ElementalEmitter per element, one tracer-equivalent material. Room + overlay freed after; zero per-frame cost. Frame gap > 8s → light rewarm (palette only, ~2 frames). Honest limit: cannot prevent WASM re-tiering after long idle. New tools/verify_web_warmup.gd 7/7; verify_web_port.gd extended to 26/26.
+
+### Version bump
+export_presets.cfg: version/code 42→43, version/name 0.6.3→0.6.4; Windows export_path → forgefall-v0.6.4-windows; tools/verify_updater_pc.gd expectations → 0.6.4/43. New README-LINUX/WINDOWS-v0.6.4.txt.
+
+### Artifacts (all from the same source tree)
+- Android APK updates/forgefall-v0.6.4-debug.apk — 41,264,467 B, sha256 b39aca9b… — apksigner v2+v3, com.sparky.forgefall code 43, signer cert identical to v0.6.2/v0.6.3, classes2.dex stock (1960 B), classes14 9228 B / classes15 6148 B intact.
+- Linux zip linux_staging/forgefall-v0.6.4-linux.zip — 41,034,164 B, sha256 b2320f48… — binary --quit-after 60: exit 0, 0 script errors.
+- Windows zip windows_staging/forgefall-v0.6.4-windows.zip — 50,624,103 B, sha256 6d46487b… — exe grew ~6 MB vs v0.6.1–v0.6.3 (current 4.7.2.stable template; v0.6.1–v0.6.3 were built with an older template binary — honest output of the established command). Console wrapper not auto-emitted by headless export; v0.6.3's forgefall.console.exe (69,120 B) staged to preserve zip layout.
+- Web web_staging/forgefall-web/ (9 files) — index.pck 13,039,224 B (~12.44 MiB), index.wasm 39,514,754 B, single-threaded confirmed (zero pthread refs, no worker file).
+
+### Verification
+Source: verify_touch_aim 10/10, verify_web_warmup 7/7, verify_web_port 26/26, verify_forge_batch 143/143, verify_creator_fix 48/48, verify_updater_pc 65/0 (offline by design), 900-frame smoke clean. Built Linux PCK: verify_touch_aim 10/10, verify_web_warmup 7/7 (only known exit-time leak noise). Web PCK: 25/26 — the one fail is the harness limitation (PCK ships .gdc not .gd), benign.
+
+### Publish
+- Release https://github.com/vatherty/FORGEFALL/releases/tag/v0.6.4 — 3 assets, all `uploaded`, sha256 match local (APK b39aca9b…, Linux b2320f48…, Windows 6d46487b…).
+- Pages: version.json + version_pc.json → 0.6.4/43; index.html → v0.6.4 links (Android ~41 MB, Linux ~41 MB, Windows ~51 MB via Release asset); /play/ replaced with fresh v0.6.4 web build (9 files); .nojekyll intact. Windows zip lives on the Release asset only (too big for Pages); version_pc.json + index Windows link point at it.
+- Pages transient errored→built pattern recurred; pages-enable 409 nudge applied.
+- Source sync: 15 files uploaded (BUILD_LOG, export_presets.cfg, touch_controls.gd, main.gd, web_warmup.gd + .uid, mock_look_player.gd + .uid, verify_touch_aim.gd + .uid, verify_updater_pc.gd, verify_web_port.gd + .uid, verify_web_warmup.gd + .uid), 0 deleted; zero-diff verified (569 local = 569 remote); scripts/android/ intact remotely (10 blobs); keystore passwords blanked as before.
