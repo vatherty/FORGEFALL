@@ -107,6 +107,8 @@ func _hook_updater() -> void:
 ## so routing manual checks to it would do nothing. Everywhere else
 ## (Android) the Android manager is the active one.
 func _active_updater() -> Node:
+	if OS.has_feature("web"):
+		return null  # WEB PORT: no update channel in a browser build.
 	if OS.get_name() == "Windows" or OS.get_name() == "Linux":
 		var pc := get_node_or_null("/root/UpdaterPC")
 		if pc != null:
@@ -188,6 +190,15 @@ func _build() -> void:
 			_paint_button(b, StencilStyle.ORANGE, true)
 		_stack.add_child(b)
 		_menu_buttons.append(b)
+	# WEB PORT (2026-10-19): browsers cannot do ENet networking. The
+	# MULTIPLAYER entry is disabled outright with a visible note instead of
+	# letting the player reach a screen that fails obscurely. (_open_mode_select
+	# with scope "mp" is only reachable through this button, so this gate is complete.)
+	if OS.has_feature("web"):
+		for b in _menu_buttons:
+			if b is Button and b.name == "MultiplayerButton":
+				b.disabled = true
+				b.text = "⇄   MULTIPLAYER (APP VERSION ONLY)"
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_stack.add_child(spacer)
@@ -378,6 +389,10 @@ func _build_options() -> void:
 	_update_status.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_update_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	upd_row.add_child(_update_status)
+	# WEB PORT (2026-10-19): no update channel in browsers — hide the row
+	# entirely instead of showing a dead button. (The Android Updater is also
+	# parked in DISABLED by UpdaterPC on web.)
+	upd_row.visible = not OS.has_feature("web")
 
 	# CONTROLS: full keyboard + gamepad remapping (v0.6.1). Opens the
 	# RebindMenu overlay; BACK returns here.
