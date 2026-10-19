@@ -3099,3 +3099,49 @@ Exclusions (never pushed): builds/, updates/, .godot/, staging dirs, *.apk/*.zip
 Synced local source tree to `vatherty/FORGEFALL` main via contents API (diff by git blob SHA). Uploaded 14 files, deleted 0 (BUILD_LOG.md uploaded once more after this section was appended).
 Changed set: v0.5.12 unified Forge — `forge_manager.gd` (legacy check accepts mod_block specs), `forge_llm.gd` (longest-match mod resolution), `forge_builder.gd` (build_weapon_mod single give path), `forge_menu.gd` (one box, MAKE status+history only), `mod_api.gd` (give-slot threading, give_weapon false-on-no-fresh-weapon), `arsenal.gd` + `weapon_manager.gd` (script mods in Loadouts), `verify_forge_unified.gd` + `.uid` (new, 45/45), `verify_invented_hooks.gd` (MAKE-section title assertion updated to the intentional v0.5.12 title), `tuning.gd` (FALLBACK 38), `export_presets.cfg` (sanitized copy uploaded: keystore passwords blanked as `<redacted>` placeholders, version 0.5.12 / code 38, Windows export_path → v0.5.12), `verify_updater_pc.gd` (manifest expectations 0.5.12 / code 38), `BUILD_LOG.md` (this entry + publish details).
 Exclusions (never pushed): builds/, updates/, .godot/, staging dirs, *.apk/*.zip/*.pck/*.keystore/*.import/*.pyc, top-level android/ only (NOT scripts/android/ — top-level exclusions at depth 0 only), any credentials. Zero-diff verified after sync: 447 local files == 447 repo blobs, all blob SHAs match. No keystore/secrets/binaries landed.
+
+## WEB PORT — Worker A (2026-10-19): export preset + platform gating (v0.5.12 source, NO version bump)
+
+Target: WASM browser build at https://vatherty.github.io/Forgefall-updates/play/ (iPhone Safari QA by Colin's girlfriend).
+Single-threaded release template: zero Thread usage in scripts/ (only denylist strings in the mod validator), so
+web_nothreads_release.zip is safe — no SharedArrayBuffer requirement, no special server headers, plain GitHub Pages hosting works.
+
+- **export_presets.cfg**: added [preset.3] "Web" (platform="Web"), single-threaded (`variant/thread_support=false`,
+  `variant/extensions_support=false`), export_path `web_staging/forgefall-web/index.html`, html/canvas_resize_policy=2
+  (Adaptive), focus_canvas_on_start=true, vram_texture_compression for_desktop=true AND for_mobile=true (iPhone Safari
+  needs the mobile/ASTC variants; S3TC alone is not supported on iOS), PWA disabled. exclude_filter follows the Windows
+  preset convention (+ web_staging/* so the export never packs itself).
+- **Touch controls UN-GATED for web** (`scripts/android/touch_controls.gd:86-88`): `_touch_active` now includes
+  `or OS.has_feature("web")` unconditionally — iPhone Safari is a touch device but the web DisplayServer can't be relied
+  on to report it; without this the web build is unplayable. main.gd's unconditional TOUCH_SCENE instantiation already
+  covers web (scene self-gates visibility). gyro_aim / haptics / perf_scaler left as-is (Android-gated internally or safe no-ops).
+- **ForgeUpdater gated off on web** (call sites only — `update_manager.gd` left byte-identical per its own headless-test
+  constraint): `update_manager_pc.gd._ready()` (lines 63-70) parks the Android Updater in DISABLED on web via the existing
+  `_hand_off_android_updater()` pattern (no PackageInstaller / no binary swap possible in a browser); `main_menu.gd`
+  `_active_updater()` returns null on web and the CHECK FOR UPDATES row is hidden (`upd_row.visible = not OS.has_feature("web")`).
+- **Voice**: no change — `speech_input.gd is_available()` already requires Android, so on web MIC taps take the existing
+  typed fallback (`_typed_fallback()`): toast "Voice input isn't available yet — type your prompt" (VOICE_UNAVAILABLE_MSG)
+  + opens the typed Forge console. Typed Forge works unchanged.
+- **Multiplayer disabled on web** (`scripts/ui/main_menu.gd`, menu build): the MULTIPLAYER button is `disabled = true` with
+  visible text "⇄   MULTIPLAYER (APP VERSION ONLY)" — no obscure ENet failure reachable. `_open_mode_select("mp")` is only
+  reachable through this button, so the gate is complete.
+- **DeepSeek**: untouched — `scripts/forge/forge_llm.gd` still POSTs directly to https://api.deepseek.com/chat/completions
+  with the same headers (CORS verified live 2026-10-19; no proxy). HTTPRequest path has no Android dependency. Key entry
+  flow unchanged (user:// → IndexedDB on web, persists per browser).
+- **SIZE/PERF sanity**: 13 textures total, largest 1.9 MB menu backdrop — no 4K absurdity, nothing re-tuned.
+- **EXPORT (Godot 4.7.2 headless, --export-release "Web")**: SUCCESS, exit 0, staged at
+  `web_staging/forgefall-web/` — index.html (5.4 KB) + index.js (280 KB) + index.wasm (39.5 MB) + index.pck
+  (13,012,732 bytes ≈ 12.4 MiB) + audio worklets + icons. Verified single-threaded: zero pthread refs in index.js, no
+  worker file emitted; SharedArrayBuffer refs are feature-detection strings only. All modified scripts compiled clean in
+  project context during export.
+- NOT done (out of Worker A scope / deferred): no version bump; no publish/deploy to /play/ (coordinator's call);
+  browser runtime QA (touch feel, Forge typing, Safari audio) is the girlfriend's on-device verdict; the mod-validator
+  denylist mentioning JavaScriptBridge is intentional and untouched.
+
+## WEB PORT — Publish (2026-10-19, coordinator)
+Built from v0.6.3 (code 42) source — no version bump; web joins the release flow as a platform artifact from the next version on. (Task brief said v0.5.12; the workspace had moved to v0.6.3 — recorded accurately.)
+- Export: Godot 4.7.2 Web preset (export_presets.cfg [preset.3]), single-threaded release (web_nothreads_release.zip), Compatibility/WebGL2, canvas Adaptive, VRAM desktop+mobile. Staged ~/workspace/forgefall/web_staging/forgefall-web/: index.pck 12.4 MiB, index.wasm 39.5 MB, total ~51 MB.
+- Web gates (OS.has_feature("web")): touch controls un-gated (touch_controls.gd:90 — iPhone Safari needs this; main.gd already instantiates the touch scene); ForgeUpdater parked DISABLED + CHECK FOR UPDATES row hidden (update_manager_pc.gd:63-70, main_menu.gd:110/395); voice → existing typed fallback (speech_input already Android-only); multiplayer button disabled + "MULTIPLAYER (APP VERSION ONLY)" (main_menu.gd:197, _open_mode_select("mp") unreachable otherwise). DeepSeek: direct api.deepseek.com, no proxy (CORS verified live 2026-10-19).
+- Verification: tools/verify_web_port.gd 16/16 PASS; headless Chromium (SwiftShader, no COOP/COEP): engine boots zero script errors, self-reports "single-threaded", main menu renders (1280x720 + 390x844 iPhone UA), touch UA boots clean, IndexedDB /userfs backend live. KNOWN LIMIT: first-3D-frame capture wedged in headless SwiftShader (GPU process 72% sustained, game logic idle 0-2% — software-rasterization artifact, not a game bug; desktop headless does the same map + 900 frames in <60s). Deferred to real-device QA (girlfriend's iPhone).
+- Published: https://vatherty.github.io/Forgefall-updates/play/ (9 files), landing page "PLAY IN YOUR BROWSER" entry + iPhone note. Pages transient errored→built (~3 min) after pages-enable nudge. Live-verified: all 9 play/ assets 206, landing entry present, version.json/version_pc.json untouched (0.6.3/code 42), v0.6.3 APK 206, .nojekyll intact.
+- Regressions: verify_forge_batch 143/143, verify_creator_fix 48/48, verify_updater_pc 65/0, 900-frame smoke clean.
