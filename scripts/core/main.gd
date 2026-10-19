@@ -71,6 +71,13 @@ func _ready() -> void:
 	# actions, guarantee menu-nav gamepad events, apply saved rebinds.
 	InputBindings.ensure_loaded()
 	_show_menu()
+	# WEB PORT (iPhone Safari): warm shaders + lazy pools during the menu
+	# so the first shot / explosion / enemy doesn't hitch. No-op off web.
+	# NOTE: loaded by path (not the WebWarmup class_name) so this file
+	# parses even when the editor's script-class cache is stale.
+	if OS.has_feature("web"):
+		var warmup_script: GDScript = load("res://scripts/core/web_warmup.gd")
+		warmup_script.begin(self)
 
 
 func _unhandled_input(event: InputEvent) -> void:
