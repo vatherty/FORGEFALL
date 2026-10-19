@@ -16,7 +16,10 @@
 #
 # Visibility: shown only on touch devices —
 #   DisplayServer.is_touchscreen_available() (VERIFIED, exists in 4.x stable)
-#   with fallback OS.has_feature("android") / ("ios").
+#   with fallback OS.has_feature("android") / ("ios") / ("web").
+#   The web feature is included UNCONDITIONALLY: iPhone Safari is a touch
+#   device but the web DisplayServer cannot be relied on to report it,
+#   and without this layer the web build is unplayable (no input).
 # Set `force_show = true` in the inspector to test on desktop Linux
 # (mouse clicks emulate touch via input_devices/pointing/emulate_touch_from_mouse).
 #
@@ -83,7 +86,8 @@ func _ready() -> void:
 	layer = 10
 	add_to_group("touch_controls")
 	_touch_active = force_show or DisplayServer.is_touchscreen_available() \
-		or OS.has_feature("android") or OS.has_feature("ios")
+		or OS.has_feature("android") or OS.has_feature("ios") \
+		or OS.has_feature("web")  # WEB PORT: always on in browsers (touch devices)
 	visible = _touch_active
 	_sfx = get_node_or_null("/root/Sfx")
 	_speech = SpeechInput.new()
