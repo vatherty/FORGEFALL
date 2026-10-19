@@ -304,6 +304,84 @@ func _check_no_threads() -> void:
 		_fail("nothreads/no-Thread-in-scripts", "Thread token in code: " + ", ".join(bad))
 
 
+func _check_web_warmup() -> void:
+	var text := _need("res://scripts/core/web_warmup.gd", "warmup")
+	if text == "<MISSING>":
+		return
+	if not text.contains("class_name WebWarmup"):
+		_fail("warmup/class", "class_name WebWarmup missing")
+		return
+	_pass("warmup/class (WebWarmup exists)")
+	# Coverage: palette materials, enemy material variants, emitters,
+	# tracer material, and the three lazy pools.
+	var need := {
+		"VoxelBuilder.PALETTE": "palette materials",
+		"_flash_mat": "enemy hit-flash variant",
+		"_telegraph_mat": "enemy telegraph variant",
+		"_lamp_mat": "enemy lamp variant",
+		"ElementalEmitter.ELEMENTS": "one emitter per element",
+		"ImpactFX.precache()": "impact pool early",
+		"DebrisPool.ensure_pool()": "debris pool early",
+		"TracerPool": "tracer pool early",
+	}
+	var missing: Array = []
+	for token in need:
+		if not text.contains(token):
+			missing.append("%s (%s)" % [token, need[token]])
+	if missing.is_empty():
+		_pass("warmup/coverage (palette, enemy variants, emitters, tracer, 3 pools)")
+	else:
+		_fail("warmup/coverage", "missing: " + ", ".join(missing))
+	# Honest progress on an overlay while warming.
+	if text.contains("Warming up"):
+		_pass("warmup/progress (overlay shows honest %)")
+	else:
+		_fail("warmup/progress", "no progress overlay text")
+	# After-idle: gap detection + light rewarm, with the honest re-tier
+	# limit documented (not faked).
+	if text.contains("IDLE_GAP_MSEC") and text.contains("_light_rewarm"):
+		_pass("warmup/idle (suspend gap -> light rewarm)")
+	else:
+		_fail("warmup/idle", "no idle gap detection / light rewarm")
+	if text.contains("re-tier"):
+		_pass("warmup/idle-honest (re-tiering limit documented)")
+	else:
+		_fail("warmup/idle-honest", "re-tiering limit not documented")
+	# No per-frame work after done: _process must only do gap detection.
+	var pi := text.find("func _process(")
+	var ni := text.find("\nfunc ", pi + 1)
+	var body := text.substr(pi, ni - pi) if ni > pi else text.substr(pi)
+	if body.contains("IDLE_GAP_MSEC") and not body.contains("add_child"):
+		_pass("warmup/no-per-frame-work (post-done _process is gap-check only)")
+	else:
+		_fail("warmup/no-per-frame-work", "_process does more than gap detection")
+	# Boot hook: main.gd starts it on web only.
+	var main := _need("res://scripts/core/main.gd", "warmup-hook")
+	if main == "<MISSING>":
+		return
+	if main.contains("web_warmup.gd") and main.contains("OS.has_feature(\"web\")"):
+		_pass("warmup/hook (main.gd begins it on web only)")
+	else:
+		_fail("warmup/hook", "main.gd does not begin WebWarmup on web")
+	# Touch aim: per-touch manual deltas, engine relative ignored.
+	var tc := _need("res://scripts/android/touch_controls.gd", "touch-aim")
+	if tc == "<MISSING>":
+		return
+	if tc.contains("_look_last") and tc.contains("pos - last"):
+		_pass("touch/aim (per-touch manual deltas)")
+	else:
+		_fail("touch/aim", "no per-touch last-position delta tracking")
+	if tc.contains("dr.relative is deliberately IGNORED") or \
+			(tc.contains("_touch_move(dr.index, dr.position)") and not tc.contains("_apply_look(relative)")):
+		_pass("touch/aim (engine relative ignored)")
+	else:
+		_fail("touch/aim", "engine relative may still feed look")
+	if tc.contains("\"joy_wait\""):
+		_pass("touch/aim (second stick-zone finger ignored, single-owner stick)")
+	else:
+		_fail("touch/aim", "no joy_wait single-owner guard")
+
+
 func _initialize() -> void:
 	print("VERIFY_WEB_PORT: source assertions for the Godot 4.7.2 web (nothreads) port")
 	_check_export_preset()
@@ -313,5 +391,6 @@ func _initialize() -> void:
 	_check_multiplayer_gating()
 	_check_llm_direct()
 	_check_no_threads()
+	_check_web_warmup()
 	print("VERIFY_WEB_PORT: %d passed, %d failed" % [_passes, _fails])
 	quit(1 if _fails > 0 else 0)
