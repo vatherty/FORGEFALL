@@ -61,6 +61,10 @@ static func attach_to(root: Node) -> ForgePlacement:
 	return p
 
 
+func _ready() -> void:
+	add_to_group("forge_placement")
+
+
 func _process(_delta: float) -> void:
 	if _ghost != null and is_instance_valid(_ghost):
 		_update_preview()
@@ -95,7 +99,8 @@ func _show_hint(text: String) -> void:
 	_hint_layer.layer = 50
 	add_child(_hint_layer)
 	_hint_label = Label.new()
-	_hint_label.text = text
+	_hint_label.text = "Aim at a surface, then tap PLACE • CANCEL to dismiss" if OS.has_feature("web") or DisplayServer.is_touchscreen_available() else text
+	_hint_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_hint_label.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
 	_hint_label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
