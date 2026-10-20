@@ -63,6 +63,14 @@ var _mp_modes: Node = null
 var _killfeed: Node = null
 var _mp_result_label: Label = null
 var _mp_waiting_for_players := false
+# Deploy loading screen: every deploy (SP / MP / puzzle) runs STAGED via
+# _begin_deploy() — the loading screen sets a stage label + real progress
+# BEFORE each stage's (possibly blocking) work, yielding frames so the
+# screen paints. A deploy that stalls names its stage on screen.
+const LOADING_SCREEN_SCRIPT := "res://scripts/ui/map_loading_screen.gd"
+var _deploying := false
+var _loading: Node = null
+var _warmup: Node = null  # WebWarmup runner (web only), settled at deploy
 
 
 func _ready() -> void:
@@ -77,7 +85,7 @@ func _ready() -> void:
 	# parses even when the editor's script-class cache is stale.
 	if OS.has_feature("web"):
 		var warmup_script: GDScript = load("res://scripts/core/web_warmup.gd")
-		warmup_script.begin(self)
+		_warmup = warmup_script.begin(self)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -110,13 +118,15 @@ func set_selected_map(key: String) -> void:
 func start_sp_mode(mode_id: String) -> bool:
 	if state == State.PLAYING or state == State.PAUSED:
 		return false
+	if _deploying:
+		return false
 	if not GameModeManager.is_implemented(mode_id):
 		push_warning("FORGEFALL: mode '%s' not implemented — not starting." % mode_id)
 		return false
 	if GameModeManager.mode_scope(mode_id) != "sp":
 		push_warning("FORGEFALL: mode '%s' is not a single-player mode." % mode_id)
 		return false
-	# Map check BEFORE freeing the menu: on a missing map the menu
+	# Map check BEFORE starting the deploy: on a missing map the menu
 	# must stay up (nothing was started).
 	var map_key := selected_map_key
 	if mode_id == "tower_defense":
@@ -127,39 +137,25 @@ func start_sp_mode(mode_id: String) -> bool:
 	if not ResourceLoader.exists(map_scene):
 		push_error("FORGEFALL: map scene missing at %s — cannot start %s." % [map_scene, mode_id])
 		return false
-	if _menu != null:
-		_menu.queue_free()
-		_menu = null
-	GameModeManager.selected_mode = mode_id
-	if mode_id == "tower_defense":
-		selected_map_key = "tower_defense"
-	if mode_id == "zombies":
-		selected_map_key = "zombies_flat"
-	var game_map: Node = (load(map_scene) as PackedScene).instantiate()
-	add_child(game_map)
-	_wire_props(game_map)
 	# TDM: the loadout's traversal choice goes to the player through
-	# the movement worker's selection API (duck-typed — no-op until it
-	# lands). TD applies its own setup choice (TowerDefenseMode), so
-	# Main passes nothing for TD.
-	_wire_player(game_map, _active_traversal() if mode_id == "tdm" else "")
-	_wire_perf()
-	_wire_hud()
-	if mode_id != "tdm":
-		_wire_waves()
-	if not _wire_modes():
-		return false  # mode refused start; menu rebuilt.
-	state = State.PLAYING
+	# the movement worker's selection API (duck-typed). TD applies its
+	# own setup choice (TowerDefenseMode), so Main passes nothing for TD.
+	_begin_deploy({
+		"kind": "sp_mode", "map_key": map_key, "mode_id": mode_id,
+		"traversal": _active_traversal() if mode_id == "tdm" else "",
+		"waves": mode_id != "tdm", "modes": true,
+		"subtitle": "%s — %s" % [map_key, mode_id],
+	})
 	return true
 
 
-## Called by the main menu ("Deploy" button). Frees the menu, loads the selected map.
+## Called by the main menu ("Deploy" button). Validates, then runs the
+## STAGED deploy (loading screen with stage labels) via _begin_deploy().
 func start_game() -> void:
 	if state == State.PLAYING or state == State.PAUSED:
 		return
-	if _menu != null:
-		_menu.queue_free()
-		_menu = null
+	if _deploying:
+		return
 	# Gameplay Rework (TD worker): Tower Defense is its own mode with
 	# its own tailored map — it always runs on the TD map, whatever the
 	# map picker says (the menu's TD pre-run setup runs before this).
@@ -171,16 +167,230 @@ func start_game() -> void:
 	if not ResourceLoader.exists(map_scene):
 		push_error("FORGEFALL: map scene missing at %s — cannot start game." % map_scene)
 		return
+	_begin_deploy({
+		"kind": "deploy", "map_key": selected_map_key, "traversal": "",
+		"waves": true, "modes": true,
+		"subtitle": str(selected_map_key).replace("_", " "),
+	})
+
+
+## Staged deploy: shows the loading screen, then runs the deploy as a
+## coroutine — one labeled stage at a time, yielding frames so the
+## screen paints BEFORE each stage's (possibly blocking) work. A stall
+## names its stage on screen instead of freezing silently.
+func _begin_deploy(params: Dictionary) -> void:
+	if _deploying:
+		return
+	_deploying = true
+	var script: GDScript = load(LOADING_SCREEN_SCRIPT) as GDScript
+	_loading = script.new()
+	_loading.name = "MapLoadingScreen"
+	add_child(_loading)
+	_loading.call("setup", str(params.get("subtitle", "FORGEFALL")))
+	_deploy_prep(params)
+	_run_deploy(params)  # fire-and-forget coroutine
+
+
+## Instant per-kind prep: free menu/select screens, set mode + map keys.
+func _deploy_prep(params: Dictionary) -> void:
+	var kind: String = str(params.get("kind", "deploy"))
+	if kind == "mp":
+		if _mp_menu != null:
+			_mp_menu.queue_free()
+			_mp_menu = null
+		if _menu != null:
+			_menu.queue_free()
+			_menu = null
+		GameModeManager.selected_mode = str(params["mode_id"])
+		GameModeManager.live_mode = str(params["mode_id"])
+		selected_map_key = str(params["map_key"])
+	elif kind == "puzzle":
+		if _puzzle_select != null:
+			_puzzle_select.queue_free()
+			_puzzle_select = null
+		if _menu != null:
+			_menu.queue_free()
+			_menu = null
+		GameModeManager.selected_mode = "puzzle"
+	elif kind == "sp_mode":
+		if _menu != null:
+			_menu.queue_free()
+			_menu = null
+		GameModeManager.selected_mode = str(params["mode_id"])
+		if str(params["mode_id"]) == "tower_defense":
+			selected_map_key = "tower_defense"
+		if str(params["mode_id"]) == "zombies":
+			selected_map_key = "zombies_flat"
+	else:  # "deploy"
+		if _menu != null:
+			_menu.queue_free()
+			_menu = null
+
+
+## The staged deploy coroutine. Stage lists mirror each path's original
+## wiring order exactly (map -> props -> player -> perf/hud -> waves ->
+## modes for SP; MP swaps waves for the network stage + match stage;
+## puzzle loads its room script instead of a map).
+func _run_deploy(params: Dictionary) -> void:
+	var kind: String = str(params.get("kind", "deploy"))
+	var stages: Array = []
+	stages.append(["warmup", "Finishing warmup"])
+	if kind == "puzzle":
+		stages.append(["room", "Loading chamber"])
+	else:
+		stages.append(["map", "Loading map geometry"])
+	stages.append(["player", "Placing player"])
+	stages.append(["systems", "Starting systems"])
+	if kind == "mp":
+		if bool(params.get("net_match", false)):
+			stages.append(["net", "Starting network"])
+		else:
+			stages.append(["waves", "Spawning enemies"])
+		stages.append(["match", "Starting match"])
+	elif kind != "puzzle" and bool(params.get("waves", true)):
+		stages.append(["waves", "Spawning enemies"])
+	if bool(params.get("modes", false)):
+		stages.append(["mode", "Starting mission"])
+	var total := float(stages.size())
+	var game_map: Node = null
+	for idx in stages.size():
+		var stage_id: String = str(stages[idx][0])
+		var label: String = str(stages[idx][1])
+		_loading_set_stage(stage_id, label, float(idx) / total)
+		await _paint_frames(2)
+		# Test hook: MapLoadingScreen.hang_at_stage stalls the deploy
+		# here so verify_deploy_loading can prove the label names it.
+		if _loading != null and is_instance_valid(_loading) \
+				and str(_loading.get("hang_at_stage")) == stage_id:
+			await get_tree().create_timer(3600.0).timeout
+		match stage_id:
+			"warmup":
+				await _settle_warmup()
+			"map":
+				game_map = _deploy_load_map(params)
+				if game_map == null:
+					_fail_deploy("Map failed to load.")
+					return
+			"room":
+				game_map = _deploy_load_room(params)
+				if game_map == null:
+					_fail_deploy("Chamber failed to load.")
+					return
+			"player":
+				_wire_player(game_map, str(params.get("traversal", "")))
+			"systems":
+				_wire_perf()
+				_wire_hud()
+			"waves":
+				_wire_waves()
+			"net":
+				_wire_net_match()
+			"match":
+				_wire_mp_modes(str(params["mode_id"]), bool(params.get("is_host", false)))
+			"mode":
+				if not _wire_modes():
+					# Mode refused start; quit_to_menu() already rebuilt
+					# the menu (and freed the loading screen with it).
+					_loading = null
+					_deploying = false
+					return
+		await _paint_frames(1)
+	state = State.PLAYING
+	if kind == "mp":
+		_deploy_mp_post(params)
+	_deploying = false
+	_loading_ready()
+
+
+## Loads + instantiates the map scene, adds it, wires props.
+## Returns null when the map scene is missing (caller fails the deploy).
+func _deploy_load_map(params: Dictionary) -> Node:
+	var map_scene: String = MAPS[str(params["map_key"])]["scene"]
+	if not ResourceLoader.exists(map_scene):
+		push_error("FORGEFALL: map scene missing at %s — cannot deploy." % map_scene)
+		return null
 	var game_map: Node = (load(map_scene) as PackedScene).instantiate()
 	add_child(game_map)
 	_wire_props(game_map)
-	_wire_player(game_map)
-	_wire_perf()
-	_wire_hud()
-	_wire_waves()
-	if not _wire_modes():
-		return  # mode refused start; menu rebuilt.
-	state = State.PLAYING
+	return game_map
+
+
+## Loads a puzzle chamber room script, instantiates it, adds it.
+func _deploy_load_room(params: Dictionary) -> Node:
+	var script_path: String = str(params.get("room_script", ""))
+	if script_path.is_empty() or not ResourceLoader.exists(script_path):
+		push_error("FORGEFALL: puzzle room script missing at %s." % script_path)
+		return null
+	var room: Node = (load(script_path) as GDScript).new()
+	add_child(room)
+	return room
+
+
+## MP post-deploy: late-join Forge snapshot + host match begin.
+func _deploy_mp_post(params: Dictionary) -> void:
+	var nm2 := get_node_or_null("/root/NetManager")
+	if nm2 != null and nm2.has_method("forge_request_resync"):
+		nm2.call("forge_request_resync")
+	if bool(params.get("is_host", false)) and str(params.get("mode_id", "")) == "mp_tdm":
+		_maybe_host_begin_match()
+
+
+## Lets the loading screen paint between stages.
+func _paint_frames(n: int) -> void:
+	for i in n:
+		await get_tree().process_frame
+
+
+func _loading_set_stage(stage_id: String, label: String, progress: float) -> void:
+	if _loading != null and is_instance_valid(_loading):
+		_loading.call("set_stage", stage_id, label, progress)
+
+
+func _loading_ready() -> void:
+	if _loading != null and is_instance_valid(_loading):
+		_loading.call("set_ready")
+	_loading = null
+
+
+## A stage failed: show the error on screen, then tear back to menu.
+func _fail_deploy(message: String) -> void:
+	push_error("FORGEFALL: deploy failed — %s" % message)
+	if _loading != null and is_instance_valid(_loading):
+		_loading.call("set_failed", message)
+		await get_tree().create_timer(2.0).timeout
+		if is_instance_valid(_loading):
+			_loading.queue_free()
+		_loading = null
+	_deploying = false
+	quit_to_menu()
+
+
+## Warmup settle (deploy stage 0): give the web warmup up to ~3 s of
+## wall clock to finish its shader/pool pass, then cancel it — its
+## SubViewport room (11 lights) must NOT render alongside the map load,
+## and its emitters must not tick against the spawning match.
+func _settle_warmup() -> void:
+	var w := _warmup
+	if w == null or not is_instance_valid(w):
+		return
+	if w.has_method("is_done") and bool(w.call("is_done")):
+		w.queue_free()
+		_warmup = null
+		return
+	var t0 := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - t0 < 3000:
+		await get_tree().process_frame
+		if not is_instance_valid(w):
+			_warmup = null
+			return
+		if w.has_method("is_done") and bool(w.call("is_done")):
+			break
+	if is_instance_valid(w):
+		if w.has_method("cancel"):
+			w.call("cancel")
+		else:
+			w.queue_free()
+	_warmup = null
 
 
 ## Map dressing props: only maps with a props scene get one (Dustline).
@@ -437,23 +647,16 @@ func start_puzzle(chamber_id: String) -> void:
 		return
 	if state == State.PLAYING or state == State.PAUSED:
 		return
-	if _puzzle_select != null:
-		_puzzle_select.queue_free()
-		_puzzle_select = null
-	if _menu != null:
-		_menu.queue_free()
-		_menu = null
+	if _deploying:
+		return
 	var script_path: String = str(info["script"])
 	if not ResourceLoader.exists(script_path):
 		push_error("FORGEFALL: puzzle room script missing at %s." % script_path)
 		return
-	var room: Node = (load(script_path) as GDScript).new()
-	add_child(room)
-	GameModeManager.selected_mode = "puzzle"
-	_wire_player(room)
-	_wire_perf()
-	_wire_hud()
-	state = State.PLAYING
+	_begin_deploy({
+		"kind": "puzzle", "room_script": script_path,
+		"subtitle": str(info.get("name", chamber_id)),
+	})
 
 
 # --- Goal 4 MULTIPLAYER -----------------------------------------------------
@@ -523,12 +726,10 @@ func _on_stats_closed() -> void:
 ## on top of an empty plane, never on map props); MP TDM is the
 ## existing NetMatch path + MPModes bot fill.
 func _on_mp_start(map_id: String, mode_id: String, is_host: bool) -> void:
-	if _mp_menu != null:
-		_mp_menu.queue_free()
-		_mp_menu = null
-	if _menu != null:
-		_menu.queue_free()
-		_menu = null
+	if state == State.PLAYING or state == State.PAUSED:
+		return
+	if _deploying:
+		return
 	if mode_id == "tdm":
 		mode_id = "mp_tdm"
 	if mode_id not in ["mp_tower_defense", "mp_tdm", "mp_zombies"]:
@@ -539,19 +740,10 @@ func _on_mp_start(map_id: String, mode_id: String, is_host: bool) -> void:
 	if mode_id == "mp_zombies":
 		map_id = "zombies_flat"
 	set_selected_map(map_id)
-	if state == State.PLAYING or state == State.PAUSED:
-		return
 	var map_scene: String = MAPS[selected_map_key]["scene"]
 	if not ResourceLoader.exists(map_scene):
 		push_error("FORGEFALL: map scene missing at %s — cannot start net match." % map_scene)
 		return
-	# MP worker: MP matches set live_mode (ForgeGate) even though they
-	# never run through GameModeManager.start().
-	GameModeManager.selected_mode = mode_id
-	GameModeManager.live_mode = mode_id
-	var game_map: Node = (load(map_scene) as PackedScene).instantiate()
-	add_child(game_map)
-	_wire_props(game_map)
 	# Traversal: MPModes normalizes the choice to player.gd's
 	# enforcement ids ("grapple" / "jetpack" / "portal" — the Loadouts
 	# store is canonical "portal" since the v0.6.0 integration; the
@@ -563,23 +755,15 @@ func _on_mp_start(map_id: String, mode_id: String, is_host: bool) -> void:
 	var mp_traversal := ""
 	if mp_script != null:
 		mp_traversal = str(mp_script.call("traversal_for_mode", mode_id))
-	_wire_player(game_map, mp_traversal)
-	_wire_perf()
-	_wire_hud()
-	if mode_id == "mp_tdm":
-		_wire_net_match()
-	else:
-		_wire_waves()
-	_wire_mp_modes(mode_id, is_host)
-	state = State.PLAYING
-	# Forge batch: late-join Forge snapshot for peers that connected
-	# before this map loaded (NetManager also snapshots on
-	# peer_connected; this covers the host + already-connected peers).
-	var nm2 := get_node_or_null("/root/NetManager")
-	if nm2 != null and nm2.has_method("forge_request_resync"):
-		nm2.call("forge_request_resync")
-	if is_host and mode_id == "mp_tdm":
-		_maybe_host_begin_match()
+	# MP worker: MP matches set live_mode (ForgeGate) even though they
+	# never run through GameModeManager.start(). Forge snapshot + host
+	# begin run after the staged deploy (_deploy_mp_post).
+	_begin_deploy({
+		"kind": "mp", "map_key": selected_map_key, "mode_id": mode_id,
+		"traversal": mp_traversal, "net_match": mode_id == "mp_tdm",
+		"waves": mode_id != "mp_tdm", "is_host": is_host,
+		"subtitle": "%s — %s" % [map_id, mode_id],
+	})
 
 
 ## MPModes node for a net match (name "MPModes": the RPC path must
