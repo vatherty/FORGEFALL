@@ -182,6 +182,14 @@ func _begin_deploy(params: Dictionary) -> void:
 	if _deploying:
 		return
 	_deploying = true
+	# v0.6.6 intake: close the tap-fire window the emulate-mouse flip
+	# opened. Menus run with emulate_mouse_from_touch = true, but the
+	# staged deploy wires the player (stage "player") BEFORE the HUD
+	# (stage "systems") takes over the MouseCapture state machine — for
+	# those frames a tap could synthesize MB1 into a live weapon. From
+	# deploy start until a menu returns (quit_to_menu/failure -> set_menu)
+	# the game is in gameplay input mode: no synthesized mouse, period.
+	MouseCapture.set_gameplay()
 	var script: GDScript = load(LOADING_SCREEN_SCRIPT) as GDScript
 	_loading = script.new()
 	_loading.name = "MapLoadingScreen"
