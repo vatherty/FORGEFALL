@@ -1,40 +1,9 @@
 # res://scripts/android/touch_controls.gd
 # FORGEFALL — Worker 9 (Android + touch)
 #
-# Full-screen touch layer: left dynamic joystick, right-side look drag,
-# and a cluster of action buttons. Injects input ONLY via
-# Input.action_press(action, strength) / Input.action_release(action)
-# so the player controller (worker 2) stays input-agnostic.
-#
-# Contracts used:
-#   - Player: group "player", method add_look(relative: Vector2)
-#   - HUD: group "hud", method set_touch_mode(on: bool)
-#   - Sfx autoload: play_2d("ui_click") (guarded; works if worker 7 not ready)
-#   - Forge autoload: submit_prompt(text) for the MIC/voice button
-#   - SpeechInput (sibling file): voice path with typed-console fallback
-#   - Haptics (sibling file): UI tap feedback
-#
-# Visibility: shown only on touch devices —
-#   DisplayServer.is_touchscreen_available() (VERIFIED, exists in 4.x stable)
-#   with fallback OS.has_feature("android") / ("ios") / ("web").
-#   The web feature is included UNCONDITIONALLY: iPhone Safari is a touch
-#   device but the web DisplayServer cannot be relied on to report it,
-#   and without this layer the web build is unplayable (no input).
-# Set `force_show = true` in the inspector to test on desktop Linux
-# (mouse clicks emulate touch via input_devices/pointing/emulate_touch_from_mouse).
-#
-# Multi-touch design: ONE manual dispatcher in _input() hit-tests buttons,
-# the joystick zone, and the look zone per touch index. Buttons are visual-only
-# (mouse_filter IGNORE); this avoids depending on Control._gui_input capture
-# semantics across drags and on emulate_mouse_from_touch for multi-finger input.
-# Look deltas are computed per touch index from tracked last positions, NOT
-# from InputEventScreenDrag.relative (unreliable for multi-touch on mobile
-# browsers — it used to jump the view when a second finger was down).
-# No event is consumed, so HUD controls (worker 6) keep working underneath.
-#
-# Integration (worker 1 / main.gd):
-#   var touch := load("res://scenes/ui/touch_controls.tscn").instantiate()
-#   add_child(touch)
+# Mobile HUD: dynamic left stick, independent look fingers, and fire-drag aim.
+# Gameplay uses action state; event-driven commands also receive InputEventAction.
+# Menu mouse emulation is owned by MouseCapture, never by the gameplay dispatcher.
 extends CanvasLayer
 
 #region TUNABLES
@@ -47,8 +16,6 @@ const LOOK_GAIN := 0.0022        # radians of view per dragged pixel (matches pl
 const BTN_ALPHA := 0.55          # button background opacity
 const HINT_SHOW_SEC := 10.0      # first-time hints stay up this long, then fade
 const HINT_FADE_SEC := 1.0       # hint fade-out duration
-const LAYOUT_REF := Vector2(1920, 1080)  # button sizes are authored at this size
-const LAYOUT_MIN_SCALE := 0.30   # never shrink buttons below 30% (readability floor)
 #endregion
 
 @export var look_sensitivity := 1.0  # wired to the options menu later
@@ -71,6 +38,8 @@ var _look_last := {}          # touch index (int) -> Vector2 last position for
                               # places" the moment a second finger is down.
                               # Manual per-touch deltas are correct under every
                               # engine behavior.
+var _joy_radius := JOY_RADIUS
+var _joy_knob_size := JOY_KNOB
 var _joy_origin := Vector2.ZERO
 var _joy_vec := Vector2.ZERO  # reused, no per-event allocs
 var _joy_touch := -1
@@ -120,17 +89,25 @@ func _build_ui() -> void:
 	_add_btn("ks1", "K1", "killstreak_1", "tap", Vector2(52, 52), 16)
 	_add_btn("ks2", "K2", "killstreak_2", "tap", Vector2(52, 52), 16)
 	_add_btn("ks3", "K3", "killstreak_3", "tap", Vector2(52, 52), 16)
-	_add_btn("pause", "II", "pause", "tap", Vector2(52, 52), 18)
-	_add_btn("fire", "FIRE", "fire", "hold", Vector2(128, 128), 24)
-	_add_btn("jump", "JUMP", "jump", "hold", Vector2(96, 96), 20)
-	_add_btn("ads", "ADS", "ads", "toggle", Vector2(88, 88), 20)
-	_add_btn("crouch", "CRCH", "crouch", "hold", Vector2(80, 80), 18)
-	_add_btn("grapple", "HOOK", "grapple", "hold", Vector2(80, 80), 18)
-	_add_btn("reload", "RLD", "reload", "tap", Vector2(72, 72), 18)
+	_add_btn("pause", "II", "pause", "event", Vector2(52, 52), 18)
+	_add_btn("fire", "FIRE", "fire", "hold", Vector2(174, 174), 24)
+	_add_btn("jump", "JUMP", "jump", "hold", Vector2(120, 120), 20)
+	_add_btn("ads", "ADS", "ads", "toggle", Vector2(116, 116), 20)
+	_add_btn("crouch", "CRCH", "crouch", "hold", Vector2(108, 108), 18)
+	_add_btn("grapple", "HOOK", "grapple", "hold", Vector2(108, 108), 18)
+	_add_btn("reload", "RLD", "reload", "tap", Vector2(100, 100), 18)
 
-	_joy_base = _make_disc(JOY_RADIUS * 2.0, Color(1, 1, 1, 0.10))
+	_add_btn("interact", "PLACE / USE", "interact", "event", Vector2(160, 70), 20)
+	_add_btn("cancel", "CANCEL", "ui_cancel", "event", Vector2(130, 70), 20)
+	_add_btn("weapon", "SWAP", "weapon_next", "tap", Vector2(120, 70), 20)
+
+	_joy_base = _make_disc(JOY_RADIUS * 2.0, Color(0.02, 0.03, 0.04, 0.40))
 	_joy_base.visible = false
 	add_child(_joy_base)
+	var arrows := preload("res://scripts/android/touch_action_icon.gd").new()
+	arrows.action = "move"
+	arrows.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_joy_base.add_child(arrows)
 	_joy_knob = _make_disc(JOY_KNOB, Color(1, 1, 1, 0.35))
 	_joy_knob.visible = false
 	add_child(_joy_knob)
@@ -167,6 +144,14 @@ func _make_hint(text: String) -> Label:
 
 
 func _process(_delta: float) -> void:
+	var preview := false
+	for placement in get_tree().get_nodes_in_group("forge_placement"):
+		preview = preview or placement.has_preview()
+	for d in _btn_defs:
+		if d["id"] == "cancel":
+			d["btn"].visible = preview
+		elif d["id"] == "interact":
+			d["btn"].text = "PLACE" if preview else "USE"
 	# First match detection: the player group appears when a run starts.
 	# Hints show once, on the first run, then fade after HINT_SHOW_SEC.
 	if not _hints_shown and _touch_active:
@@ -234,6 +219,13 @@ func _add_btn(id: String, label: String, action: String, mode: String,
 	var b := Button.new()
 	b.name = "Btn_" + id
 	b.text = label
+	if id in ["fire", "ads", "reload", "jump", "crouch", "grapple"]:
+		b.text = ""
+		var icon := preload("res://scripts/android/touch_action_icon.gd").new()
+		icon.action = id
+		icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		b.add_child(icon)
+		b.tooltip_text = label
 	b.focus_mode = Control.FOCUS_NONE
 	b.mouse_filter = Control.MOUSE_FILTER_IGNORE  # visual only; _input() dispatches
 	b.add_theme_font_size_override("font_size", font)
@@ -272,6 +264,8 @@ func _make_disc(diameter: float, color: Color) -> Panel:
 	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = color
+	sb.border_color = Color(1, 1, 1, 0.45)
+	sb.set_border_width_all(1)
 	sb.set_corner_radius_all(int(diameter * 0.5))
 	p.add_theme_stylebox_override("panel", sb)
 	p.custom_minimum_size = Vector2(diameter, diameter)
@@ -280,44 +274,34 @@ func _make_disc(diameter: float, color: Color) -> Panel:
 
 
 func _layout() -> void:
-	# Recompute every button rect from the current viewport size (landscape-first).
-	# Uniform scale from the 1920x1080 authoring size, then a retry loop that
-	# shrinks further until no two buttons overlap — so the layout holds at
-	# extreme aspect ratios (19.5:9 tall/narrow, 16:9, tiny windows) instead
-	# of only at the sizes it was hand-placed for. FIRE stays the biggest:
-	# the scale is uniform, so relative sizes never change.
+	_release_all()
 	var vp_size := get_viewport().get_visible_rect().size
 	_view_size = vp_size
-	# v0.6.1: button scale comes from the shared UiScale helper
-	# (reference 1920x1080, clamped 0.6–1.6), not the old local formula.
-	var k := UiScale.scale_factor(vp_size)
-	for _attempt in 12:
-		_place_buttons(vp_size, k)
-		if not _buttons_overlap():
-			break
-		k = maxf(LAYOUT_MIN_SCALE, k - 0.05)
+	# Reference-sized action targets; never recursively shrink the controls.
+	var k := clampf(minf(vp_size.x / 1280.0, vp_size.y / 720.0), 0.65, 1.8)
+	_joy_radius = JOY_RADIUS * k
+	_joy_knob_size = JOY_KNOB * k
+	_joy_base.custom_minimum_size = Vector2.ONE * _joy_radius * 2.0
+	_joy_base.size = _joy_base.custom_minimum_size
+	_joy_knob.custom_minimum_size = Vector2.ONE * _joy_knob_size
+	_joy_knob.size = _joy_knob.custom_minimum_size
+	_place_buttons(vp_size, k)
 	_position_hints()
-	# If the joystick is mid-drag during a rotation, re-clamp its visuals.
-	if _joy_touch != -1:
-		_update_joy_visual()
+	_reset_joy_visual()
 
 
 func _place_buttons(vp_size: Vector2, k: float) -> void:
-	# All positions derive from edges + one margin + one gap, so buttons can
-	# never drift into each other: neighbours are separated by `gap` by
-	# construction, in both axes. Same ids / actions / modes as before.
+	# Utility controls at the top, combat controls in a right-side arc.
 	var w := vp_size.x
-	var h := vp_size.y
 	var m := 16.0 * k
 	var gap := 12.0 * k
 	var s := {}  # id -> scaled Vector2 size
-	# v0.6.1: floor so touch targets stay usable — never below a
-	# UiScale-scaled 48px on either axis (48px at scale 1.0).
-	var min_target := UiScale.scaled_size(48.0, vp_size)
+	# A hard 48-unit floor keeps every target reachable on small screens.
 	for d in _btn_defs:
 		var base: Vector2 = d["base_size"]
 		s[String(d["id"])] = Vector2(
-			maxf(base.x * k, min_target), maxf(base.y * k, min_target))
+			maxf(base.x * k * 0.67, maxf(48.0, 72.0 * k)),
+			maxf(base.y * k * 0.67, maxf(48.0, 72.0 * k)))
 	var p := {}  # id -> Vector2 position
 	# Top-left: portals.
 	p["portal_blue"] = Vector2(m, m)
@@ -334,21 +318,16 @@ func _place_buttons(vp_size: Vector2, k: float) -> void:
 		x += s[id].x + gap
 	# Top-right: pause.
 	p["pause"] = Vector2(w - m - s["pause"].x, m)
-	# Bottom-right cluster, anchored to the bottom-right corner:
-	# FIRE bottom-right (biggest button); JUMP stacked above it; ADS left of
-	# it; CROUCH above ADS; HOOK left of ADS; RLD above HOOK. Every neighbour
-	# pair is separated by exactly `gap` in x or y.
-	p["fire"] = Vector2(w - m - s["fire"].x, h - m - s["fire"].y)
-	p["jump"] = Vector2(w - m - s["jump"].x,
-		h - m - s["fire"].y - gap - s["jump"].y)
-	p["ads"] = Vector2(w - m - s["fire"].x - gap - s["ads"].x,
-		h - m - s["ads"].y)
-	p["crouch"] = Vector2(p["ads"].x,
-		h - m - s["ads"].y - gap - s["crouch"].y)
-	p["grapple"] = Vector2(p["ads"].x - gap - s["grapple"].x,
-		h - m - s["grapple"].y)
-	p["reload"] = Vector2(p["grapple"].x,
-		h - m - s["grapple"].y - gap - s["reload"].y)
+	# Right thumb arc, leaving the center clear for aiming.
+	var centers := {
+		"fire": Vector2(0.94, 0.63), "ads": Vector2(0.875, 0.45),
+		"grapple": Vector2(0.80, 0.55), "reload": Vector2(0.85, 0.75),
+		"jump": Vector2(0.95, 0.84), "crouch": Vector2(0.83, 0.92),
+		"interact": Vector2(0.53, 0.78), "cancel": Vector2(0.66, 0.78),
+		"weapon": Vector2(0.53, 0.93),
+	}
+	for id in centers:
+		p[id] = vp_size * centers[id] - s[id] * 0.5
 	for d in _btn_defs:
 		var id := String(d["id"])
 		d["size"] = s[id]
@@ -356,7 +335,15 @@ func _place_buttons(vp_size: Vector2, k: float) -> void:
 		var b: Button = d["btn"]
 		b.position = p[id]
 		b.size = s[id]
+		for style_name in ["normal", "pressed"]:
+			var style := b.get_theme_stylebox(style_name) as StyleBoxFlat
+			if style != null:
+				style.set_corner_radius_all(int(minf(s[id].x, s[id].y) * 0.5))
 		# v0.6.1: button label fonts scale with resolution too.
+		# v0.6.6 intake: back to the exact UiScale derivation (the
+		# standing contract — verify_v061 locks touch FIRE font ==
+		# UiScale(24), and base_font values are already UiScale bases;
+		# GPT's local k * 0.8 formula drifted from it at phone sizes).
 		b.add_theme_font_size_override("font_size",
 			UiScale.scaled_font(float(d["base_font"]), vp_size))
 
@@ -401,9 +388,11 @@ func _touch_begin(index: int, pos: Vector2) -> void:
 	for i in range(_btn_defs.size() - 1, -1, -1):
 		var d: Dictionary = _btn_defs[i]
 		var rect := Rect2(d["pos"], d["size"])
-		if rect.has_point(pos):
+		if d["btn"].visible and rect.has_point(pos):
 			_touches[index] = "btn"
 			_btn_by_touch[index] = i
+			if d["id"] == "fire":
+				_look_last[index] = pos
 			_btn_down(d)
 			return
 	if pos.x < _view_size.x * JOY_ZONE_FRAC:
@@ -418,9 +407,9 @@ func _touch_begin(index: int, pos: Vector2) -> void:
 		_joy_touch = index
 		_joy_origin = pos
 		_joy_vec = Vector2.ZERO
-		_joy_base.position = pos - Vector2(JOY_RADIUS, JOY_RADIUS)
+		_joy_base.position = pos - Vector2(_joy_radius, _joy_radius)
 		_joy_base.visible = true
-		_joy_knob.position = pos - Vector2(JOY_KNOB, JOY_KNOB) * 0.5
+		_joy_knob.position = pos - Vector2(_joy_knob_size, _joy_knob_size) * 0.5
 		_joy_knob.visible = true
 	else:
 		_touches[index] = "look"
@@ -441,7 +430,12 @@ func _touch_move(index: int, pos: Vector2) -> void:
 			var last: Vector2 = _look_last.get(index, pos)
 			_look_last[index] = pos
 			_apply_look(pos - last)
-		# "btn": hold stays engaged even if the finger slides off.
+		"btn":
+			if _look_last.has(index):
+				var last: Vector2 = _look_last[index]
+				_look_last[index] = pos
+				_apply_look(pos - last)
+		# Buttons stay engaged even if the finger slides off.
 		# unknown index (stale drag): ignored.
 
 
@@ -461,7 +455,7 @@ func _touch_end(index: int) -> void:
 		"btn":
 			var bi := int(_btn_by_touch.get(index, -1))
 			_btn_by_touch.erase(index)
-			if bi >= 0:
+			if bi >= 0 and not _btn_by_touch.values().has(bi):
 				_btn_up(_btn_defs[bi])
 		# "look": nothing to release (last-pos already erased above).
 		# unknown index: nothing was tracked.
@@ -470,15 +464,15 @@ func _touch_end(index: int) -> void:
 func _update_joy(pos: Vector2) -> void:
 	_joy_vec = pos - _joy_origin
 	var len := _joy_vec.length()
-	if len > JOY_RADIUS:
-		_joy_vec *= JOY_RADIUS / len
-		len = JOY_RADIUS
-	var mag := len / JOY_RADIUS
+	if len > _joy_radius:
+		_joy_vec *= _joy_radius / len
+		len = _joy_radius
+	var mag := len / _joy_radius
 	if mag < JOY_DEADZONE:
 		_set_move(0.0, 0.0, 0.0)
 	else:
-		var nx := _joy_vec.x / JOY_RADIUS
-		var ny := _joy_vec.y / JOY_RADIUS
+		var nx := _joy_vec.x / _joy_radius
+		var ny := _joy_vec.y / _joy_radius
 		_set_move(nx, ny, mag)
 	_update_joy_visual()
 
@@ -506,8 +500,7 @@ func _set_action_strength(action: StringName, strength: float) -> void:
 
 func _release_joy() -> void:
 	_joy_touch = -1
-	_joy_base.visible = false
-	_joy_knob.visible = false
+	_reset_joy_visual()
 	for a in _ACTIONS_MOVE:
 		Input.action_release(a)
 	Input.action_release("sprint")
@@ -515,7 +508,7 @@ func _release_joy() -> void:
 
 func _update_joy_visual() -> void:
 	var c := _joy_origin + _joy_vec
-	_joy_knob.position = c - Vector2(JOY_KNOB, JOY_KNOB) * 0.5
+	_joy_knob.position = c - Vector2(_joy_knob_size, _joy_knob_size) * 0.5
 
 
 func _apply_look(relative: Vector2) -> void:
@@ -538,6 +531,11 @@ func _btn_down(d: Dictionary) -> void:
 		"hold":
 			b.modulate = Color(1.35, 1.35, 1.35)
 			Input.action_press(StringName(d["action"]), 1.0)
+		"event":
+			var press := InputEventAction.new()
+			press.action = d["action"]
+			press.pressed = true
+			Input.parse_input_event(press)
 		"tap":
 			b.modulate = Color(1.35, 1.35, 1.35)
 			Input.action_press(StringName(d["action"]), 1.0)
@@ -554,6 +552,11 @@ func _btn_up(d: Dictionary) -> void:
 	var b: Button = d["btn"]
 	var mode := String(d["mode"])
 	match mode:
+		"event":
+			var release := InputEventAction.new()
+			release.action = d["action"]
+			release.pressed = false
+			Input.parse_input_event(release)
 		"hold", "tap":
 			b.modulate = Color.WHITE
 			Input.action_release(StringName(d["action"]))
@@ -607,6 +610,8 @@ func _on_voice_text(text: String) -> void:
 ## (releases any held action) so no touch can leak through the menu;
 ## restoring brings back exactly the pre-menu state (visible iff touch).
 func set_menu_open(open: bool) -> void:
+	if _interactive == not open:
+		return
 	if open:
 		visible = false
 		set_interactive(false)
@@ -638,6 +643,8 @@ func _release_all() -> void:
 			_ads_on = false
 			b.button_pressed = false
 			Input.action_release(StringName(d["action"]))
+		elif String(d["mode"]) == "mic" and _speech != null and _speech.has_method("end_ptt"):
+			_speech.call("end_ptt")
 		elif not String(d["action"]).is_empty():
 			# Buttons with no InputMap action (mode "mic" passes "") have
 			# nothing to release — releasing "" logs `InputMap action ""`.
@@ -645,3 +652,19 @@ func _release_all() -> void:
 	_touches.clear()
 	_btn_by_touch.clear()
 	_look_last.clear()
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+		_release_all()
+
+
+func _reset_joy_visual() -> void:
+	if _joy_base == null or _joy_knob == null:
+		return
+	_joy_vec = Vector2.ZERO
+	_joy_origin = _view_size * Vector2(0.12, 0.70)
+	_joy_base.position = _joy_origin - Vector2.ONE * _joy_radius
+	_joy_base.visible = true
+	_joy_knob.visible = true
+	_update_joy_visual()
