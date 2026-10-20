@@ -39,7 +39,22 @@ static var _started := false
 var _done := false
 var _overlay: CanvasLayer
 var _label: Label
+var _room: SubViewport = null  # warmup render room (freed by cancel())
 var _last_frame_msec := 0
+
+
+## Deploy started: tear the warmup down NOW. Frees the render room (its
+## 11 lights must not compete with the map load), the overlay, and self.
+## Any suspended coroutine (_run / _light_rewarm) is abandoned safely —
+## awaiting on a freed object never resumes.
+func cancel() -> void:
+	if is_instance_valid(_room):
+		_room.queue_free()
+		_room = null
+	if is_instance_valid(_overlay):
+		_overlay.queue_free()
+		_overlay = null
+	queue_free()
 
 
 ## Entry point. Returns the runner (or null when skipped).
@@ -128,6 +143,7 @@ func _make_room() -> SubViewport:
 	sun.rotation_degrees = Vector3(-50, 30, 0)
 	vp.add_child(sun)
 	get_tree().root.add_child(vp)
+	_room = vp
 	return vp
 
 
@@ -211,6 +227,12 @@ func _warm_tracer_material(room: SubViewport) -> void:
 
 
 func _run() -> void:
+	# Phase 0 must NOT run inside _ready(): the pools add_child() to the
+	# current scene, which is still "busy setting up children" while
+	# Main._ready() is adding this node — the adds fail noisily and the
+	# pools stay lazy (the warmup's whole point, defeated). One frame
+	# later Main is settled and the adds succeed.
+	await get_tree().process_frame
 	# Phase 0: pools that build lazily on first combat use. These entry
 	# points already exist — they were just never called early.
 	_set_progress(5)
@@ -241,6 +263,7 @@ func _run() -> void:
 	await _await_frames(BATCH_FRAMES)
 
 	room.queue_free()
+	_room = null
 	_set_progress(100)
 	_finish()
 
@@ -253,3 +276,4 @@ func _light_rewarm() -> void:
 	_warm_palette(room)
 	await _await_frames(2)
 	room.queue_free()
+	_room = null
