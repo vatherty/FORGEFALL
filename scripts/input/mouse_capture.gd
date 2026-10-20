@@ -45,12 +45,14 @@ const _MOUSE_ACTIONS := ["fire", "ads", "grapple"]
 
 
 static func set_gameplay() -> void:
+	Input.emulate_mouse_from_touch = false
 	_requested_captured = true
 	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 static func set_menu() -> void:
+	Input.emulate_mouse_from_touch = true
 	_requested_captured = false
 	if Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
