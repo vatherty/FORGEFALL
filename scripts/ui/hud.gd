@@ -1124,6 +1124,7 @@ func set_touch_mode(on: bool) -> void:
 	# v0.6.1: never re-show over the Forge menu.
 	if _pause_btn != null and not _hud_hidden:
 		_pause_btn.visible = not on
+	_apply_mobile_layout()
 	# Desktop key hints ([4]/[5]/[6]) become plain READY/LOCKED on touch.
 	for i in 3:
 		_refresh_pip_status(i)
@@ -1453,6 +1454,39 @@ func _apply_ui_scale() -> void:
 		_forge_feed.add_theme_font_size_override("normal_font_size", _scaled_font(17))
 	StencilStyle.apply_hud_body(_touch_hints, _scaled_font(18), StencilStyle.TEXT_DIM, 2)
 	_update_health_display()
+	_apply_mobile_layout()
+
+
+func _apply_mobile_layout() -> void:
+	if not _touch_mode or _weapon_label == null:
+		return
+	var vp := _viewport_size()
+	var k := clampf(minf(vp.x / 1280.0, vp.y / 720.0), 0.65, 1.8)
+	_topbar.offset_top = 106 * k
+	_topbar.offset_bottom = 136 * k
+	var ammo := _weapon_label.get_parent() as Control
+	ammo.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	ammo.offset_left = -200 * k
+	ammo.offset_right = -48 * k
+	ammo.offset_top = -100 * k
+	ammo.offset_bottom = -12 * k
+	_weapon_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_ammo_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_ammo_caption.visible = false
+	StencilStyle.apply_title(_ammo_label, int(32 * k), StencilStyle.TEXT, 2)
+	var health := _hp_label.get_parent() as Control
+	health.offset_top = -90 * k
+	health.offset_bottom = -12 * k
+	health.offset_right = 255 * k
+	_health_bar_w = 230 * k
+	_hp_bar.custom_minimum_size.x = _health_bar_w
+	StencilStyle.apply_title(_hp_label, int(25 * k), StencilStyle.TEXT, 2)
+	_hp_caption.visible = false
+	_forge_btn.visible = false
+	# The touch row already exposes all three streaks.
+	if not _pips.is_empty():
+		(_pips[0].get_parent() as Control).visible = false
+	_update_health_display()
 
 
 # All HUD nodes that can overlap the Forge menu. The legacy fallback panel
@@ -1717,7 +1751,9 @@ func _sync_mouse_mode() -> void:
 	# instantiates it invisible, so without this ESC-pause would freeze
 	# the game with no pause UI to click.
 	_sync_pause_menu_visibility()
-	if _focus_lost or _pause_open() or _forge_open_or_ui():
+	var blocked := _focus_lost or _pause_open() or _forge_open_or_ui()
+	get_tree().call_group("touch_controls", "set_menu_open", blocked)
+	if blocked:
 		MouseCapture.set_menu()
 		MouseCapture.erase_mouse_bindings()
 	else:
