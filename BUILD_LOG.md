@@ -1,5 +1,21 @@
 # FORGEFALL — Build Log
 
+## Unshipped — Deploy loading screen + web-warmup fixes (2026-10-19, post-v0.6.4)
+
+Colin's report: "Deploying broke the game, maybe there needs to be a map loading menu? To see where it gets stuck?" Diagnosis (headless reproduction, Godot 4.7.2): the deploy logic itself does NOT hang — a desktop smoke run completes. The iPhone stall = the deploy does all heavy synchronous work (map scene load + voxel builder `_ready` + nav-mesh bake + player + enemy pool pre-instance + HUD + waves + mode start) with ZERO loading feedback, so a phone freeze reads as "broke". Compounded by the v0.6.4 web warmup: its SubViewport room (1 directional + 10 element point lights) keeps rendering every frame during map load.
+
+- **MAP LOADING SCREEN** (NEW `scripts/ui/map_loading_screen.gd`, wired in `scripts/core/main.gd`): shown on every deploy path (SP deploy, SP modes, MP host/join, puzzles). Title "DEPLOYING", map/mode subtitle, stage label with proof-of-life animated dots, real stage-based ProgressBar (no fake bar), `stage_changed` signal, `hang_at_stage` fault hook, `current_label()` read API, `set_failed()` red error path ("DEPLOY FAILED", 2 s, then back to menu), `set_ready()` "Ready" beat then free. Stages mirror each path's original wiring order (sp/deploy: warmup→map→player→systems→waves→mode; mp: warmup→map→player→systems→net/match; puzzle: warmup→room→player→systems). Each stage sets label+progress then yields 2 frames so the screen paints BEFORE the blocking work. Works on web/Android/desktop (no threads; yields only).
+- **DEPLOY STAGING** (`scripts/core/main.gd`): `start_game` / `start_sp_mode` / `_on_mp_start` / `start_puzzle` now validate synchronously (menu stays on missing map — fixes a black-screen bug where old `start_game` freed the menu before the map check), then `_begin_deploy` → `_run_deploy` coroutine. `_settle_warmup()`: up to 3 s wall-clock for warmup to finish, then `cancel()`. `_fail_deploy()` red error → 2 s → `quit_to_menu()`. Mode refusal hides the screen + resets flags. `_deploying` guard against double-tap.
+- **REAL STALL-CLASS BUGS FIXED ALONG THE WAY**:
+  - Phase-0 pool precache silently failed in the real game: `WebWarmup._run()` called from `_ready()` → `ImpactFX.precache()`/`DebrisPool.ensure_pool()`/`TracerPool._ensure()` do `add_child()` to the current scene while Main is "busy setting up children" → three engine errors, pools stayed lazy (warmup's whole point defeated). FIXED: `await get_tree().process_frame` at top of `_run()` (`scripts/core/web_warmup.gd`).
+  - Warmup emitters could damage real enemies: `_all_foes()` used tree-wide group lookups with cross-world `global_position` distance checks — if deploy happens mid-warmup, the 10 room emitters tick against spawning map enemies. Mitigated by warmup cancel-on-deploy (`WebWarmup.cancel()`: frees `_room` — tracked in a new var since `_make_room` adds it to tree root, not as a child — plus overlay + self; suspended coroutines abandoned safely).
+  - Puzzle deploy wired a WaveManager (waves stage) the original `start_puzzle` never had — the staged list defaulted `waves:true` for puzzles. FIXED: puzzle kind never adds the waves stage.
+- **VERIFICATION (headless, NEW `tools/verify_deploy_loading.gd`, 51/51)**: behavioral — drives the REAL deploy flow for all 5 menu maps (dustline/foundry/factory/outpost/cinder_city), SP tower_defense/tdm/zombies, legacy domination/endless via `start_game`, puzzle chamber_01, mp_tdm host, warmup-mid-deploy interplay, mid-run warmup cancel, busy-parent Phase-0 repro, and fault injection (hang at "waves" → screen label reads "Spawning enemies"). Every case asserts: screen appears, every stage label fires in order, deploy completes (state PLAYING), player spawns, screen dismisses after "Ready".
+- **SUITE-ENVIRONMENT FINDINGS (headless `--script` runner only, NOT game bugs)**: (1) a bare `GameModeManager` class_name reference in the SUITE poisons game_mode.gd for the whole run (compiles before autoloads exist) — suite uses runtime `load()` + duck-typing; (2) domination's `_tick_domination` → `EnemyBase.all` crashes the runner natively — suite freezes the mode node's processing via `child_entered_tree` for those cases; (3) headless enemy instantiation errors (`p_script->implicit_initializer`, `_recycle` nonexistent) are pre-existing noise.
+- **REGRESSIONS**: `verify_forge_batch` 143/143, `verify_creator_fix` 48/48, `verify_touch_aim` 10/10, `verify_web_warmup` 7/7, `verify_web_port` 26/26, 900-frame smoke clean, `verify_updater_pc` 61/65 — the 4 fails are pre-existing version-pinning drift (test hardcodes 0.6.4/code 43, on-disk manifest still 0.6.3/code 42; untouched per the no-version-bump rule).
+- **NOT published** (per task): code landed + verified only. Ships in the next build (no version bump, no rebuilds, no Release/Pages changes in this task).
+- **COLIN'S ON-DEVICE ASK**: deploy on her iPhone — does the loading screen complete to "Ready"? Plus dual-touch aim feel, first-use hitches, after-idle softness.
+
 ## v0.6.3 — Cinematic menus (2026-10-17)
 
 Colin's upload on top of v0.6.2 ("Consistent menu styling follow-up" + "Cinematic concept implementation", `docs/menu_traversal_fixes.md`). No balance, prices, or rules changed.
@@ -3189,3 +3205,37 @@ Source: verify_touch_aim 10/10, verify_web_warmup 7/7, verify_web_port 26/26, ve
 - Pages: version.json + version_pc.json → 0.6.4/43; index.html → v0.6.4 links (Android ~41 MB, Linux ~41 MB, Windows ~51 MB via Release asset); /play/ replaced with fresh v0.6.4 web build (9 files); .nojekyll intact. Windows zip lives on the Release asset only (too big for Pages); version_pc.json + index Windows link point at it.
 - Pages transient errored→built pattern recurred; pages-enable 409 nudge applied.
 - Source sync: 15 files uploaded (BUILD_LOG, export_presets.cfg, touch_controls.gd, main.gd, web_warmup.gd + .uid, mock_look_player.gd + .uid, verify_touch_aim.gd + .uid, verify_updater_pc.gd, verify_web_port.gd + .uid, verify_web_warmup.gd + .uid), 0 deleted; zero-diff verified (569 local = 569 remote); scripts/android/ intact remotely (10 blobs); keystore passwords blanked as before.
+
+## v0.6.5 — Deploy loading screen (code 44, 2026-10-20)
+
+### What Colin reported
+"Deploying broke the game, maybe there needs to be a map loading menu? To see where it gets stuck?"
+
+### Diagnosis
+NO infinite hang in the deploy logic. Deploy does all heavy synchronous work (map scene load → voxel builder → nav-mesh bake → player + enemy-pool pre-instance → HUD → waves → mode start) with ZERO loading feedback — a phone freeze reads as "broke". The v0.6.4 web warmup made it worse: its SubViewport room (1 directional + 10 element point lights) kept rendering every frame during map load.
+
+### Shipped
+- NEW scripts/ui/map_loading_screen.gd + staged deploy in scripts/core/main.gd — shown on EVERY deploy path (SP deploy, SP modes, MP host/join, puzzles). Real staged progress: "DEPLOYING" title, map/mode subtitle, proof-of-life dots, honest stage-based ProgressBar. Stages mirror each path's wiring order (sp/deploy: warmup→map→player→systems→waves→mode; mp adds net/match; puzzle: warmup→room→player→systems). Each stage paints for 2 frames BEFORE its blocking work; a hung stage freezes its label in place (the diagnostic Colin asked for). Red set_failed() path (2s → back to menu), "Ready" beat then free. No threads — works on web/Android/desktop.
+- Underlying fixes: phase-0 pool precache silently failed in the real game (web_warmup._run() from _ready() → add_child() while Main was "busy setting up children" → three engine errors, pools stayed lazy — warmup's whole point defeated; fixed with await get_tree().process_frame at top of _run()); warmup emitters could damage real enemies (tree-wide group lookups with cross-world distance checks — fixed: warmup cancel() on deploy frees room + overlay + self); puzzle deploy wrongly wired a WaveManager (staged list defaulted waves:true — fixed: puzzle never adds the waves stage); deploy entries now validate synchronously (fixes a black-screen bug where old start_game freed the menu before the map check); _settle_warmup() (3s wall-clock, then cancel), _deploying double-tap guard, mode-refusal path hides the screen.
+
+### Version bump
+export_presets.cfg: version/code 43→44, version/name 0.6.4→0.6.5; Windows export_path → forgefall-v0.6.5-windows; tools/verify_updater_pc.gd expectations → 0.6.5/44; updates/version.json + updates/version_pc.json → 0.6.5/44 with changelog; new README-WINDOWS.txt (v0.6.5 section on top of v0.6.4 content).
+
+### Artifacts (all from the same source tree)
+- Android APK builds/forgefall-v0.6.5-debug.apk — 41,281,370 B, sha256 71191556a30343c392d597eb72bcb914f7fd6156ef73b859fdb115a7475be614 — apksigner v2+v3, com.sparky.forgefall code 44, signer cert identical to v0.6.2/v0.6.3, classes2.dex stock (1960 B), classes14 9228 B / classes15 6148 B intact.
+- Linux zip builds/forgefall-v0.6.5-linux.zip — 41,162,927 B, sha256 59dd3f23eec3bcd38fb24ab5c4547a14bb173c7ac071cefbefd35990c981a226 — binary --quit-after 60: exit 0, 0 script errors.
+- Windows zip builds/forgefall-v0.6.5-windows.zip — 50,831,458 B, sha256 b16b03160530bebcb11052cc2762d333250fefb1415ec1b0a43b8541641c3c8b — console wrapper not auto-emitted by headless export (known quirk); v0.6.3's forgefall.console.exe (69,120 B) staged to preserve zip layout.
+- Web web_staging/forgefall-web/ (9 files) — index.pck 13,056,748 B (~12.45 MiB), index.wasm 39,514,754 B, single-threaded confirmed. Headless Chromium boot test deferred (sandbox Chromium limitation, same as v0.6.3 — real-device QA).
+
+### Verification
+New tools/verify_deploy_loading.gd 51/51 (all 5 menu maps, SP tower_defense/tdm/zombies, legacy domination/endless, puzzle chamber_01, mp_tdm host — screen → stages in order → PLAYING → player spawns → dismisses after "Ready"; fault injection at "waves" → label reads "Spawning enemies"). Built PCKs: Linux — deploy_loading 51/51, touch_aim 10/10, web_warmup 7/7; Windows — deploy_loading 51/51. Source: forge_batch 143/143, creator_fix 48/48, touch_aim 10/10, web_warmup 7/7, web_port 26/26, updater_pc 65/0 (at 0.6.5/44), 900-frame smoke clean.
+
+### Publish
+- Release https://github.com/vatherty/FORGEFALL/releases/tag/v0.6.5 — 3 assets, all `uploaded`, sha256 match local (APK 71191556…, Linux 59dd3f23…, Windows b16b0316…).
+- Pages: APK + Linux zip; version.json + version_pc.json → 0.6.5/44; index.html → v0.6.5 links (LATEST v0.6.5, PLAY IN YOUR BROWSER kept); /play/ replaced with fresh v0.6.5 web build (9 files); .nojekyll intact. Windows zip on the Release asset only (too big for Pages); version_pc.json + index Windows link point at it.
+- Pages transient errored→built recurred; pages-enable 409 nudge applied.
+
+### Catch during publish (coordinator)
+- scripts/core/tuning.gd FALLBACK_VERSION_CODE was still 42 (v0.6.4 left it at 42 instead of 43). On PC builds this constant IS the installed version code — a fresh 0.6.5 install would have nagged "update available" forever. Bumped to 44; rebuilt Linux + Windows PCKs (and Web PCK) from the fixed source before zipping.
+- restore-staging/version.json (Netlify-era v0.1.7 canary) is publish scratch — excluded from the source sync.
+- Local updates/index.html was stale (v0.6.3-era, missing the PLAY IN YOUR BROWSER entry); rebuilt from the live v0.6.4 page before bumping to v0.6.5.
