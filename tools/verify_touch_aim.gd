@@ -228,6 +228,107 @@ func _test_rapid_tap() -> void:
 		_fail("rapid-tap", "%d phantom look calls" % _mp.look_calls.size())
 
 
+func _button(id: String) -> Dictionary:
+	for d in _tc.get("_btn_defs"):
+		if d["id"] == id:
+			return d
+	return {}
+
+
+func _test_fire_drag() -> void:
+	_reset()
+	var fire := _button("fire")
+	var pos: Vector2 = fire["pos"] + fire["size"] * 0.5
+	_touch_begin(0, _joy())
+	_drag(0, _joy() + Vector2(35, 0))
+	_touch_begin(1, pos)
+	_drag(1, pos + Vector2(-40, 20))
+	if Input.is_action_pressed("fire") and Input.is_action_pressed("move_right") and _close(_mp.look_sum(), Vector2(-40, 20) * GAIN):
+		_pass("fire-drag: move, shoot and aim simultaneously")
+	else:
+		_fail("fire-drag", "movement, fire or tracked aim missing")
+	_touch_begin(2, pos)
+	_touch_end(1)
+	if Input.is_action_pressed("fire"):
+		_pass("fire: lifting one finger preserves the other owner's hold")
+	else:
+		_fail("fire ownership", "released another finger's fire")
+	_tc.set_menu_open(true)
+	if not Input.is_action_pressed("fire") and not Input.is_action_pressed("move_right") and (_tc.get("_touches") as Dictionary).is_empty():
+		_pass("menu: held movement/fire released and touch ownership cleared")
+	else:
+		_fail("menu cleanup", "action or touch stuck")
+	_tc.set_menu_open(false)
+	_drag(2, pos + Vector2(90, 0))
+	if _close(_mp.look_sum(), Vector2(-40, 20) * GAIN):
+		_pass("menu: stale held-finger drag cannot resume aim")
+	else:
+		_fail("menu stale drag", "aim leaked after menu")
+
+
+func _test_placement_touch() -> void:
+	var world := Node3D.new()
+	root.add_child(world)
+	var player := Node3D.new()
+	world.add_child(player)
+	var placement: Node = load("res://scripts/forge/forge_placement.gd").attach_to(world)
+	var confirmations := [0]
+	placement.preview_confirm_requested.connect(func(_pos: Vector3): confirmations[0] += 1)
+	if not placement.start_preview("sniper_nest", {}, player, world):
+		_fail("placement setup", "could not start ghost")
+		world.free()
+		return
+	_tc._process(0.0)
+	var use := _button("interact")
+	var pos: Vector2 = use["pos"] + use["size"] * 0.5
+	_touch_begin(5, pos)
+	_touch_end(5)
+	Input.flush_buffered_events()
+	if confirmations[0] == 1:
+		_pass("PLACE touch: real ghost controller receives confirmation event once")
+	else:
+		_fail("PLACE event", "received %d confirmations" % confirmations[0])
+	var cancel := _button("cancel")
+	pos = cancel["pos"] + cancel["size"] * 0.5
+	_touch_begin(5, pos)
+	_touch_end(5)
+	Input.flush_buffered_events()
+	if not placement.has_preview():
+		_pass("CANCEL touch: dismisses real placement preview")
+	else:
+		_fail("CANCEL event", "preview still active")
+	world.free()
+
+
+func _test_mobile_layout() -> void:
+	for vp in [Vector2(844, 390), Vector2(1280, 720), Vector2(2340, 1080)]:
+		var k := clampf(minf(vp.x / 1280.0, vp.y / 720.0), 0.65, 1.8)
+		_tc._place_buttons(vp, k)
+		var valid: bool = not _tc._buttons_overlap()
+		for d in _tc.get("_btn_defs"):
+			var rect := Rect2(d["pos"], d["size"])
+			valid = valid and Rect2(Vector2.ZERO, vp).encloses(rect) and rect.size.x >= 48 and rect.size.y >= 48
+		if valid:
+			_pass("layout: in bounds, no overlap, targets >=48 at %s" % vp)
+		else:
+			_fail("layout", "overlap, undersized or off-screen at %s" % vp)
+	_tc._layout()
+
+
+func _test_menu_emulation() -> void:
+	MouseCapture.set_menu()
+	if Input.emulate_mouse_from_touch:
+		_pass("menus: native GUI receives emulated mouse taps")
+	else:
+		_fail("menu taps", "mouse emulation disabled")
+	MouseCapture.set_gameplay()
+	if not Input.emulate_mouse_from_touch:
+		_pass("gameplay: native multi-touch cannot generate mouse fire")
+	else:
+		_fail("gameplay emulation", "touch could leak into mouse bindings")
+	MouseCapture.set_menu()
+
+
 func _initialize() -> void:
 	print("VERIFY_TOUCH_AIM: behavioral dual-touch aim through the real dispatcher")
 	# NOTE: nodes added here report is_inside_tree() == false, so the
@@ -248,6 +349,10 @@ func _process(_delta: float) -> bool:
 		_test_release_drops_look()
 		_test_midpoint_cross()
 		_test_rapid_tap()
+		_test_fire_drag()
+		_test_placement_touch()
+		_test_mobile_layout()
+		_test_menu_emulation()
 	print("VERIFY_TOUCH_AIM: %d passed, %d failed" % [_passes, _fails])
 	quit(1 if _fails > 0 else 0)
 	return false
