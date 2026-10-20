@@ -22,6 +22,7 @@ const EXPECTED_ACTIONS := {
 	"ks2": "killstreak_2", "ks3": "killstreak_3", "pause": "pause",
 	"fire": "fire", "jump": "jump", "ads": "ads", "crouch": "crouch",
 	"grapple": "grapple", "reload": "reload",
+	"interact": "interact", "cancel": "ui_cancel", "weapon": "weapon_next",
 }
 
 
@@ -48,16 +49,9 @@ func _playing_loop_count() -> int:
 
 
 func _check_layout(label: String, w: float, h: float) -> void:
-	# Drive _place_buttons directly at the exact target size: headless runs
-	# ignore Window resizes, so resizing root.size cannot produce a 2340x1080
-	# viewport. The retry loop below mirrors _layout() exactly (same start k,
-	# same step, same overlap test), so this exercises the real layout code.
-	var kk := clampf(minf(w / 1920.0, h / 1080.0), 0.30, 1.0)
-	for _a in 12:
-		_touch.call("_place_buttons", Vector2(w, h), kk)
-		if not _touch.call("_buttons_overlap"):
-			break
-		kk = maxf(0.30, kk - 0.05)
+	# Exercise the same scale used by the current mobile layout.
+	var kk := clampf(minf(w / 1280.0, h / 720.0), 0.65, 1.8)
+	_touch.call("_place_buttons", Vector2(w, h), kk)
 	_touch.set("_view_size", Vector2(w, h))
 	print("C3 INFO: layout ", label, " final scale k=", kk)
 	var view := Vector2(w, h)
