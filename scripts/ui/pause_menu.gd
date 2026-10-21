@@ -110,7 +110,7 @@ func _input(event: InputEvent) -> void:
 		# The rebind screen owns the press while open (its own B/Esc
 		# closes it); otherwise B would close the rebind screen AND
 		# resume the game on the same press.
-		if get_node_or_null("RebindMenu") != null:
+		if get_node_or_null("RebindMenu") != null or get_node_or_null("SettingsMenu") != null:
 			return
 		toggle_pause()
 		get_viewport().set_input_as_handled()
@@ -138,7 +138,7 @@ func _on_restart() -> void:
 
 func _on_options() -> void:
 	_click()
-	_options_box.visible = not _options_box.visible
+	preload("res://scripts/ui/settings_menu.gd").open_in(self)
 
 
 func _on_controls() -> void:
