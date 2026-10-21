@@ -1,7 +1,11 @@
 # verify_v051.gd — headless consolidated checks for the v0.5.1 fix round.
 # Usage: godot --headless --path <project> --script res://tools/verify_v051.gd
 # Fixes covered:
-#   1. emulate_mouse_from_touch=false; `fire` keeps its desktop mouse binding.
+#   1. emulate_mouse_from_touch=true (Colin's 2026-10-20 ruling for native
+#      menus — supersedes the v0.5.1 project-default lock of false; the
+#      behavioral safety proof now lives in verify_emulate_mouse_safety.gd:
+#      MouseCapture runtime toggling + _begin_deploy gameplay-first +
+#      menu binding-erase); `fire` keeps its desktop mouse binding.
 #   2. HUD layout: hint hidden, minimap hidden when UAV inactive (full
 #      rect geometry was verified 60/60 across 5 sizes by the fix worker).
 #   3. Shadow map 2048 + sun bias values.
@@ -148,8 +152,8 @@ func _process(_delta: float) -> bool:
 
 func _check_fix1() -> void:
 	_check(ProjectSettings.get_setting(
-		"input_devices/pointing/emulate_mouse_from_touch") == false,
-		"fix 1: emulate_mouse_from_touch is false")
+		"input_devices/pointing/emulate_mouse_from_touch") == true,
+		"fix 1: emulate_mouse_from_touch is true (Colin 2026-10-20, native menus)")
 	var has_mouse := false
 	for ev in InputMap.action_get_events("fire"):
 		if ev is InputEventMouseButton \
