@@ -9,6 +9,8 @@ AI SETTINGS shortcut. Changes apply immediately and persist on this device.
 - Display: field of view, resolution quality, vertical sync, and fullscreen.
   Browser-controlled display options are disabled on Web.
 - Mobile: touch look sensitivity, button opacity, and supported-device vibration.
+- Effects: screen-filter enable/disable, five looks, intensity, lightweight mode,
+  and optional lens, grain, vignette, fringing and scanline treatments.
 - Forge AI: masked DeepSeek key entry, show entered key, save, and remove.
 
 The DeepSeek key is saved separately in `user://forge_config.json`; both online
