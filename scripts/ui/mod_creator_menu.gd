@@ -321,6 +321,11 @@ func _build() -> void:
 	close.text = "BACK"
 	StencilStyle.style_button(close)
 	close.pressed.connect(_on_close_pressed)
+	var ai_settings := Button.new()
+	ai_settings.text = "AI SETTINGS"
+	ai_settings.custom_minimum_size.y = 52
+	ai_settings.pressed.connect(func(): preload("res://scripts/ui/settings_menu.gd").open_in(self))
+	head_row.add_child(ai_settings)
 	head_row.add_child(close)
 	_tabs = TabContainer.new()
 	_tabs.name = "CreatorTabs"
