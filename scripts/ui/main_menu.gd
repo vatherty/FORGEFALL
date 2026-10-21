@@ -809,6 +809,8 @@ func _on_creator_menu_closed(menu: Node) -> void:
 
 
 func _input(event: InputEvent) -> void:
+	if get_node_or_null("SettingsMenu") != null:
+		return
 	if event.is_action_pressed("ui_cancel"):
 		# The rebind screen / an open picker owns the press when open.
 		if get_node_or_null("RebindMenu") != null:
@@ -844,11 +846,8 @@ func _focus_menu_button(btn_name: String) -> void:
 
 func _on_options() -> void:
 	_click()
-	_options_panel.visible = not _options_panel.visible
-	if _options_panel.visible:
-		InputBindings.grab_first_focus(_options_panel)
-	else:
-		_focus_menu_button("OptionsButton")
+	var menu := preload("res://scripts/ui/settings_menu.gd").open_in(self)
+	menu.closed.connect(func(): _focus_menu_button("OptionsButton"), CONNECT_ONE_SHOT)
 
 
 func _on_controls() -> void:
@@ -895,16 +894,7 @@ func _apply_volumes() -> void:
 
 func _save_settings() -> void:
 	var cfg := ConfigFile.new()
-	# Sliders/options are built in _build_options(), which runs after the
-	# mode/map rows — guard so an early save (mode/map pick) can't null-deref.
-	if _sens != null:
-		cfg.set_value("ui", "sensitivity", _sens.value)
-	if _master != null:
-		cfg.set_value("ui", "master_vol", _master.value)
-	if _music != null:
-		cfg.set_value("ui", "music_vol", _music.value)
-	if _quality != null:
-		cfg.set_value("ui", "quality", _quality.selected)
+	cfg.load(SETTINGS_PATH)
 	cfg.set_value("ui", "map", _map_select.selected if _map_select != null else 0)
 	cfg.set_value("game", "mode", GameModeManager.selected_mode)
 	cfg.save(SETTINGS_PATH)
