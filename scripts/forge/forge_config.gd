@@ -25,10 +25,11 @@ static func load_key() -> String:
 
 
 ## Persists a key for later runs. Called from the options UI (not the Forge).
-static func save_key(key: String) -> void:
+static func save_key(key: String) -> Error:
 	var file := FileAccess.open(CONFIG_PATH, FileAccess.WRITE)
 	if file == null:
-		push_error("ForgeConfig: could not write %s" % CONFIG_PATH)
-		return
+		return FileAccess.get_open_error()
 	file.store_string(JSON.stringify({KEY_FIELD: key.strip_edges()}))
+	var result := file.get_error()
 	file.close()
+	return result
