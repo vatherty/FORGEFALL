@@ -6,7 +6,7 @@ func capture() -> void:
 	root.size = Vector2i(1280, 720)
 	var menu: Node = load("res://scripts/ui/settings_menu.gd").open_in(root)
 	var tabs: TabContainer = menu.find_child("SettingsTabs", true, false)
-	tabs.current_tab = 4
+	tabs.current_tab = tabs.get_tab_count() - 1
 	for frame in 5:
 		await process_frame
 	await RenderingServer.frame_post_draw
