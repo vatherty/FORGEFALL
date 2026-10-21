@@ -14,6 +14,7 @@ config/icon="res://icon.svg"
 
 [autoload]
 
+Preferences="*res://scripts/core/preferences.gd"
 Game="*res://scripts/core/game_state.gd"
 Sfx="*res://scripts/audio/audio_manager.gd"
 Forge="*res://scripts/forge/forge_manager.gd"
@@ -40,21 +41,27 @@ window/stretch/aspect="expand"
 [input_devices]
 
 sensors/enable_gyroscope=true
-; v0.5.1: NEVER emulate mouse from touch. With the default (true), every
-; Android tap synthesizes a mouse click, and `fire` is bound to mouse
-; button 1 — so ANY tap fired the gun. Touch input goes through the touch
-; layer's Input.action_press calls, never through emulated mouse clicks.
-; Desktop mouse is real hardware and is unaffected.
-; v0.6.6 intake: GPT's mobile-HUD patch flipped this to true, relying on
-; MouseCapture; the flip is HELD BACK (verify_v051 locks the false
-; default, and the guarantee must not rest on runtime state alone).
-; GPT's runtime half is kept: MouseCapture.set_menu() enables emulation
-; while menus are up (Main calls it at boot and on every menu return)
-; and set_gameplay() disables it — merged behavior is unchanged in
-; every state, proven by tools/verify_emulate_mouse_safety.gd.
+; v0.6.7: Colin's ruling 2026-10-20 — pointing/emulate_mouse_from_touch
+; = TRUE. His words: "It needs emulate mouse in order for menus to
+; work." Native menu controls (sliders/tabs/dropdowns in the new
+; Settings screen) need touch-to-mouse translation at the project
+; level. This supersedes the v0.5.1 project-default lock (false) and
+; the v0.6.6 hold-back.
+; Safety no longer rests on the project default. It rests on:
+;   - MouseCapture runtime toggling: set_menu() = true (menus),
+;     set_gameplay() = false (gameplay) — Input.emulate_mouse_from_touch
+;     is flipped at runtime on every transition.
+;   - main.gd _begin_deploy() entering gameplay mode FIRST, before
+;     the staged deploy wires the player, closing the tap-fire window.
+;   - Binding-erase in menus: MouseCapture.erase_mouse_bindings()
+;     removes MB1/MB2/MB3 from fire/ads/grapple while menus are up,
+;     so a synthesized click cannot create the fire action state.
+; Proven behaviorally by tools/verify_emulate_mouse_safety.gd
+; (23/23, invariant sampled every frame: emulate ON only while
+; bindings are erased or no weapon is live).
 ; (Godot project.godot comments use ';' — '#' lines are parsed as keys
 ; and would swallow the setting below.)
-pointing/emulate_mouse_from_touch=false
+pointing/emulate_mouse_from_touch=true
 
 ; Gamepad (Xbox-style / Steam Deck): joypad events are APPENDED to the
 ; existing keyboard/mouse actions below — no action renamed, no KB/M binding
