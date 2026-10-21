@@ -121,6 +121,9 @@ signal class_changed(class_id: String)
 @onready var portal_emitter: PortalEmitter = $PortalEmitter
 
 var _pitch := 0.0
+var invert_y := false
+var preferred_fov := 90.0
+var ads_sensitivity := ADS_SENS_MULT
 var look_sensitivity := 1.0  # user setting; options menu wires this later
 var _hp := MAX_HP
 var _dead := false
@@ -175,7 +178,15 @@ var _second_wind_used := false
 var _was_on_floor := true
 
 
+func apply_preferences(values: Dictionary) -> void:
+	look_sensitivity = float(values.sensitivity)
+	invert_y = bool(values.invert_y)
+	preferred_fov = float(values.fov)
+	ads_sensitivity = float(values.ads_sensitivity)
+
+
 func _ready() -> void:
+	apply_preferences(Preferences.values)
 	add_to_group("player")
 	_pitch = 0.0
 	head.rotation.x = 0.0
@@ -195,9 +206,9 @@ func _ready() -> void:
 func add_look(relative: Vector2) -> void:
 	if _dead:
 		return
-	var s: float = look_sensitivity * (ADS_SENS_MULT if _ads else 1.0)
+	var s: float = look_sensitivity * (ads_sensitivity if _ads else 1.0)
 	rotate_y(-relative.x * s)
-	_pitch = clampf(_pitch - relative.y * s,
+	_pitch = clampf(_pitch - relative.y * s * (-1.0 if invert_y else 1.0),
 			-deg_to_rad(PITCH_LIMIT_DEG), deg_to_rad(PITCH_LIMIT_DEG))
 	head.rotation.x = _pitch
 
@@ -1103,11 +1114,11 @@ func _process(delta: float) -> void:
 	_update_gamepad_look(delta)
 
 	# --- FOV: ADS zoom vs sprint kick ---
-	var fov_t := FOV_NORMAL
+	var fov_t := preferred_fov
 	if _ads:
-		fov_t = FOV_ADS
+		fov_t = preferred_fov * FOV_ADS / FOV_NORMAL
 	elif _sprinting:
-		fov_t = FOV_SPRINT
+		fov_t = preferred_fov + FOV_SPRINT - FOV_NORMAL
 	camera.fov = lerpf(camera.fov, fov_t, 1.0 - exp(-FOV_LERP_RATE * delta))
 
 	# --- camera roll: wall-run lean / slide lean ---
