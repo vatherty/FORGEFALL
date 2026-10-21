@@ -25,6 +25,11 @@ const STREAK_MS := 120  # killstreak ready
 
 ## Vibrate for ms milliseconds. No-op off mobile. Never raises.
 static func buzz(ms: int) -> void:
+	var tree := Engine.get_main_loop() as SceneTree
+	if tree != null:
+		var preferences := tree.root.get_node_or_null("Preferences")
+		if preferences != null and not preferences.values.haptics:
+			return
 	if ms <= 0:
 		return
 	if not (OS.has_feature("android") or OS.has_feature("ios")):
