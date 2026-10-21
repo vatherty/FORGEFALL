@@ -7,6 +7,9 @@ const DEFAULTS := {
 	"invert_y": false, "fov": 90.0, "master_vol": 0.9, "music_vol": 0.7,
 	"sfx_vol": 1.0, "ui_vol": 1.0, "quality": 2, "vsync": true,
 	"fullscreen": false, "haptics": true, "touch_opacity": 0.8,
+	"effects_enabled": false, "effects_look": 0, "effects_strength": 0.65,
+	"effects_lightweight": true, "effects_lens": true, "effects_grain": true,
+	"effects_vignette": true, "effects_chromatic": false, "effects_scanlines": true,
 }
 var values: Dictionary = DEFAULTS.duplicate()
 
@@ -36,6 +39,9 @@ func reset() -> Error:
 	return change("sensitivity", DEFAULTS.sensitivity)
 
 func apply() -> void:
+	var effects := get_node_or_null("/root/ScreenEffects")
+	if effects != null:
+		effects.configure(values)
 	for bus in {"Master": "master_vol", "Music": "music_vol", "SFX": "sfx_vol", "UI": "ui_vol"}:
 		var index := AudioServer.get_bus_index(bus)
 		if index >= 0:
