@@ -53,7 +53,7 @@ func _ready() -> void:
 	tabs.clip_tabs = true
 	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	column.add_child(tabs)
-	for category in ["CONTROLS", "AUDIO", "DISPLAY", "MOBILE", "FORGE AI"]:
+	for category in ["CONTROLS", "AUDIO", "DISPLAY", "MOBILE", "EFFECTS", "FORGE AI"]:
 		var scroll := ScrollContainer.new()
 		scroll.name = category
 		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -89,6 +89,24 @@ func _ready() -> void:
 				_slider("Action button opacity", "touch_opacity", 0.3, 1, 0.05)
 				_toggle("Vibration (supported devices)", "haptics")
 				_note("Drag FIRE to aim while shooting. ADS toggles aim. USE becomes PLACE when previewing a structure.")
+			"EFFECTS":
+				_toggle("Enable screen effects", "effects_enabled")
+				var looks := OptionButton.new()
+				for look_name in ScreenEffects.LOOK_NAMES:
+					looks.add_item(look_name)
+				looks.selected = clampi(int(Preferences.values.effects_look), 0, ScreenEffects.LOOK_NAMES.size() - 1)
+				looks.custom_minimum_size.y = 52
+				_body.add_child(looks)
+				_controls.effects_look = looks
+				looks.item_selected.connect(func(index: int): _save("effects_look", index))
+				_slider("Effect intensity", "effects_strength", 0, 1, 0.05)
+				_toggle("Lightweight mode (recommended on Web)", "effects_lightweight")
+				_toggle("Bodycam lens distortion", "effects_lens")
+				_toggle("Film grain", "effects_grain")
+				_toggle("Darkened edges", "effects_vignette")
+				_toggle("Bodycam color fringing (full mode only)", "effects_chromatic")
+				_toggle("Retro scanlines", "effects_scanlines")
+				_note("Effects apply to the game view. Menus and touch buttons stay clear. Turn effects off for best performance. Lightweight mode skips extra color-fringing samples. Night vision is a visual filter. Bodycam does not change camera motion.")
 			"FORGE AI":
 				_build_ai()
 	_status = Label.new()
