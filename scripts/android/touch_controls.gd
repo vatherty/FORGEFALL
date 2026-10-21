@@ -76,6 +76,7 @@ func _ready() -> void:
 	add_child(_speech)
 	_build_ui()
 	_layout()
+	Preferences.apply.call_deferred()
 	get_viewport().size_changed.connect(_layout)
 	get_tree().call_group("hud", "set_touch_mode", _touch_active)
 
