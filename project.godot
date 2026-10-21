@@ -15,6 +15,7 @@ config/icon="res://icon.svg"
 [autoload]
 
 Preferences="*res://scripts/core/preferences.gd"
+
 Game="*res://scripts/core/game_state.gd"
 Sfx="*res://scripts/audio/audio_manager.gd"
 Forge="*res://scripts/forge/forge_manager.gd"
@@ -24,6 +25,7 @@ NetManager="*res://scripts/net/net_manager.gd"
 Progression="*res://scripts/progression/progression.gd"
 Loadouts="*res://scripts/progression/loadouts.gd"
 Stats="*res://scripts/progression/stats.gd"
+ScreenEffects="*res://scripts/fx/screen_effects.gd"
 
 [editor_plugins]
 
@@ -41,26 +43,8 @@ window/stretch/aspect="expand"
 [input_devices]
 
 sensors/enable_gyroscope=true
-; v0.6.7: Colin's ruling 2026-10-20 — pointing/emulate_mouse_from_touch
-; = TRUE. His words: "It needs emulate mouse in order for menus to
-; work." Native menu controls (sliders/tabs/dropdowns in the new
-; Settings screen) need touch-to-mouse translation at the project
-; level. This supersedes the v0.5.1 project-default lock (false) and
-; the v0.6.6 hold-back.
-; Safety no longer rests on the project default. It rests on:
-;   - MouseCapture runtime toggling: set_menu() = true (menus),
-;     set_gameplay() = false (gameplay) — Input.emulate_mouse_from_touch
-;     is flipped at runtime on every transition.
-;   - main.gd _begin_deploy() entering gameplay mode FIRST, before
-;     the staged deploy wires the player, closing the tap-fire window.
-;   - Binding-erase in menus: MouseCapture.erase_mouse_bindings()
-;     removes MB1/MB2/MB3 from fire/ads/grapple while menus are up,
-;     so a synthesized click cannot create the fire action state.
-; Proven behaviorally by tools/verify_emulate_mouse_safety.gd
-; (23/23, invariant sampled every frame: emulate ON only while
-; bindings are erased or no weapon is live).
-; (Godot project.godot comments use ';' — '#' lines are parsed as keys
-; and would swallow the setting below.)
+; Native menus need touch-to-mouse translation. MouseCapture disables it
+; during gameplay, where the multi-touch dispatcher owns all actions.
 pointing/emulate_mouse_from_touch=true
 
 ; Gamepad (Xbox-style / Steam Deck): joypad events are APPENDED to the
@@ -242,6 +226,7 @@ pause={
 
 renderer/rendering_method="mobile"
 renderer/rendering_method.mobile="mobile"
+renderer/rendering_method.web="gl_compatibility"
 anti_aliasing/quality/msaa_3d=0
 lights_and_shadows/directional_shadow/size=2048
 lights_and_shadows/directional_shadow/size.mobile=2048
