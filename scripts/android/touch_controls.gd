@@ -341,12 +341,8 @@ func _place_buttons(vp_size: Vector2, k: float) -> void:
 			if style != null:
 				style.set_corner_radius_all(int(minf(s[id].x, s[id].y) * 0.5))
 		# v0.6.1: button label fonts scale with resolution too.
-		# v0.6.6 intake: back to the exact UiScale derivation (the
-		# standing contract — verify_v061 locks touch FIRE font ==
-		# UiScale(24), and base_font values are already UiScale bases;
-		# GPT's local k * 0.8 formula drifted from it at phone sizes).
 		b.add_theme_font_size_override("font_size",
-			UiScale.scaled_font(float(d["base_font"]), vp_size))
+			maxi(14, int(float(d["base_font"]) * k * 0.8)))
 
 
 func _buttons_overlap() -> bool:
