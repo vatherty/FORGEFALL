@@ -185,12 +185,12 @@ func _initialize() -> void:
 	_check("version_pc.json parses", typeof(manifest) == TYPE_DICTIONARY)
 	if typeof(manifest) == TYPE_DICTIONARY:
 		var md: Dictionary = manifest
-		_check("manifest version_code 46", int(md.get("version_code", -1)) == 46)
-		_check("manifest version_name 0.6.7", str(md.get("version_name", "")) == "0.6.7")
+		_check("manifest version_code 44", int(md.get("version_code", -1)) == 44)
+		_check("manifest version_name 0.6.5", str(md.get("version_name", "")) == "0.6.5")
 		_check("manifest windows_url follows Pages naming",
-			str(md.get("windows_url", "")).ends_with("forgefall-v0.6.7-windows.zip"))
+			str(md.get("windows_url", "")).ends_with("forgefall-v0.6.5-windows.zip"))
 		_check("manifest linux_url follows Pages naming",
-			str(md.get("linux_url", "")).ends_with("forgefall-v0.6.7-linux.zip"))
+			str(md.get("linux_url", "")).ends_with("forgefall-v0.6.5-linux.zip"))
 		_check("manifest changelog non-empty", not str(md.get("changelog", "")).is_empty())
 
 
