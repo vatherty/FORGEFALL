@@ -42,7 +42,7 @@ func run() -> void:
 	await process_frame
 	main_menu.free()
 	var settings: Node = load("res://scripts/ui/settings_menu.gd").open_in(root)
-	check(settings.find_child("SettingsTabs", true, false).get_tab_count() == 5, "five settings categories")
+	check(settings.find_child("SettingsTabs", true, false).get_tab_count() == 6, "six settings categories")
 	check(settings._key.secret and settings._key.text.is_empty(), "key field masked and does not expose saved credentials")
 	settings._key.text = ""
 	settings._save_key()
