@@ -1,12 +1,15 @@
 extends RefCounted
 
+const Store = preload("document_store.gd")
+
 const VERSION := 1
 const PITCH := 0.125
 const MAX_COORD := 256
 const MAX_VOXELS := 100000
+const MAX_COLLISION_BOXES := 32
 
 static func create(name: String) -> Dictionary:
-	return {"version": VERSION, "kind": "asset", "id": _id(), "name": name, "pitch": PITCH, "origin": [0.0, 0.0, 0.0], "palette": ["#d39456", "#687d90", "#d9d4c7"], "voxels": [], "layers": [{"name": "Base", "visible": true, "collision": true}], "parts": [], "attachments": [], "references": [], "animations": [], "collision": "static"}
+	return {"version": VERSION, "kind": "asset", "id": _id(), "name": name, "pitch": PITCH, "origin": [0.0, 0.0, 0.0], "palette": ["#d39456", "#687d90", "#d9d4c7"], "voxels": [], "layers": [{"name": "Base", "visible": true, "collision": true}], "parts": [], "attachments": [], "references": [], "animations": [], "collision": "static", "collision_boxes": []}
 
 static func validate(doc: Dictionary) -> String:
 	if doc.get("version") != VERSION or doc.get("kind") != "asset":
@@ -25,8 +28,11 @@ static func validate(doc: Dictionary) -> String:
 	for layer in layers:
 		if not layer is Dictionary or str(layer.get("name", "")).strip_edges().is_empty() or not layer.get("visible", true) is bool or not layer.get("collision", true) is bool:
 			return "Invalid layer."
-	if not str(doc.get("collision", "static")) in ["static", "none"]:
+	if not str(doc.get("collision", "static")) in ["static", "none", "custom"]:
 		return "Invalid collision mode."
+	var box_problem := _validate_collision_boxes(doc)
+	if box_problem != "":
+		return box_problem
 	if not doc.get("attachments", []) is Array or doc.get("attachments", []).size() > 64:
 		return "Invalid attachments."
 	var attachment_names := {}
@@ -63,6 +69,50 @@ static func validate(doc: Dictionary) -> String:
 			return "Duplicate voxel coordinate."
 		seen[key] = true
 	return ""
+
+static func _valid_box_extent(value: Variant, positive: bool) -> bool:
+	if not value is Array or value.size() != 3:
+		return false
+	for axis in value:
+		if not (axis is int or axis is float) or not is_finite(float(axis)) or absf(float(axis)) > MAX_COORD * PITCH:
+			return false
+		if positive and float(axis) <= 0.0:
+			return false
+	return true
+
+static func _validate_collision_boxes(doc: Dictionary) -> String:
+	var boxes: Variant = doc.get("collision_boxes", [])
+	if not boxes is Array or boxes.size() > MAX_COLLISION_BOXES:
+		return "Invalid collision boxes."
+	for box in boxes:
+		if not box is Dictionary or not _valid_box_extent(box.get("min", []), false) or not _valid_box_extent(box.get("size", []), true):
+			return "Invalid collision box."
+	if str(doc.get("collision", "static")) == "custom" and boxes.is_empty():
+		return "Custom collision needs at least one box."
+	return ""
+
+static func add_collision_box(doc: Dictionary, min_corner: Vector3, size: Vector3) -> Dictionary:
+	var next_doc: Dictionary = doc.duplicate(true)
+	if not next_doc.has("collision_boxes"):
+		next_doc["collision_boxes"] = []
+	if next_doc["collision_boxes"].size() >= MAX_COLLISION_BOXES:
+		return next_doc
+	next_doc["collision_boxes"].append({"min": [min_corner.x, min_corner.y, min_corner.z], "size": [size.x, size.y, size.z]})
+	return next_doc
+
+static func remove_collision_box(doc: Dictionary, index: int) -> Dictionary:
+	var next_doc: Dictionary = doc.duplicate(true)
+	if not next_doc.has("collision_boxes") or index < 0 or index >= next_doc["collision_boxes"].size():
+		return next_doc
+	next_doc["collision_boxes"].remove_at(index)
+	return next_doc
+
+static func set_collision_box(doc: Dictionary, index: int, min_corner: Vector3, size: Vector3) -> Dictionary:
+	var next_doc: Dictionary = doc.duplicate(true)
+	if not next_doc.has("collision_boxes") or index < 0 or index >= next_doc["collision_boxes"].size():
+		return next_doc
+	next_doc["collision_boxes"][index] = {"min": [min_corner.x, min_corner.y, min_corner.z], "size": [size.x, size.y, size.z]}
+	return next_doc
 
 static func _valid_position(value: Variant) -> bool:
 	if not value is Array or value.size() != 3:
@@ -264,6 +314,51 @@ static func deform(doc: Dictionary, center: Vector3i, radius: int, offset: Vecto
 			voxel["z"] = target.z
 	return next_doc
 
+## Continuous deformation brush: voxels of one layer inside the radius move
+## along `direction` by round(strength * smoothstep falloff) whole cells, so a
+## drag raises a smooth bump instead of the one-cell step of deform(). Like
+## deform(), the stroke is all-or-nothing: any target out of bounds, occupied
+## by a voxel that stays put, or claimed by two moving voxels aborts it.
+static func deform_brush(doc: Dictionary, center: Vector3i, radius: int, direction: Vector3i, strength: float, layer: int) -> Dictionary:
+	var next_doc: Dictionary = doc.duplicate(true)
+	radius = clampi(radius, 0, 16)
+	if direction == Vector3i.ZERO or strength <= 0.0:
+		return next_doc
+	var unit := Vector3i(clampi(direction.x, -1, 1), clampi(direction.y, -1, 1), clampi(direction.z, -1, 1))
+	var steps_by_point := {}
+	var stationary := {}
+	for voxel in doc["voxels"]:
+		var point := Vector3i(int(voxel["x"]), int(voxel["y"]), int(voxel["z"]))
+		var distance_squared: int = (point - center).length_squared()
+		if int(voxel.get("layer", 0)) != layer or distance_squared > radius * radius:
+			stationary[point] = true
+			continue
+		var falloff := 1.0
+		if radius > 0:
+			var t := clampf(sqrt(float(distance_squared)) / float(radius), 0.0, 1.0)
+			falloff = 1.0 - t * t * (3.0 - 2.0 * t)
+		var steps := int(round(strength * falloff))
+		if steps <= 0:
+			stationary[point] = true
+		else:
+			steps_by_point[point] = steps
+	if steps_by_point.is_empty():
+		return next_doc
+	var targets := {}
+	for point in steps_by_point:
+		var target: Vector3i = point + unit * steps_by_point[point]
+		if absi(target.x) > MAX_COORD or absi(target.y) > MAX_COORD or absi(target.z) > MAX_COORD or stationary.has(target) or targets.has(target):
+			return next_doc
+		targets[target] = true
+	for voxel in next_doc["voxels"]:
+		var point := Vector3i(int(voxel["x"]), int(voxel["y"]), int(voxel["z"]))
+		if steps_by_point.has(point):
+			var target: Vector3i = point + unit * steps_by_point[point]
+			voxel["x"] = target.x
+			voxel["y"] = target.y
+			voxel["z"] = target.z
+	return next_doc
+
 static func flood_fill(doc: Dictionary, start: Vector3i, material: int) -> Dictionary:
 	var next_doc: Dictionary = doc.duplicate(true)
 	var first := find_index(next_doc, start.x, start.y, start.z)
@@ -298,4 +393,4 @@ static func path(project: String, id: String) -> String:
 	return project.path_join("assets/studio/assets").path_join(id + ".json")
 
 static func _id() -> String:
-	return "%08x-%08x-%08x-%08x" % [randi(), randi(), randi(), randi()]
+	return Store.new_id()

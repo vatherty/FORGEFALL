@@ -72,5 +72,8 @@ static func read_json(path: String) -> Dictionary:
 	var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
 	return data if data is Dictionary else {}
 
-static func _id() -> String:
+static func new_id() -> String:
 	return "%08x-%08x-%08x-%08x" % [randi(), randi(), randi(), randi()]
+
+static func _id() -> String:
+	return new_id()

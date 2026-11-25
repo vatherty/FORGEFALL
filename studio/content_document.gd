@@ -1,7 +1,9 @@
 extends RefCounted
 
+const Store = preload("shared/document_store.gd")
+
 static func new_character(name: String) -> Dictionary:
-	return {"version": 1, "kind": "character", "id": _id(), "name": name, "asset_id": "", "weapon_id": "", "health": 100.0, "auto_fire": true, "sight_range": 25.0, "move_speed": 2.5, "parts": [{"name": "Body", "parent": "", "position": [0.0, 0.9, 0.0], "size": [0.5, 1.2, 0.3], "color": "#8298a8"}, {"name": "Hand", "parent": "Body", "position": [0.35, 0.15, -0.1], "size": [0.15, 0.15, 0.15], "color": "#d5b595"}]}
+	return {"version": 1, "kind": "character", "id": _id(), "name": name, "asset_id": "", "weapon_id": "", "health": 100.0, "auto_fire": true, "sight_range": 25.0, "move_speed": 2.5, "stride_length": 0.7, "swing_degrees": 28.0, "parts": [{"name": "Body", "parent": "", "position": [0.0, 0.9, 0.0], "size": [0.5, 1.2, 0.3], "color": "#8298a8"}, {"name": "Hand", "parent": "Body", "position": [0.35, 0.15, -0.1], "size": [0.15, 0.15, 0.15], "color": "#d5b595"}]}
 
 static func new_weapon(name: String) -> Dictionary:
 	return {"version": 1, "kind": "weapon", "id": _id(), "name": name, "asset_id": "", "damage": 12.0, "range": 30.0, "cooldown": 0.25, "magazine": 12, "muzzle": [0.0, 0.0, -0.3]}
@@ -33,6 +35,10 @@ static func validate(doc: Dictionary) -> String:
 			return "Invalid character firing settings."
 		if not _finite_nonnegative(doc.get("move_speed", 2.5)) or float(doc.get("move_speed", 2.5)) > 20.0:
 			return "Invalid character movement speed."
+		if not _finite_positive(doc.get("stride_length", 0.7)) or float(doc.get("stride_length", 0.7)) > 5.0:
+			return "Invalid character stride length."
+		if not _finite_nonnegative(doc.get("swing_degrees", 28.0)) or float(doc.get("swing_degrees", 28.0)) > 80.0:
+			return "Invalid character swing angle."
 		var parts: Variant = doc.get("parts")
 		if not parts is Array or parts.is_empty() or parts.size() > 32:
 			return "Character needs 1 to 32 rig parts."
@@ -48,6 +54,8 @@ static func validate(doc: Dictionary) -> String:
 					return "Rig part size must be positive."
 			if not Color.html_is_valid(str(part.get("color", ""))):
 				return "Invalid rig color."
+			if not str(part.get("limb", "")) in ["", "leg_left", "leg_right", "arm_left", "arm_right", "body"]:
+				return "Invalid rig limb role."
 			names[name] = true
 		for part in parts:
 			var parent := str(part.get("parent", ""))
@@ -109,4 +117,4 @@ static func _finite_positive(value: Variant) -> bool:
 	return _finite_nonnegative(value) and float(value) > 0.0
 
 static func _id() -> String:
-	return "%08x-%08x-%08x-%08x" % [randi(), randi(), randi(), randi()]
+	return Store.new_id()

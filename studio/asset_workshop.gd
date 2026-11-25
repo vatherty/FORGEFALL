@@ -16,9 +16,11 @@ var stroke_cells: Array[Vector3i] = []
 var stroke_active := false
 var brush_shape := "Box"
 var brush_radius := 0
+var brush_strength := 3.0
 var symmetry := Vector3i.ZERO
 var layer_index := 0
 var attachment_index := -1
+var collision_box_index := -1
 var deform_offset := Vector3i.UP
 var camera_distance := 3.0
 var camera_yaw := 0.7
@@ -42,7 +44,11 @@ var radius_input: SpinBox
 var layer_picker: OptionButton
 var layer_name_input: LineEdit
 var deform_picker: OptionButton
+var strength_input: SpinBox
 var collision_picker: OptionButton
+var box_picker: OptionButton
+var box_min_inputs: Array[SpinBox] = []
+var box_size_inputs: Array[SpinBox] = []
 var attachment_input: LineEdit
 var attachment_picker: OptionButton
 var reference_dialog: FileDialog
@@ -85,7 +91,7 @@ func _build_ui() -> void:
 	controls.add_child(_label("0.125 m per voxel"))
 	count_label = _label("0 voxels")
 	controls.add_child(count_label)
-	for action in ["Place", "Erase", "Paint", "Sculpt", "Fill", "Smooth", "Deform"]:
+	for action in ["Place", "Erase", "Paint", "Sculpt", "Fill", "Smooth", "Deform", "Deform Brush"]:
 		_button(controls, action, _set_tool.bind(action))
 	controls.add_child(_label("Selected material"))
 	palette = OptionButton.new()
@@ -126,6 +132,14 @@ func _build_ui() -> void:
 	deform_picker.select(2)
 	deform_picker.item_selected.connect(_select_deform_direction)
 	controls.add_child(deform_picker)
+	controls.add_child(_label("Deform brush strength (cells at center)"))
+	strength_input = SpinBox.new()
+	strength_input.min_value = 0.5
+	strength_input.max_value = 8.0
+	strength_input.step = 0.5
+	strength_input.value = brush_strength
+	strength_input.value_changed.connect(func(value: float) -> void: brush_strength = value)
+	controls.add_child(strength_input)
 	controls.add_child(_label("Mirror across coordinate zero"))
 	for axis in 3:
 		var mirror := CheckBox.new()
@@ -151,8 +165,39 @@ func _build_ui() -> void:
 	collision_picker = OptionButton.new()
 	collision_picker.add_item("Static")
 	collision_picker.add_item("None")
+	collision_picker.add_item("Custom")
 	collision_picker.item_selected.connect(_set_collision)
 	controls.add_child(collision_picker)
+	controls.add_child(_label("Custom collision boxes (meters)"))
+	box_picker = OptionButton.new()
+	box_picker.item_selected.connect(_select_collision_box)
+	controls.add_child(box_picker)
+	controls.add_child(_label("Box min corner X / Y / Z"))
+	var min_row := HBoxContainer.new()
+	controls.add_child(min_row)
+	for axis in 3:
+		var min_input := SpinBox.new()
+		min_input.min_value = -Asset.MAX_COORD * Asset.PITCH
+		min_input.max_value = Asset.MAX_COORD * Asset.PITCH
+		min_input.step = Asset.PITCH
+		min_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		min_row.add_child(min_input)
+		box_min_inputs.append(min_input)
+	controls.add_child(_label("Box size X / Y / Z"))
+	var size_row := HBoxContainer.new()
+	controls.add_child(size_row)
+	for axis in 3:
+		var size_input := SpinBox.new()
+		size_input.min_value = Asset.PITCH
+		size_input.max_value = Asset.MAX_COORD * Asset.PITCH
+		size_input.step = Asset.PITCH
+		size_input.value = 0.25
+		size_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		size_row.add_child(size_input)
+		box_size_inputs.append(size_input)
+	_button(controls, "Add Collision Box", _add_collision_box)
+	_button(controls, "Update Selected Box", _update_collision_box)
+	_button(controls, "Delete Selected Box", _delete_collision_box)
 	attachment_picker = OptionButton.new()
 	attachment_picker.item_selected.connect(_select_attachment)
 	controls.add_child(attachment_picker)
@@ -256,6 +301,7 @@ func _new_asset() -> void:
 	asset_doc = Asset.set_voxel(asset_doc, 0, 0, 0, 0)
 	saved_text = ""
 	history = History.new()
+	_load_history()
 	_refresh()
 
 func _choose_asset() -> void:
@@ -275,6 +321,7 @@ func _open_asset(path: String) -> void:
 	asset_doc = candidate
 	saved_text = JSON.stringify(asset_doc)
 	history = History.new()
+	_load_history()
 	_refresh()
 
 func _save() -> bool:
@@ -338,6 +385,7 @@ func _restore() -> void:
 	asset_doc = recovery_candidate
 	saved_text = ""
 	history = History.new()
+	_load_history()
 	status.text = "Recovered unsaved asset. Save to keep it."
 	_refresh()
 
@@ -372,6 +420,8 @@ func _apply_cell(cell: Vector3i) -> void:
 		next_doc = Asset.smooth(asset_doc, cell, brush_radius, material_index, layer_index)
 	elif tool == "Deform":
 		next_doc = Asset.deform(asset_doc, cell, brush_radius, deform_offset, layer_index)
+	elif tool == "Deform Brush":
+		next_doc = Asset.deform_brush(asset_doc, cell, brush_radius, deform_offset, brush_strength, layer_index)
 	elif tool == "Erase":
 		next_doc = Asset.stamp(asset_doc, cell, brush_shape, brush_radius, material_index, layer_index, true, symmetry)
 	else:
@@ -382,15 +432,31 @@ func _commit(name: String, next_doc: Dictionary) -> void:
 	if JSON.stringify(next_doc) == JSON.stringify(asset_doc):
 		return
 	asset_doc = history.execute(asset_doc, name, next_doc)
+	_persist_history()
 	_refresh()
 
 func _undo() -> void:
 	asset_doc = history.undo(asset_doc)
+	_persist_history()
 	_refresh()
 
 func _redo() -> void:
 	asset_doc = history.redo(asset_doc)
+	_persist_history()
 	_refresh()
+
+func _history_path() -> String:
+	return "user://history/asset_" + project_path.sha256_text().substr(0, 16) + "_" + str(asset_doc.get("id", "")) + ".json"
+
+func _persist_history() -> void:
+	if project_path.is_empty() or asset_doc.is_empty():
+		return
+	Store.write_json(ProjectSettings.globalize_path(_history_path()), history.to_dict())
+
+func _load_history() -> void:
+	if project_path.is_empty() or asset_doc.is_empty():
+		return
+	history.load_dict(Store.read_json(ProjectSettings.globalize_path(_history_path())), asset_doc)
 
 func _refresh() -> void:
 	if title == null:
@@ -416,7 +482,14 @@ func _refresh() -> void:
 	attachment_index = mini(attachment_index, attachment_picker.item_count - 1)
 	if attachment_index >= 0:
 		attachment_picker.select(attachment_index)
-	collision_picker.select(0 if asset_doc.get("collision", "static") == "static" else 1)
+	collision_picker.select({"static": 0, "none": 1, "custom": 2}.get(str(asset_doc.get("collision", "static")), 0))
+	box_picker.clear()
+	for i in asset_doc.get("collision_boxes", []).size():
+		var box: Dictionary = asset_doc["collision_boxes"][i]
+		box_picker.add_item("Box %d: min %s size %s" % [i + 1, str(box["min"]), str(box["size"])])
+	collision_box_index = mini(collision_box_index, box_picker.item_count - 1)
+	if collision_box_index >= 0:
+		box_picker.select(collision_box_index)
 	reference_preview.texture = null
 	var references: Array = asset_doc.get("references", [])
 	if not references.is_empty():
@@ -483,7 +556,7 @@ func _pick_cell(position: Vector2) -> Variant:
 	if hit.is_empty():
 		return
 	var offset: Vector3 = hit["normal"] * (Asset.PITCH * 0.2)
-	if tool in ["Erase", "Paint", "Fill", "Smooth", "Deform"]:
+	if tool in ["Erase", "Paint", "Fill", "Smooth", "Deform", "Deform Brush"]:
 		offset = -offset
 	var point: Vector3 = hit["position"] + offset
 	var cell := Vector3i(floori(point.x / Asset.PITCH), floori(point.y / Asset.PITCH), floori(point.z / Asset.PITCH))
@@ -506,6 +579,8 @@ func _finish_stroke() -> void:
 			next_doc = Asset.smooth(next_doc, cell, brush_radius, material_index, layer_index)
 		elif tool == "Deform":
 			next_doc = Asset.deform(next_doc, cell, brush_radius, deform_offset, layer_index)
+		elif tool == "Deform Brush":
+			next_doc = Asset.deform_brush(next_doc, cell, brush_radius, deform_offset, brush_strength, layer_index)
 		else:
 			next_doc = Asset.stamp(next_doc, cell, brush_shape, brush_radius, material_index, layer_index, tool == "Erase", symmetry)
 	stroke_cells.clear()
@@ -563,8 +638,60 @@ func _set_pivot() -> void:
 
 func _set_collision(index: int) -> void:
 	var next_doc: Dictionary = asset_doc.duplicate(true)
-	next_doc["collision"] = "static" if index == 0 else "none"
+	next_doc["collision"] = ["static", "none", "custom"][index]
+	var problem: String = Asset.validate(next_doc)
+	if problem != "":
+		status.text = problem
+		_refresh()
+		return
 	_commit("Set collision", next_doc)
+
+func _box_from_inputs() -> Array:
+	var min_corner := Vector3(box_min_inputs[0].value, box_min_inputs[1].value, box_min_inputs[2].value)
+	var size := Vector3(box_size_inputs[0].value, box_size_inputs[1].value, box_size_inputs[2].value)
+	return [min_corner, size]
+
+func _select_collision_box(index: int) -> void:
+	collision_box_index = index
+	if index < 0 or index >= asset_doc.get("collision_boxes", []).size():
+		return
+	var box: Dictionary = asset_doc["collision_boxes"][index]
+	for axis in 3:
+		box_min_inputs[axis].value = float(box["min"][axis])
+		box_size_inputs[axis].value = float(box["size"][axis])
+
+func _add_collision_box() -> void:
+	var parts := _box_from_inputs()
+	var next_doc: Dictionary = Asset.add_collision_box(asset_doc, parts[0], parts[1])
+	next_doc["collision"] = "custom"
+	var problem: String = Asset.validate(next_doc)
+	if problem != "":
+		status.text = problem
+		return
+	collision_box_index = next_doc["collision_boxes"].size() - 1
+	_commit("Add collision box", next_doc)
+
+func _update_collision_box() -> void:
+	if collision_box_index < 0 or collision_box_index >= asset_doc.get("collision_boxes", []).size():
+		return
+	var parts := _box_from_inputs()
+	var next_doc: Dictionary = Asset.set_collision_box(asset_doc, collision_box_index, parts[0], parts[1])
+	var problem: String = Asset.validate(next_doc)
+	if problem != "":
+		status.text = problem
+		return
+	_commit("Update collision box", next_doc)
+
+func _delete_collision_box() -> void:
+	if collision_box_index < 0 or collision_box_index >= asset_doc.get("collision_boxes", []).size():
+		return
+	var next_doc: Dictionary = Asset.remove_collision_box(asset_doc, collision_box_index)
+	var problem: String = Asset.validate(next_doc)
+	if problem != "":
+		status.text = problem
+		return
+	collision_box_index = mini(collision_box_index, next_doc["collision_boxes"].size() - 1)
+	_commit("Delete collision box", next_doc)
 
 func _add_attachment() -> void:
 	var name := attachment_input.text.strip_edges()

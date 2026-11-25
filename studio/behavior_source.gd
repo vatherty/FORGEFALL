@@ -33,7 +33,7 @@ func diagnose() -> Dictionary:
 	var temporary := ProjectSettings.globalize_path("user://studio_source_check_%d.gd" % Time.get_ticks_usec())
 	var file := FileAccess.open(temporary, FileAccess.WRITE)
 	if file == null:
-		return {"ok": false, "line": 0, "message": "Cannot create diagnostic copy."}
+		return {"ok": false, "line": 0, "column": 0, "message": "Cannot create diagnostic copy."}
 	file.store_string(source)
 	file.close()
 	var target_project := project_path if FileAccess.file_exists(project_path.path_join("project.godot")) else ProjectSettings.globalize_path("res://")
@@ -41,20 +41,58 @@ func diagnose() -> Dictionary:
 	var status := OS.execute(OS.get_executable_path(), ["--headless", "--path", target_project, "--check-only", "--script", temporary], output, true)
 	DirAccess.remove_absolute(temporary)
 	if status == 0:
-		return {"ok": true, "line": 0, "message": "No parser errors."}
+		return {"ok": true, "line": 0, "column": 0, "message": "No parser errors."}
 	var details := str(output[0]) if not output.is_empty() else ""
 	var line := 0
-	var line_pattern := RegEx.new()
-	line_pattern.compile("\\.gd:(\\d+)\\)")
-	var match_line := line_pattern.search(details)
-	if match_line != null:
-		line = int(match_line.get_string(1))
+	var column := 0
+	# Some compiler output carries an explicit column ("file.gd:3:11" or
+	# "column 11"); check-only output normally reports the line only.
+	var located_pattern := RegEx.new()
+	located_pattern.compile("\\.gd:(\\d+):(\\d+)")
+	var match_located := located_pattern.search(details)
+	if match_located != null:
+		line = int(match_located.get_string(1))
+		column = int(match_located.get_string(2))
+	else:
+		var line_pattern := RegEx.new()
+		line_pattern.compile("\\.gd:(\\d+)\\)")
+		var match_line := line_pattern.search(details)
+		if match_line != null:
+			line = int(match_line.get_string(1))
+		var column_pattern := RegEx.new()
+		column_pattern.compile("column (\\d+)")
+		var match_column := column_pattern.search(details)
+		if match_column != null:
+			column = int(match_column.get_string(1))
 	var summary := "GDScript check failed."
 	for text_line in details.split("\n"):
 		if text_line.begins_with("SCRIPT ERROR:"):
 			summary = text_line.trim_prefix("SCRIPT ERROR: ").strip_edges()
 			break
-	return {"ok": false, "line": line, "message": "%s (line %d)" % [summary, line] if line > 0 else summary}
+	if column <= 0 and line > 0:
+		column = _quoted_token_column(summary, line)
+	var message := summary
+	if line > 0 and column > 0:
+		message = "%s (line %d, column %d)" % [summary, line, column]
+	elif line > 0:
+		message = "%s (line %d)" % [summary, line]
+	return {"ok": false, "line": line, "column": column, "message": message}
+
+# When the compiler names the offending token (Identifier "x" not declared,
+# Cannot infer the type of "x" variable, ...), its position in the reported
+# source line is the column the caret should land on. Returns 0 when the
+# summary quotes no identifier that appears in the line.
+func _quoted_token_column(summary: String, line: int) -> int:
+	var token_pattern := RegEx.new()
+	token_pattern.compile("\"([A-Za-z_][A-Za-z0-9_]*)\"")
+	var match_token := token_pattern.search(summary)
+	if match_token == null:
+		return 0
+	var rows := source.split("\n")
+	if line > rows.size():
+		return 0
+	var found := rows[line - 1].find(match_token.get_string(1))
+	return found + 1 if found >= 0 else 0
 
 func save() -> String:
 	if file_path.is_empty():

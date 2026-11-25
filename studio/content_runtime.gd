@@ -3,6 +3,9 @@ extends RefCounted
 static func _content() -> GDScript:
 	return load("res://studio/content_document.gd") if ResourceLoader.exists("res://studio/content_document.gd") else load("res://content_document.gd")
 
+static func _motion() -> GDScript:
+	return load("res://studio/character_motion.gd") if ResourceLoader.exists("res://studio/character_motion.gd") else load("res://character_motion.gd")
+
 static func decorate_asset(node: Node3D, doc: Dictionary) -> String:
 	var animations: Variant = doc.get("animations", [])
 	var problem: String = _content().validate_animations(animations)
@@ -94,6 +97,24 @@ static func build_character(doc: Dictionary, visual: PackedScene = null, weapon:
 		visual_part.material_override = material
 		joint.add_child(visual_part)
 		visual_part.owner = root
+	# Procedural walk cycle + patrol/chase AI. The motion component collects
+	# the rig joints built above when the character enters the tree.
+	var motion_script := _motion()
+	if motion_script != null:
+		var motion := Node.new()
+		motion.name = "CharacterMotion"
+		motion.set_script(motion_script)
+		motion.set("move_speed", float(doc.get("move_speed", 2.5)))
+		motion.set("sight_range", float(doc.get("sight_range", 25.0)))
+		motion.set("stride_length", float(doc.get("stride_length", 0.7)))
+		motion.set("swing_degrees", float(doc.get("swing_degrees", 28.0)))
+		var roles := {}
+		for part in doc["parts"]:
+			if str(part.get("limb", "")) != "":
+				roles[str(part["name"])] = str(part["limb"])
+		motion.set("limb_roles", roles)
+		root.add_child(motion)
+		motion.owner = root
 	if visual != null:
 		var instance := visual.instantiate()
 		instance.name = "VoxelVisual"

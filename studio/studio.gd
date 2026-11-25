@@ -15,6 +15,12 @@ var drag_start: Vector3 = Vector3.ZERO
 var drag_current: Vector3 = Vector3.ZERO
 var dragging_instance := false
 var drag_mouse_start := Vector2.ZERO
+var gizmo_mode := "move"
+var drag_kind := ""
+var drag_axis := -1
+var drag_property := ""
+var drag_start_values: Array = []
+var drag_current_values: Array = []
 var mode := "Edit"
 var camera_distance := 10.0
 var camera_yaw := 0.6
@@ -103,6 +109,7 @@ func _build_ui() -> void:
 	_button(toolbar, "+ Volume", _add_feature.bind("volume"))
 	_button(toolbar, "+ Nav", _add_feature.bind("navigation"))
 	_button(toolbar, "Group", _group_selected)
+	_button(toolbar, "Gizmo: Move", _cycle_gizmo_mode)
 	_button(toolbar, "Delete", _delete_selected)
 	_button(toolbar, "Focus", _focus_selected)	
 	_button(toolbar, "Mode: " + ("Navigate" if navigation_mode else "Edit"), _toggle_navigation_mode)
@@ -271,6 +278,133 @@ func _toggle_navigation_mode() -> void:
 			child.text = "Mode: " + ("Navigate" if navigation_mode else "Edit")
 	status.text = "Navigation mode enabled; left stick moves the camera focus." if navigation_mode else "Edit mode enabled."
 
+func _cycle_gizmo_mode() -> void:
+	var order := ["move", "rotate", "scale"]
+	_set_gizmo_mode(order[(order.find(gizmo_mode) + 1) % order.size()])
+
+func _set_gizmo_mode(next_mode: String) -> void:
+	if next_mode not in ["move", "rotate", "scale"] or next_mode == gizmo_mode:
+		return
+	gizmo_mode = next_mode
+	drag_kind = ""
+	drag_axis = -1
+	for child in get_tree().get_nodes_in_group("gizmo_toggle"):
+		if child is Button:
+			child.text = "Gizmo: " + gizmo_mode.capitalize()
+	status.text = "Gizmo: " + gizmo_mode + " — drag a coloured handle in the viewport (W/E/R switch mode)."
+	_refresh_geometry()
+
+# Circle points around center in the plane perpendicular to axis
+# (0=X uses Y/Z plane, 1=Y uses X/Z, 2=Z uses X/Y), for line-strip drawing.
+static func _gizmo_ring_points(center: Vector3, axis: int, radius: float, segments: int = 48) -> PackedVector3Array:
+	var points := PackedVector3Array()
+	var count := maxi(segments, 3)
+	for i in range(count + 1):
+		var angle := TAU * float(i) / float(count)
+		var c := cos(angle) * radius
+		var s := sin(angle) * radius
+		var offset := Vector3.ZERO
+		match axis:
+			0:
+				offset = Vector3(0.0, c, s)
+			1:
+				offset = Vector3(c, 0.0, s)
+			_:
+				offset = Vector3(c, s, 0.0)
+		points.append(center + offset)
+	return points
+
+# Rotation in degrees while dragging a rotate handle:
+# 0.5 degrees per horizontal pixel, snapped to whole degrees.
+static func _gizmo_drag_rotation(start_degrees: float, mouse_delta_x: float) -> float:
+	return roundf(start_degrees + mouse_delta_x * 0.5)
+
+# Scale/size value while dragging a scale handle: right or up increases,
+# 0.01 per pixel, snapped to 0.125 steps, minimum 0.125.
+static func _gizmo_drag_scale(start_value: float, mouse_delta: Vector2) -> float:
+	return maxf(snappedf(start_value + (mouse_delta.x - mouse_delta.y) * 0.01, 0.125), 0.125)
+
+func _gizmo_center() -> Vector3:
+	var selected := _selected()
+	if selected.is_empty():
+		return Vector3.ZERO
+	return Vector3(selected["position"][0], selected["position"][1], selected["position"][2])
+
+# World-space pick points for the active gizmo mode's handles, keyed by axis.
+func _gizmo_handle_positions() -> Dictionary:
+	var center := _gizmo_center()
+	var handles := {}
+	if gizmo_mode == "rotate":
+		for axis in 3:
+			var ring_dir := Vector3.ZERO
+			match axis:
+				0:
+					ring_dir = Vector3(0.0, cos(PI / 4.0), sin(PI / 4.0))
+				1:
+					ring_dir = Vector3(cos(PI / 4.0), 0.0, sin(PI / 4.0))
+				_:
+					ring_dir = Vector3(cos(PI / 4.0), sin(PI / 4.0), 0.0)
+			handles[axis] = center + ring_dir * 1.25
+	elif gizmo_mode == "scale":
+		var axes := [Vector3.RIGHT, Vector3.UP, Vector3.BACK]
+		for axis in 3:
+			handles[axis] = center + axes[axis] * 1.5
+	return handles
+
+func _start_handle_drag(kind: String, axis: int, mouse_pos: Vector2) -> void:
+	var item := _selected()
+	if item.is_empty():
+		return
+	drag_kind = kind
+	drag_axis = axis
+	drag_mouse_start = mouse_pos
+	drag_property = "rotation" if kind == "rotate" else ("scale" if item.get("kind") == "asset" else "size")
+	var fallback: Array = [0.0, 0.0, 0.0] if drag_property == "rotation" else [1.0, 1.0, 1.0]
+	drag_start_values = (item.get(drag_property, fallback) as Array).duplicate()
+	drag_current_values = drag_start_values.duplicate()
+
+func _update_handle_drag(mouse_pos: Vector2) -> void:
+	if drag_axis < 0 or drag_start_values.size() != 3:
+		return
+	var mouse_delta: Vector2 = mouse_pos - drag_mouse_start
+	if drag_kind == "rotate":
+		drag_current_values[drag_axis] = _gizmo_drag_rotation(float(drag_start_values[drag_axis]), mouse_delta.x)
+	elif drag_kind == "scale":
+		drag_current_values[drag_axis] = _gizmo_drag_scale(float(drag_start_values[drag_axis]), mouse_delta)
+	else:
+		return
+	for child in world.get_children():
+		if child.get_meta("studio_instance", "") == selected_id and not bool(child.get_meta("studio_gizmo", false)):
+			if child is Node3D:
+				if drag_kind == "rotate":
+					(child as Node3D).rotation_degrees = Vector3(drag_current_values[0], drag_current_values[1], drag_current_values[2])
+				elif _selected().get("kind") == "asset":
+					(child as Node3D).scale = Vector3(drag_current_values[0], drag_current_values[1], drag_current_values[2])
+				else:
+					(child as Node3D).scale = Vector3(
+						drag_current_values[0] / maxf(float(drag_start_values[0]), 0.001),
+						drag_current_values[1] / maxf(float(drag_start_values[1]), 0.001),
+						drag_current_values[2] / maxf(float(drag_start_values[2]), 0.001))
+			break
+
+func _finish_handle_drag() -> void:
+	if drag_kind == "" or drag_axis < 0:
+		drag_kind = ""
+		return
+	var kind := drag_kind
+	var property := drag_property
+	var changed := drag_current_values != drag_start_values
+	drag_kind = ""
+	drag_axis = -1
+	if not changed:
+		_refresh_geometry()
+		return
+	var next_doc: Dictionary = map_doc.duplicate(true)
+	for item in next_doc["instances"]:
+		if item["id"] == selected_id:
+			item[property] = drag_current_values.duplicate()
+	_apply("Rotate instance" if kind == "rotate" else "Scale instance", next_doc)
+
 func _show_controls() -> void:
 	controls_dialog.popup_centered(Vector2i(760, 750))
 
@@ -414,6 +548,8 @@ func _button(parent: Node, caption: String, action: Callable) -> void:
 	button.pressed.connect(action)	
 	if caption.begins_with("Mode:"):
 		button.add_to_group("mode_toggle")
+	if caption.begins_with("Gizmo:"):
+		button.add_to_group("gizmo_toggle")
 	parent.add_child(button)
 
 func _label(value: String) -> Label:
@@ -642,7 +778,11 @@ func _check_project_recovery() -> void:
 			map_doc["id"] = id
 		saved_text = JSON.stringify(disk) if not disk.is_empty() else ""
 		disk_text = saved_text
+		selected_id = ""
+		history = History.new()
+		_load_history()
 		_check_recovery()
+		_refresh()
 
 func _check_recovery() -> void:
 	var path := ProjectSettings.globalize_path(_recovery_path())
@@ -877,7 +1017,7 @@ func _refresh_inspector() -> void:
 	for axis in 3:
 		for sign in [-1.0, 1.0]:
 			_button(nudge_row, ["X", "Y", "Z"][axis] + ("-" if sign < 0 else "+"), _nudge_selected.bind(axis, sign * 0.125))
-	inspector.add_child(_label("Drag in viewport to move on X/Z.\nPosition snaps to 0.125 m."))
+	inspector.add_child(_label("Drag in viewport to move on X/Z.\nPosition snaps to 0.125 m.\nGizmo (toolbar or W/E/R): Move, Rotate\nor Scale — drag a coloured handle;\nthe edit is one undoable command."))
 
 func _refresh_geometry() -> void:
 	for child in world.get_children():
@@ -890,6 +1030,7 @@ func _refresh_geometry() -> void:
 				var asset_node: Node3D = Mesher.build_node(asset_doc)
 				asset_node.position = Vector3(item["position"][0], item["position"][1], item["position"][2])
 				asset_node.rotation_degrees = Vector3(item.get("rotation", [0, 0, 0])[0], item.get("rotation", [0, 0, 0])[1], item.get("rotation", [0, 0, 0])[2])
+				asset_node.scale = Vector3(item.get("scale", [1, 1, 1])[0], item.get("scale", [1, 1, 1])[1], item.get("scale", [1, 1, 1])[2])
 				asset_node.set_meta("studio_instance", item["id"])
 				world.add_child(asset_node)
 			continue
@@ -928,18 +1069,51 @@ func _refresh_geometry() -> void:
 		var center := Vector3(selected["position"][0], selected["position"][1], selected["position"][2])
 		var gizmo := ImmediateMesh.new()
 		var axes := [Vector3.RIGHT, Vector3.UP, Vector3.BACK]
-		for axis in 3:
-			var material := StandardMaterial3D.new()
-			material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-			material.albedo_color = [Color.RED, Color.GREEN, Color.BLUE][axis]
-			gizmo.surface_begin(Mesh.PRIMITIVE_LINES, material)
-			gizmo.surface_add_vertex(center)
-			gizmo.surface_add_vertex(center + axes[axis] * 1.25)
-			gizmo.surface_end()
+		var axis_colors := [Color.RED, Color.GREEN, Color.BLUE]
+		if gizmo_mode == "rotate":
+			for axis in 3:
+				var material := StandardMaterial3D.new()
+				material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+				material.albedo_color = axis_colors[axis]
+				gizmo.surface_begin(Mesh.PRIMITIVE_LINE_STRIP, material)
+				for point in _gizmo_ring_points(center, axis, 1.25):
+					gizmo.surface_add_vertex(point)
+				gizmo.surface_end()
+		else:
+			var reach := 1.5 if gizmo_mode == "scale" else 1.25
+			for axis in 3:
+				var material := StandardMaterial3D.new()
+				material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+				material.albedo_color = axis_colors[axis]
+				gizmo.surface_begin(Mesh.PRIMITIVE_LINES, material)
+				gizmo.surface_add_vertex(center)
+				gizmo.surface_add_vertex(center + axes[axis] * reach)
+				gizmo.surface_end()
 		var guide := MeshInstance3D.new()
 		guide.mesh = gizmo
 		guide.set_meta("studio_instance", selected_id)
+		guide.set_meta("studio_gizmo", true)
 		world.add_child(guide)
+		# Draggable handle knobs for the rotate/scale modes, at the same
+		# world positions _gizmo_handle_positions() offers for picking.
+		for axis in _gizmo_handle_positions():
+			var knob := MeshInstance3D.new()
+			var knob_mesh: PrimitiveMesh = SphereMesh.new() if gizmo_mode == "rotate" else BoxMesh.new()
+			if knob_mesh is SphereMesh:
+				(knob_mesh as SphereMesh).radius = 0.09
+				(knob_mesh as SphereMesh).height = 0.18
+			else:
+				(knob_mesh as BoxMesh).size = Vector3.ONE * 0.18
+			knob.mesh = knob_mesh
+			knob.position = _gizmo_handle_positions()[axis]
+			var knob_material := StandardMaterial3D.new()
+			knob_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			knob_material.albedo_color = axis_colors[axis]
+			knob.material_override = knob_material
+			knob.set_meta("studio_instance", selected_id)
+			knob.set_meta("studio_gizmo", true)
+			knob.set_meta("gizmo_axis", axis)
+			world.add_child(knob)
 
 func _focus_selected() -> void:
 	var item := _selected()
@@ -956,7 +1130,25 @@ func _update_camera() -> void:
 
 func _viewport_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if not event.pressed and drag_kind != "":
+			_finish_handle_drag()
+			return
 		if event.pressed and not navigation_mode:
+			# Rotate/scale handle picking takes priority over instance picking.
+			if gizmo_mode in ["rotate", "scale"] and not _selected().is_empty():
+				var handle_axis := -1
+				var handle_distance := 26.0
+				for axis in _gizmo_handle_positions():
+					var handle_pos: Vector3 = _gizmo_handle_positions()[axis]
+					if camera.is_position_behind(handle_pos):
+						continue
+					var distance := camera.unproject_position(handle_pos).distance_to(event.position)
+					if distance < handle_distance:
+						handle_distance = distance
+						handle_axis = axis
+				if handle_axis >= 0:
+					_start_handle_drag(gizmo_mode, handle_axis, event.position)
+					return
 			var closest := 40.0
 			for item in map_doc.get("instances", []):
 				var world_pos := Vector3(item["position"][0], item["position"][1], item["position"][2])
@@ -989,7 +1181,9 @@ func _viewport_input(event: InputEvent) -> void:
 			camera_distance = minf(80.0, camera_distance + 1.0)
 		_update_camera()
 	elif event is InputEventMouseMotion:
-		if dragging_instance:
+		if drag_kind in ["rotate", "scale"]:
+			_update_handle_drag(event.position)
+		elif dragging_instance:
 			var right := camera.global_transform.basis.x
 			var forward := -camera.global_transform.basis.z
 			var motion: Vector2 = event.position - drag_mouse_start
@@ -1057,6 +1251,12 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			_delete_selected()
 		elif event.keycode == shortcut_keys["focus"]:
 			_focus_selected()
+		elif event.keycode == KEY_W:
+			_set_gizmo_mode("move")
+		elif event.keycode == KEY_E:
+			_set_gizmo_mode("rotate")
+		elif event.keycode == KEY_R:
+			_set_gizmo_mode("scale")
 
 func _process(delta: float) -> void:
 	var stick := Vector2(Input.get_joy_axis(0, JOY_AXIS_RIGHT_X), Input.get_joy_axis(0, JOY_AXIS_RIGHT_Y))

@@ -37,6 +37,8 @@ var muzzle_values: Array[SpinBox] = []
 var auto_fire_control: CheckBox
 var sight_control: SpinBox
 var move_control: SpinBox
+var stride_control: SpinBox
+var swing_control: SpinBox
 
 func _ready() -> void:
 	var root := VBoxContainer.new()
@@ -138,6 +140,7 @@ func _new(kind: String) -> void:
 	document = Content.new_character("New Character") if kind == "character" else Content.new_weapon("New Weapon")
 	saved_text = ""
 	editor.text = JSON.stringify(document, "\t")
+	editor.clear_undo_history()
 	_refresh_title()
 	_sync_fields()
 	_refresh_preview()
@@ -165,6 +168,7 @@ func _open(path: String) -> void:
 	document = candidate
 	saved_text = JSON.stringify(document)
 	editor.text = JSON.stringify(document, "\t")
+	editor.clear_undo_history()
 	_refresh_title()
 	_sync_fields()
 	_refresh_preview()
@@ -300,6 +304,10 @@ func _build_visual_forms(parent: VBoxContainer) -> void:
 	form_rows["sight"] = sight_control
 	move_control = _spin(parent, "Move speed (0 = stationary)", 0.0, 20.0, 0.1)
 	form_rows["move"] = move_control
+	stride_control = _spin(parent, "Stride length (walk cycle)", 0.05, 5.0, 0.05)
+	form_rows["stride"] = stride_control
+	swing_control = _spin(parent, "Swing (degrees, walk cycle)", 0.0, 80.0, 1.0)
+	form_rows["swing"] = swing_control
 	_button(parent, "Apply Name / Links / AI", _apply_common_fields)
 	var part_header := _label("Character rig parts")
 	parent.add_child(part_header)
@@ -407,7 +415,7 @@ func _sync_fields() -> void:
 	timeline_panel.visible = content_type == "asset"
 	for key in form_rows:
 		var key_string := str(key)
-		var show: bool = (character_mode and (key_string.begins_with("part_") or key_string in ["equipped_weapon", "auto_fire", "sight", "move"])) or (weapon_mode and (key_string.begins_with("weapon_") or key_string.begins_with("muzzle_")))
+		var show: bool = (character_mode and (key_string.begins_with("part_") or key_string in ["equipped_weapon", "auto_fire", "sight", "move", "stride", "swing"])) or (weapon_mode and (key_string.begins_with("weapon_") or key_string.begins_with("muzzle_")))
 		var control: Control = form_rows[key]
 		control.visible = show
 		if control is SpinBox:
@@ -419,6 +427,8 @@ func _sync_fields() -> void:
 		auto_fire_control.button_pressed = bool(parsed.get("auto_fire", true))
 		sight_control.value = float(parsed.get("sight_range", 25.0))
 		move_control.value = float(parsed.get("move_speed", 2.5))
+		stride_control.value = float(parsed.get("stride_length", 0.7))
+		swing_control.value = float(parsed.get("swing_degrees", 28.0))
 		part_select.clear()
 		for part in parsed.get("parts", []):
 			part_select.add_item(str(part.get("name", "Part")))
@@ -457,6 +467,8 @@ func _apply_common_fields() -> void:
 		parsed["auto_fire"] = auto_fire_control.button_pressed
 		parsed["sight_range"] = sight_control.value
 		parsed["move_speed"] = move_control.value
+		parsed["stride_length"] = stride_control.value
+		parsed["swing_degrees"] = swing_control.value
 	_commit_form(parsed, "Updated content fields.")
 
 func _apply_part() -> void:

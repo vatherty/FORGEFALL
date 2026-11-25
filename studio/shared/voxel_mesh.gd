@@ -69,7 +69,29 @@ static func build_node(doc: Dictionary, with_collision: bool = false) -> Node3D:
 		visual.mesh = chunks[chunk]
 		root.add_child(visual)
 		visual.owner = root
-	if with_collision and str(doc.get("collision", "static")) == "static":
+	if with_collision and str(doc.get("collision", "static")) == "custom" and doc.get("collision_boxes", []) is Array and not doc["collision_boxes"].is_empty():
+		# Author-defined simplified collision: one StaticBody3D with one
+		# BoxShape3D per stored box, instead of the per-chunk voxel trimesh.
+		# Boxes are stored in asset space (meters, before the pivot offset),
+		# matching how voxel coordinates are stored.
+		var body := StaticBody3D.new()
+		body.name = "CollisionCustom"
+		root.add_child(body)
+		body.owner = root
+		var pivot: Array = doc["origin"]
+		for i in doc["collision_boxes"].size():
+			var box: Dictionary = doc["collision_boxes"][i]
+			var min_corner: Array = box["min"]
+			var box_size: Array = box["size"]
+			var shape := CollisionShape3D.new()
+			shape.name = "Box_%d" % i
+			var box_shape := BoxShape3D.new()
+			box_shape.size = Vector3(float(box_size[0]), float(box_size[1]), float(box_size[2]))
+			shape.shape = box_shape
+			shape.position = Vector3(float(min_corner[0]) + box_shape.size.x * 0.5 - float(pivot[0]), float(min_corner[1]) + box_shape.size.y * 0.5 - float(pivot[1]), float(min_corner[2]) + box_shape.size.z * 0.5 - float(pivot[2]))
+			body.add_child(shape)
+			shape.owner = root
+	elif with_collision and str(doc.get("collision", "static")) == "static":
 		var collision_doc: Dictionary = doc.duplicate(true)
 		var collidable := []
 		var layers: Array = doc.get("layers", [{"collision": true}])
