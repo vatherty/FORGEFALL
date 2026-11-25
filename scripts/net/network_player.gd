@@ -92,6 +92,9 @@ var _gun_mesh: MeshInstance3D = null
 var _gun_mat: StandardMaterial3D = null
 var _name_label: Label3D = null
 var _body_mesh: MeshInstance3D = null
+var _visual_root: Node3D = null
+var _gun_visual: Node3D = null
+var _team_band: MeshInstance3D = null
 
 
 ## Configure this node. Call before adding to the tree (visuals are
@@ -194,6 +197,8 @@ func _build_puppet_visuals() -> void:
 	_gun_mesh.material_override = _gun_mat
 	_gun_mesh.position = Vector3(0.28, 1.35, -0.45)
 	add_child(_gun_mesh)
+	_load_character_visual()
+	set_weapon_display("ar7")
 
 	_name_label = Label3D.new()
 	_name_label.name = "NameLabel"
@@ -247,12 +252,72 @@ func set_player_name(p_name: String) -> void:
 		_name_label.text = p_name
 
 
-## Puppet-only: tint the gun mesh from the weapon id so weapon swaps are
-## visible at a glance. (A real per-weapon viewmodel swap is a
-## coordinator follow-up; the id is already synced.)
+## Imported meshes are visual only; the capsule and head hitbox remain the
+## authoritative raycast targets.
+func _load_character_visual() -> void:
+	var path := "res://assets/models/characters/grunt.glb"
+	if not ResourceLoader.exists(path):
+		return
+	var packed := load(path) as PackedScene
+	if packed == null:
+		return
+	var model := packed.instantiate() as Node3D
+	if model == null:
+		return
+	var head := model.find_child("Head", true, false) as Node3D
+	if head == null:
+		model.free()
+		return
+	model.name = "PuppetCharacterVisual"
+	add_child(model)
+	_visual_root = model
+	_body_mesh.visible = false
+	_head.visible = false
+	_head = head
+	_team_band = MeshInstance3D.new()
+	_team_band.name = "TeamArmband"
+	var band := BoxMesh.new()
+	band.size = Vector3(0.29, 0.075, 0.29)
+	_team_band.mesh = band
+	_team_band.position = Vector3(-0.37, 1.22, 0.0)
+	add_child(_team_band)
+
+
+func set_team_display(team: int) -> void:
+	if _team_band == null:
+		return
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color(1.0, 0.48, 0.11) if team == 0 else Color(0.25, 0.6, 1.0)
+	_team_band.material_override = material
+
+
+## Puppet weapon swaps follow the synced id. Unknown mod ids use a visible
+## AR-7 fallback until their selected visual family is available locally.
 func set_weapon_display(weapon_id: String) -> void:
 	current_weapon = weapon_id
-	if _gun_mat != null and not weapon_id.is_empty():
+	if _gun_visual != null:
+		_gun_visual.free()
+		_gun_visual = null
+	var visual_id := weapon_id if weapon_id in ["ar7", "lr8", "sg12", "smg9", "p9", "br3", "hv44", "raptor", "lmg", "ember", "launcher"] else "ar7"
+	var path := "res://assets/models/weapons/%s.glb" % visual_id
+	var metadata_path := "res://assets/models/weapons/%s.json" % visual_id
+	if ResourceLoader.exists(path) and FileAccess.file_exists(metadata_path):
+		var metadata: Variant = JSON.parse_string(FileAccess.get_file_as_string(metadata_path))
+		if metadata is Dictionary:
+			var anchors: Dictionary = (metadata as Dictionary).get("anchors", {})
+			var grip: Variant = anchors.get("Grip", [])
+			if grip is Array and (grip as Array).size() == 3:
+				var packed := load(path) as PackedScene
+				if packed != null:
+					var model := packed.instantiate() as Node3D
+					if model != null:
+						model.name = "PuppetWeaponVisual"
+						model.scale = Vector3.ONE * 0.78
+						model.position = Vector3(0.28, 1.35, -0.37) - Vector3(float(grip[0]), float(grip[1]), float(grip[2])) * 0.78
+						add_child(model)
+						_gun_visual = model
+	_gun_mesh.visible = _gun_visual == null
+	if _gun_mat != null and _gun_visual == null and not weapon_id.is_empty():
 		var h := float(hash(weapon_id) % 1000) / 1000.0
 		_gun_mat.albedo_color = Color.from_hsv(h, 0.6, 0.9)
 

@@ -34,6 +34,27 @@ const MAPS := {
 	# map picker: it is a mode-forced map, like tower_defense.
 	"zombies_flat": {"scene": "res://scenes/maps/zombies_flat.tscn", "props": ""},
 }
+const StudioCatalog = preload("res://scripts/studio/studio_catalog.gd")
+
+func available_maps() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for key in MAPS:
+		if key != "zombies_flat":
+			result.append({"key": key, "name": str(key).replace("_", " ").to_upper()})
+	for entry in StudioCatalog.list_maps():
+		if ResourceLoader.exists(str(entry["scene"])):
+			result.append({"key": "studio:" + str(entry["id"]), "name": str(entry["name"]).to_upper()})
+	return result
+
+func _map_entry(key: String) -> Dictionary:
+	if MAPS.has(key):
+		return MAPS[key]
+	if key.begins_with("studio:"):
+		for entry in StudioCatalog.list_maps():
+			if "studio:" + str(entry["id"]) == key and ResourceLoader.exists(str(entry["scene"])):
+				return {"scene": entry["scene"], "props": ""}
+	return {}
+
 const MAP_SCENE := "res://scenes/maps/dustline.tscn"  # default; see selected_map_key
 const PLAYER_SCENE := "res://scenes/player.tscn"
 const PAUSE_SCENE := "res://scenes/ui/pause_menu.tscn"
@@ -71,6 +92,7 @@ const LOADING_SCREEN_SCRIPT := "res://scripts/ui/map_loading_screen.gd"
 var _deploying := false
 var _loading: Node = null
 var _warmup: Node = null  # WebWarmup runner (web only), settled at deploy
+var _studio_prompt: Label = null
 
 
 func _ready() -> void:
@@ -79,6 +101,14 @@ func _ready() -> void:
 	# actions, guarantee menu-nav gamepad events, apply saved rebinds.
 	InputBindings.ensure_loaded()
 	_show_menu()
+	var prompt_layer := CanvasLayer.new()
+	prompt_layer.name = "StudioInteraction"
+	add_child(prompt_layer)
+	_studio_prompt = Label.new()
+	_studio_prompt.position = Vector2(36, 600)
+	_studio_prompt.add_theme_font_size_override("font_size", 22)
+	_studio_prompt.visible = false
+	prompt_layer.add_child(_studio_prompt)
 	# WEB PORT (iPhone Safari): warm shaders + lazy pools during the menu
 	# so the first shot / explosion / enemy doesn't hitch. No-op off web.
 	# NOTE: loaded by path (not the WebWarmup class_name) so this file
@@ -91,7 +121,41 @@ func _ready() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("pause") and state != State.MENU:
 		toggle_pause()
+	elif event.is_action_pressed("interact") and state == State.PLAYING and selected_map_key.begins_with("studio:"):
+		var target := _nearest_studio_interactable()
+		if target != null:
+			target.call("interact")
+			get_viewport().set_input_as_handled()
 
+
+func _process(_delta: float) -> void:
+	if _studio_prompt == null:
+		return
+	_studio_prompt.visible = false
+	if state != State.PLAYING or not selected_map_key.begins_with("studio:"):
+		return
+	var target := _nearest_studio_interactable()
+	if target != null:
+		_studio_prompt.text = "F / Y  INTERACT  ·  " + target.name
+		_studio_prompt.visible = true
+
+func _nearest_studio_interactable() -> Node3D:
+	var players := get_tree().get_nodes_in_group("player")
+	if players.is_empty():
+		return null
+	var player := players[0] as Node3D
+	if player == null:
+		return null
+	var nearest: Node3D = null
+	var distance := 3.0
+	for candidate in get_tree().get_nodes_in_group("studio_interactable"):
+		if not candidate is Node3D or not candidate.has_method("interact"):
+			continue
+		var current := player.global_position.distance_to(candidate.global_position)
+		if current < distance:
+			nearest = candidate
+			distance = current
+	return nearest
 
 ## Instantiates the main menu if its scene exists yet.
 func _show_menu() -> void:
@@ -105,7 +169,7 @@ func _show_menu() -> void:
 
 ## Called by the main menu map selector. Unknown keys are ignored (Dustline stays).
 func set_selected_map(key: String) -> void:
-	if MAPS.has(key):
+	if not _map_entry(key).is_empty():
 		selected_map_key = key
 
 
@@ -133,7 +197,7 @@ func start_sp_mode(mode_id: String) -> bool:
 		map_key = "tower_defense"
 	if mode_id == "zombies":
 		map_key = "zombies_flat"
-	var map_scene: String = MAPS[map_key]["scene"]
+	var map_scene: String = str(_map_entry(map_key).get("scene", ""))
 	if not ResourceLoader.exists(map_scene):
 		push_error("FORGEFALL: map scene missing at %s — cannot start %s." % [map_scene, mode_id])
 		return false
@@ -163,7 +227,7 @@ func start_game() -> void:
 		selected_map_key = "tower_defense"
 	if GameModeManager.selected_mode == "zombies":
 		selected_map_key = "zombies_flat"
-	var map_scene: String = MAPS[selected_map_key]["scene"]
+	var map_scene: String = str(_map_entry(selected_map_key).get("scene", ""))
 	if not ResourceLoader.exists(map_scene):
 		push_error("FORGEFALL: map scene missing at %s — cannot start game." % map_scene)
 		return
@@ -305,7 +369,7 @@ func _run_deploy(params: Dictionary) -> void:
 ## Loads + instantiates the map scene, adds it, wires props.
 ## Returns null when the map scene is missing (caller fails the deploy).
 func _deploy_load_map(params: Dictionary) -> Node:
-	var map_scene: String = MAPS[str(params["map_key"])]["scene"]
+	var map_scene: String = str(_map_entry(str(params["map_key"])).get("scene", ""))
 	if not ResourceLoader.exists(map_scene):
 		push_error("FORGEFALL: map scene missing at %s — cannot deploy." % map_scene)
 		return null
@@ -396,7 +460,7 @@ func _settle_warmup() -> void:
 ## Map dressing props: only maps with a props scene get one (Dustline).
 ## Foundry / Outpost carry their dressing inside their builders.
 func _wire_props(game_map: Node) -> void:
-	var props_scene: String = MAPS[selected_map_key]["props"]
+	var props_scene: String = str(_map_entry(selected_map_key).get("props", ""))
 	if props_scene.is_empty():
 		return
 	if not ResourceLoader.exists(props_scene):
@@ -740,7 +804,7 @@ func _on_mp_start(map_id: String, mode_id: String, is_host: bool) -> void:
 	if mode_id == "mp_zombies":
 		map_id = "zombies_flat"
 	set_selected_map(map_id)
-	var map_scene: String = MAPS[selected_map_key]["scene"]
+	var map_scene: String = str(_map_entry(selected_map_key).get("scene", ""))
 	if not ResourceLoader.exists(map_scene):
 		push_error("FORGEFALL: map scene missing at %s — cannot start net match." % map_scene)
 		return

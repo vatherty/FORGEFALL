@@ -15,7 +15,10 @@ func _initialize() -> void:
 func _walk(dir: String) -> void:
 	for sub in DirAccess.get_directories_at(dir):
 		if sub != ".godot" and not sub.begins_with("."):
-			_walk(dir.path_join(sub))
+			var child := dir.path_join(sub)
+			if FileAccess.file_exists(child.path_join("project.godot")):
+				continue  # Separate Godot project: its res:// root differs.
+			_walk(child)
 	for file in DirAccess.get_files_at(dir):
 		if file.ends_with(".gd"):
 			_checked += 1

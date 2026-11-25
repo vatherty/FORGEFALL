@@ -39,6 +39,7 @@ var _body_root: Node3D
 var _walk_phase := 0.0
 var _idle_t := 0.0
 var _muzzle: Marker3D
+var _gun_pivot: Node3D
 var _lamp: MeshInstance3D
 var _lamp_mat: StandardMaterial3D
 var _lamp_color := Color(1.0, 0.75, 0.2)
@@ -159,6 +160,7 @@ func build(type_id: String) -> Dictionary:
 	head_area.add_child(head_shape)
 	head_shape.add_to_group("enemy_head")
 
+	_apply_imported_visual(type_id)
 	reset_pose()
 	return {
 		"type": type_id,
@@ -169,6 +171,63 @@ func build(type_id: String) -> Dictionary:
 		"muzzle": _muzzle,
 		"head_hitbox": head_area,
 	}
+
+
+## Retain the proven procedural animation pivots, gun, telegraph lamp and
+## head hitbox, while replacing the visible body with code-authored GLB parts.
+## Every current militia type has an authored body; unknown types keep the
+## original voxel silhouette.
+func _apply_imported_visual(type_id: String) -> void:
+	if type_id not in ["grunt", "rusher", "marksman", "brute",
+		"shredder", "suppressor", "bulwark", "warlord"]:
+		return
+	var path := "res://assets/models/characters/%s.glb" % type_id
+	if not ResourceLoader.exists(path):
+		return
+	var packed := load(path) as PackedScene
+	if packed == null:
+		return
+	var source := packed.instantiate() as Node3D
+	if source == null:
+		return
+	var targets := {
+		"BodyRoot": _body_root, "HipL": _leg_l, "HipR": _leg_r,
+		"ShoulderL": _arm_l, "ShoulderR": _arm_r, "Head": _head_pivot,
+	}
+	var names := targets.keys()
+	for name in names:
+		if source.find_child(str(name), true, false) == null:
+			source.free()
+			return
+	var gun := _arm_r.find_child("Gun", true, false)
+	for old_mesh in find_children("*", "MeshInstance3D", true, false):
+		if old_mesh == _lamp or (gun != null and gun.is_ancestor_of(old_mesh)):
+			continue
+		(old_mesh as MeshInstance3D).visible = false
+	var factor := 0.85 if type_id == "brute" else (0.94 if type_id == "bulwark" else 1.0)
+	for name in names:
+		var src := source.find_child(str(name), true, false) as Node3D
+		var dst: Node3D = targets[name]
+		var offset := Node3D.new()
+		offset.name = "Authored_" + str(name)
+		offset.position = src.position * factor - dst.position
+		offset.scale = Vector3.ONE * factor
+		dst.add_child(offset)
+		for child in src.get_children():
+			if child.name in names:
+				continue
+			_clear_owner_recursive(child)
+			src.remove_child(child)
+			offset.add_child(child)
+	source.free()
+
+
+## Imported scene children still point at their original PackedScene owner.
+## Clear that ownership before moving them into the live animation rig.
+func _clear_owner_recursive(node: Node) -> void:
+	node.owner = null
+	for child in node.get_children():
+		_clear_owner_recursive(child)
 
 
 ## Per-type head dressing: distinct helmet / mask / hood silhouettes.
@@ -247,6 +306,7 @@ func _build_gun(type_id: String, pal: Dictionary) -> void:
 	var wood: Color = pal["wood"]
 	var gun := Node3D.new()
 	gun.name = "Gun"
+	_gun_pivot = gun
 	# Grip at the hand, barrel pointing forward (-Z) once arms raise.
 	gun.position = Vector3(0, -0.72, 0.05)
 	_arm_r.add_child(gun)
@@ -297,6 +357,42 @@ func _build_gun(type_id: String, pal: Dictionary) -> void:
 	_muzzle.name = "Muzzle"
 	_muzzle.position = Vector3(0, 0.03, -0.70)
 	gun.add_child(_muzzle)
+	_apply_imported_gun(type_id, gun)
+
+
+## The enemy keeps its weapon pivot and firing marker. Only the visible box gun
+## is replaced, so AI timing, hit detection and muzzle effects still agree.
+func _apply_imported_gun(type_id: String, gun: Node3D) -> void:
+	var weapon_ids := {
+		"grunt": "ar7", "rusher": "sg12", "marksman": "lr8",
+		"brute": "lmg", "suppressor": "lmg", "bulwark": "p9",
+		"warlord": "lmg",
+	}
+	if not weapon_ids.has(type_id):
+		return  # The shredder has blades, not a firearm.
+	var path := "res://assets/models/weapons/%s.glb" % weapon_ids[type_id]
+	if not ResourceLoader.exists(path):
+		return
+	var packed := load(path) as PackedScene
+	if packed == null:
+		return
+	var visual := packed.instantiate() as Node3D
+	if visual == null:
+		return
+	var grip := visual.find_child("Grip", true, false) as Node3D
+	var muzzle := visual.find_child("Muzzle", true, false) as Node3D
+	if grip == null or muzzle == null:
+		visual.free()
+		return
+	var factor := 0.75 if type_id != "warlord" else 0.9
+	visual.name = "AuthoredGun"
+	visual.scale = Vector3.ONE * factor
+	visual.position = -grip.position * factor
+	gun.add_child(visual)
+	_muzzle.position = visual.position + muzzle.position * factor
+	for child in gun.get_children():
+		if child is MeshInstance3D:
+			(child as MeshInstance3D).visible = false
 
 
 func _palette(type_id: String) -> Dictionary:
@@ -404,6 +500,8 @@ func animate_full(dt: float, params: Dictionary) -> void:
 		_arm_r.rotation.x = swing * 0.8
 	_arm_l.rotation.z = 0.08 + strafe * 0.10 + flinch * 0.50
 	_arm_r.rotation.z = -0.08 - strafe * 0.10 - flinch * 0.50
+	if _gun_pivot != null:
+		_gun_pivot.rotation.x = -_arm_r.rotation.x
 	# Torso: forward lean with speed, lean BACK on wind-up / flinch,
 	# lunge forward on the strike; bob + breathing; strafe tilt.
 	var lean := -move_k * 0.10 + windup * 0.30 - strike * 0.38 + flinch * 0.35

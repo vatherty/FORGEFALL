@@ -35,6 +35,9 @@ export_credentials.cfg
 __pycache__/
 *.pyc
 
+# Local JavaScript model-builder dependencies
+node_modules/
+
 # OS / editor noise
 .DS_Store
 Thumbs.db

@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "id": "bulwark",
+  "pivots": {
+    "BodyRoot": [
+      0,
+      0,
+      0
+    ],
+    "HipL": [
+      -0.175,
+      0.77,
+      0
+    ],
+    "HipR": [
+      0.175,
+      0.77,
+      0
+    ],
+    "ShoulderL": [
+      -0.475,
+      1.48,
+      0
+    ],
+    "ShoulderR": [
+      0.475,
+      1.48,
+      0
+    ],
+    "Head": [
+      0,
+      1.61,
+      0
+    ]
+  },
+  "meshes": 52,
+  "source_meshes": 92
+}

@@ -15,7 +15,7 @@ var _gyro: CheckButton
 var _quality: OptionButton
 var _update_status: Label
 var _map_select: OptionButton
-const MAP_KEYS := ["dustline", "foundry", "outpost", "cinder_city", "tower_defense", "factory"]
+var _map_keys: Array[String] = ["dustline", "foundry", "outpost", "cinder_city", "tower_defense", "factory"]
 # Goal 6 PROGRESSION (Worker B): persistent loadout picker overlay scene.
 const LOADOUT_PICKER_SCENE := "res://scenes/ui/loadout_picker.tscn"
 # Mode-select overlay (Gameplay Rework): one overlay reused for the
@@ -467,7 +467,7 @@ func _on_map_selected(index: int) -> void:
 	_click()
 	var main := get_tree().current_scene
 	if main != null and main.has_method("set_selected_map"):
-		main.set_selected_map(MAP_KEYS[index])
+		main.set_selected_map(_map_keys[index])
 	_save_settings()
 
 
@@ -895,7 +895,7 @@ func _apply_volumes() -> void:
 func _save_settings() -> void:
 	var cfg := ConfigFile.new()
 	cfg.load(SETTINGS_PATH)
-	cfg.set_value("ui", "map", _map_select.selected if _map_select != null else 0)
+	cfg.set_value("ui", "map_key", _map_keys[_map_select.selected] if _map_select != null and _map_select.selected >= 0 else "dustline")
 	cfg.set_value("game", "mode", GameModeManager.selected_mode)
 	cfg.save(SETTINGS_PATH)
 
@@ -908,7 +908,10 @@ func _load_settings() -> void:
 	_master.value = float(cfg.get_value("ui", "master_vol", 0.9))
 	_music.value = float(cfg.get_value("ui", "music_vol", 0.7))
 	_quality.selected = int(cfg.get_value("ui", "quality", 2))
-	_map_select.selected = clampi(int(cfg.get_value("ui", "map", 0)), 0, MAP_KEYS.size() - 1)
+	var saved_key := str(cfg.get_value("ui", "map_key", ""))
+	if saved_key.is_empty():
+		saved_key = _map_keys[clampi(int(cfg.get_value("ui", "map", 0)), 0, _map_keys.size() - 1)]
+	_map_select.selected = maxi(0, _map_keys.find(saved_key))
 	_on_map_selected(_map_select.selected)
 	_apply_volumes()
 	_on_quality(_quality.selected)
@@ -953,8 +956,15 @@ func _build_deploy() -> void:
 	_deploy_row(controls, "MODE", _deploy_mode)
 	_map_select = OptionButton.new()
 	_map_select.name = "DeployMap"
-	for key in MAP_KEYS:
-		_map_select.add_item(key.replace("_", " ").to_upper())
+	var game_root := get_tree().current_scene
+	if game_root != null and game_root.has_method("available_maps"):
+		_map_keys.clear()
+		for entry in game_root.available_maps():
+			_map_keys.append(str(entry["key"]))
+			_map_select.add_item(str(entry["name"]))
+	else:
+		for key in _map_keys:
+			_map_select.add_item(key.replace("_", " ").to_upper())
 	_map_select.item_selected.connect(func(i: int) -> void:
 		_on_map_selected(i)
 		_refresh_deploy())
@@ -1045,11 +1055,12 @@ func _refresh_deploy() -> void:
 	_deploy_desc.text = str(GameModeManager.MODES[_selected_mode]["desc"])
 	var forced := _selected_mode != "tdm"
 	_map_select.disabled = forced
-	_deploy_preview_label.text = ("TOWER DEFENSE" if _selected_mode == "tower_defense" else "ZOMBIES TOWN") if forced else MAP_KEYS[_map_select.selected].replace("_", " ").to_upper()
-	var preview_key: String = MAP_KEYS[_map_select.selected]
+	_deploy_preview_label.text = ("TOWER DEFENSE" if _selected_mode == "tower_defense" else "ZOMBIES TOWN") if forced else _map_select.get_item_text(_map_select.selected)
+	var preview_key: String = _map_keys[_map_select.selected]
 	if forced:
 		preview_key = "tower_defense" if _selected_mode == "tower_defense" else "zombies_flat"
-	_deploy_preview.texture = load("res://assets/ui/maps/" + preview_key + ".png")
+	var preview_path := "res://assets/ui/maps/" + preview_key + ".png"
+	_deploy_preview.texture = load(preview_path) if ResourceLoader.exists(preview_path) else null
 	var entry := Loadouts.get_active_loadout()
 	_deploy_loadout.text = str(entry.get("name", "Assault")).to_upper() + "  ›"
 	_deploy_loadout.disabled = _selected_mode == "tower_defense"

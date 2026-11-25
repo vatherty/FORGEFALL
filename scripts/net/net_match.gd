@@ -142,6 +142,49 @@ class NetPuppet extends CharacterBody3D:
 		_head_mesh.position.y = 1.62
 		_head_mesh.material_override = _team_material(p_team)
 		add_child(_head_mesh)
+		_load_imported_visuals()
+
+	# Rendering only: the original capsule and separate head hitbox stay put.
+	func _load_imported_visuals() -> void:
+		var character_path := "res://assets/models/characters/grunt.glb"
+		if ResourceLoader.exists(character_path):
+			var character_scene := load(character_path) as PackedScene
+			if character_scene != null:
+				var character := character_scene.instantiate() as Node3D
+				if character != null:
+					character.name = "PuppetCharacterVisual"
+					add_child(character)
+					_body_mesh.visible = false
+					_head_mesh.visible = false
+					var band := MeshInstance3D.new()
+					band.name = "TeamArmband"
+					var band_box := BoxMesh.new()
+					band_box.size = Vector3(0.29, 0.075, 0.29)
+					band.mesh = band_box
+					band.material_override = _team_material(team)
+					band.position = Vector3(-0.37, 1.22, 0.0)
+					add_child(band)
+		var gun_path := "res://assets/models/weapons/ar7.glb"
+		var metadata_path := "res://assets/models/weapons/ar7.json"
+		if not ResourceLoader.exists(gun_path) or not FileAccess.file_exists(metadata_path):
+			return
+		var metadata: Variant = JSON.parse_string(FileAccess.get_file_as_string(metadata_path))
+		if not (metadata is Dictionary):
+			return
+		var anchors: Dictionary = (metadata as Dictionary).get("anchors", {})
+		var grip: Variant = anchors.get("Grip", [])
+		if not (grip is Array) or (grip as Array).size() != 3:
+			return
+		var weapon_scene := load(gun_path) as PackedScene
+		if weapon_scene == null:
+			return
+		var gun := weapon_scene.instantiate() as Node3D
+		if gun == null:
+			return
+		gun.name = "PuppetWeaponVisual"
+		gun.scale = Vector3.ONE * 0.78
+		gun.position = Vector3(0.28, 1.35, -0.37) - Vector3(float(grip[0]), float(grip[1]), float(grip[2])) * 0.78
+		add_child(gun)
 
 	func _team_material(p_team: int) -> StandardMaterial3D:
 		var m := StandardMaterial3D.new()
@@ -578,6 +621,8 @@ func _spawn_puppet(peer_id: int, team: int) -> void:
 			if node is Node:
 				(node as Node).name = "NetPlayer_%d" % peer_id
 				add_child(node as Node)
+				if (node as Node).has_method("set_team_display"):
+					(node as Node).call("set_team_display", team)
 				if _players.has(peer_id):
 					_players[peer_id]["puppet"] = node
 				return

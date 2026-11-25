@@ -187,6 +187,37 @@ func setup(stats: Dictionary) -> void:
 	_build_shell_pool()
 
 
+## Apply a generated weapon's visual description after Forge grants its
+## known gameplay base. The gunplay object, ammo, and hooks stay intact.
+func set_visual_recipe(info: Dictionary) -> void:
+	if info.is_empty() or _viewmodel == null:
+		return
+	var family := Arsenal.visual_family_for(info, weapon_id)
+	var replacement := Arsenal.build_viewmodel(weapon_id, info)
+	if replacement == null:
+		return
+	var old := _viewmodel
+	var parent := old.get_parent()
+	if parent == null:
+		replacement.free()
+		return
+	var old_transform := old.transform
+	var old_visible := old.visible
+	for effect in [_flash_light, _flash_quad]:
+		if effect != null and effect.get_parent() == old:
+			old.remove_child(effect)
+			replacement.add_child(effect)
+	parent.remove_child(old)
+	parent.add_child(replacement)
+	replacement.transform = old_transform
+	replacement.visible = old_visible
+	old.free()
+	_viewmodel = replacement
+	_muzzle = replacement.get_node_or_null("Muzzle") as Marker3D
+	_eject = replacement.get_node_or_null("Eject") as Marker3D
+	_ads_pos = Vector3(0.0, -Arsenal.sight_height(family), ADS_POS.z)
+
+
 func attach(p_player: Node, p_camera: Camera3D) -> void:
 	_player = p_player
 	_camera = p_camera

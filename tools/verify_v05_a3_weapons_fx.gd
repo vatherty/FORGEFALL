@@ -61,11 +61,8 @@ func _run() -> void:
 	for wid in ids:
 		var vm: Node3D = ArsenalScript.call("build_viewmodel", wid)
 		root.add_child(vm)
-		var meshes := 0
-		for c in vm.get_children():
-			if c is MeshInstance3D:
-				meshes += 1
-		_check(meshes >= 10, "%s viewmodel mesh count %d >= 10" % [wid, meshes])
+		var meshes := vm.find_children("*", "MeshInstance3D", true, false).size()
+		_check(meshes >= 1, "%s imported viewmodel has visible geometry (%d mesh nodes)" % [wid, meshes])
 		for mname in ["Sight", "Stock", "Grip", "Barrel", "Muzzle", "Eject"]:
 			_check(vm.get_node_or_null(mname) != null,
 				"%s has %s marker" % [wid, mname])

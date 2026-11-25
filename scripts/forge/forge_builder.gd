@@ -332,6 +332,10 @@ static func _build_json_mod(rec: Dictionary, spec: Dictionary, params: Dictionar
 			wm.give_weapon(arsenal_id)
 			var weapon := _find_fresh_weapon(wm, arsenal_id)
 			if weapon != null:
+				# Keep gameplay based on the validated gun while selecting the
+				# model family and attachments from this generated description.
+				if weapon.has_method("set_visual_recipe"):
+					weapon.call("set_visual_recipe", info)
 				# v0.5.3: attach the mod's hooks to the fresh weapon.
 				# The record's hooks are authoritative here — for an
 				# installed mod they are the ModLoader record's hooks,

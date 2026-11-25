@@ -3245,3 +3245,45 @@ New tools/verify_deploy_loading.gd 51/51 (all 5 menu maps, SP tower_defense/tdm/
 - scripts/core/tuning.gd FALLBACK_VERSION_CODE was still 42 (v0.6.4 left it at 42 instead of 43). On PC builds this constant IS the installed version code — a fresh 0.6.5 install would have nagged "update available" forever. Bumped to 44; rebuilt Linux + Windows PCKs (and Web PCK) from the fixed source before zipping.
 - restore-staging/version.json (Netlify-era v0.1.7 canary) is publish scratch — excluded from the source sync.
 - Local updates/index.html was stale (v0.6.3-era, missing the PLAY IN YOUR BROWSER entry); rebuilt from the live v0.6.4 page before bumping to v0.6.5.
+
+---
+
+## AR-7 Manticore viewmodel v3 — local, NOT published (2026-11-06)
+
+Colin art-directed a redesign from generated references (v1 banana mag rejected; v2 straight mag + rails; v3 shorter, darker olive mag approved — refs in `weapon-refs/`). Built via Colin's three.js route: one cube list is the source of truth at `weapon-refs/ar7_v3/cubes.json`, rendered by `weapon-refs/ar7_v3/index.html` (three.js preview), ported to GDScript by `weapon-refs/ar7_v3/build_ar7.py`, which replaces `_build_ar7()` in `scripts/weapons/arsenal.gd`. 50 cubes (was 21): segmented tan top rail (12 teeth) on a dark base strip, gunmetal side-rail teeth both sides, tan under-rail teeth, straight shorter olive magazine with darkmetal ribs + baseplate, olive front grip; body/stock/sights carried over. All anchors preserved exactly (Sight y 0.090 = SIGHT_Y, Muzzle -0.635, etc.). Note: LMG reuses the AR-7 viewmodel, so it inherits this look.
+
+### Readiness (Publish-Ready Gate, first run)
+**Verdict:** TESTABLE
+| Checker | Result | Evidence |
+|---|---|---|
+| 1. Spec | pass | v3 traits in code: straight olive shorter mag, top/side/under rails; anchors + SIGHT_Y unchanged; diff touches _build_ar7 only |
+| 2. Breaker | pass | check_scripts 222 scripts 0 failed; verify_v05_a3_weapons_fx 103 checks 0 failures; 900-frame smoke clean (exit 0) |
+| 3. First-player | partial | side-profile render from cubes.json checked by Sparky; in-game first-person look is device-only |
+| 4. Artifact & live | n/a | local source change only, nothing exported or published |
+| 5. Secrets & provenance | pass | no new assets; palette colours only; no secrets in diff |
+
+**Blockers:** none. **Deferrals:** publish/export (Colin has not asked for a publish), full-gate checker subagents (ran as Sparky-run checks). **Colin verdict:** (pending — needs a test build on device)
+
+## AR-7 viewmodel v4 — ~500 voxels, local, NOT published (2026-11-06, supersedes v3 above)
+
+Colin's verdict on v3: "super low quality" — he asked for way more voxels, around 500. Rebuilt via the same three.js pipeline at `weapon-refs/ar7_v4/`: macro parts (now ~70, incl. trigger + guard, side port inset, stock top pad, grip/mag/foregrip ribs, muzzle rings, handguard slots) voxelized onto a 0.0249 m grid → **515 voxels**, with per-voxel shade variation on the big flat parts. Same source-of-truth flow: cubes.json → three.js preview + renders → `build_ar7_v4.py` ports to `_build_ar7()` (515 `_c` calls). Anchors/SIGHT_Y preserved exactly; v3's 50-cube build is fully replaced (v3 files kept in `weapon-refs/ar7_v3/` as fallback).
+
+### Readiness (Gate update)
+**Verdict:** TESTABLE
+- Spec: pass — 515 voxels vs Colin's ~500 ask; v3 design traits retained (straight olive mag, segmented rails).
+- Breaker: pass — check_scripts 222/0, weapons FX suite 103/0, 900-frame smoke clean.
+- First-player: partial — side-profile render from cubes.json eyeballed by Sparky (rails segmented, mag straight, no speckle); in-game look device-only.
+- Perf deferral (non-blocker, Colin's device call): 515 MeshInstance nodes per AR-7 viewmodel (LMG inherits it too) — possible weapon-swap hitch / mobile draw-call cost that headless checks cannot measure.
+- Artifact/live: n/a (local only). Secrets: pass.
+**Colin verdict:** (pending)
+
+## AR-7 viewmodel v5 — reference-proportioned, 1,309 voxels (2026-11-06, supersedes v4)
+
+Colin compared v4 against the approved reference and called it out: "it does not look the same at all." He was right — v4 kept the old stubby proportions (solid stock, tall thick body, mag centred, short barrel) and just voxelized them finer. v5 (same pipeline, `weapon-refs/ar7_v5/`) reshapes the macro parts to the reference silhouette first, then voxelizes at 0.0166 m pitch → **1,309 voxels**: skeletal stock with open cutout, slim long body, angled stair-step rear grip, mag moved forward to the front-section boundary, long thin barrel with tip ending exactly at the Muzzle anchor (-0.635). Side-by-side comparison render saved at `weapon-refs/ar7_v5/comparison.png` (reference top, v5 bottom). Anchors/SIGHT_Y preserved.
+
+### Readiness (Gate update)
+**Verdict:** TESTABLE
+- Spec: pass on proportions vs reference (Sparky eyeballed the side-by-side); remaining known diffs: grid still coarser than the reference's micro-tiling, mag darker olive than the reference's khaki (palette limit), rear sight is a post not an aperture block.
+- Breaker: pass — check_scripts 222/0, weapons FX 103/0, smoke 900 frames clean, 1,309 `_c` calls confirmed in `_build_ar7()`.
+- Perf deferral grows: 1,309 MeshInstances per viewmodel (LMG inherits). If Colin likes the look but the phone chokes, the fix is merging cubes into per-colour meshes — separate task, his call.
+- Artifact/live: n/a. Secrets: pass. **Colin verdict:** (pending)

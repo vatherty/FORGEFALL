@@ -1,0 +1,11 @@
+{
+  "name": "forgefall-weapon-models",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node export.mjs"
+  },
+  "dependencies": {
+    "three": "0.186.0"
+  }
+}

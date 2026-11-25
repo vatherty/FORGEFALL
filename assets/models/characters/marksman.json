@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "id": "marksman",
+  "pivots": {
+    "BodyRoot": [
+      0,
+      0,
+      0
+    ],
+    "HipL": [
+      -0.139,
+      0.75,
+      0
+    ],
+    "HipR": [
+      0.139,
+      0.75,
+      0
+    ],
+    "ShoulderL": [
+      -0.349,
+      1.424,
+      0
+    ],
+    "ShoulderR": [
+      0.349,
+      1.424,
+      0
+    ],
+    "Head": [
+      0,
+      1.52,
+      0
+    ]
+  },
+  "meshes": 44,
+  "source_meshes": 91
+}
