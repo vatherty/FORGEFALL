@@ -255,13 +255,137 @@ static func make_environment(profile: Dictionary, fog_density: float) -> Environ
 	env.ambient_light_energy = profile["ambient_energy"]
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
 	env.tonemap_exposure = profile["exposure"]
-	env.glow_enabled = false  # NO bloom: too expensive on a Galaxy S23.
+	env.glow_enabled = false  # NO bloom at Low: too expensive on a Galaxy S23.
 	env.fog_enabled = true
 	env.fog_light_color = profile["fog_color"]
 	env.fog_density = fog_density
 	env.fog_sun_scatter = profile["scatter"]
 	env.fog_sky_affect = profile["sky_affect"]
 	return env
+
+
+# ------------------------------------------------------------------ BB-9 gfx
+# Graphics push (Colin: "add all of them", FPS-gated per feature — see
+# GfxSettings for the tier/flag resolution). make_environment() above is
+# the LOW path and stays exactly as shipped; everything in this section
+# layers on top only when its feature flag is on.
+
+## make_environment + the High-tier environment features for a profile:
+## glow (bloom threshold parked at 1.0 so the LDR photo skies — peak
+## ~1.0 after exposure — stay under it while HDR emissives like the
+## forge-orange glow voxels at energy 4.0 bloom) and colour grading
+## (per-profile 32^3 LUT from GfxSettings).
+static func gfx_environment(profile: Dictionary, fog_density: float, profile_name: String) -> Environment:
+	var env := make_environment(profile, fog_density)
+	if GfxSettings.feature("glow"):
+		env.glow_enabled = true
+		# Tuned against captures: threshold 1.15 sits above sunlit white
+		# albedo (~1.3 peak gets only a hot edge) and far below the
+		# emissive voxels (energy 4.0); tight levels 0-2 only — the
+		# wide levels are what veiled the whole frame in haze at first
+		# tune. Forge pads / lit windows bloom; the sky does not.
+		env.glow_intensity = 0.3
+		env.glow_strength = 0.85
+		env.glow_bloom = 1.15  # threshold: skies must NOT bloom (BB-6 trap)
+		env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SOFTLIGHT
+		for lvl in range(7):  # glow levels are 0..6 in Godot 4
+			env.set_glow_level(lvl, lvl <= 2)
+	if GfxSettings.feature("grading"):
+		env.adjustment_enabled = true
+		env.adjustment_color_correction = GfxSettings.lut_texture(profile_name)
+	return env
+
+
+## High-tier sun: parallel-split (PSSM 4) cascades reaching 250 m
+## instead of the single 90 m orthogonal box, so near shadows stay
+## texel-dense while buildings still shadow at gameplay ranges across
+## the arena. Normal bias rises slightly (1.0 -> 1.2): at split texel
+## sizes it is the acne lever, and 0.2 m of extra offset is invisible
+## against metre-scale voxels (no peter-panning at this scale).
+static func gfx_sun(sun: DirectionalLight3D) -> void:
+	if not GfxSettings.feature("shadows"):
+		return
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+	sun.directional_shadow_max_distance = 250.0
+	sun.directional_shadow_fade_start = 0.85
+	sun.shadow_normal_bias = 1.2
+
+
+static var _grit_material: Material = null
+
+
+## The main block material: today's flat StandardMaterial3D at Low, or
+## the shared world-space grit/AO shader material when either feature
+## is on (uniforms switch the two effects independently, so grit and ao
+## stay separately toggleable — see voxel_grit.gdshader).
+static func gfx_main_material() -> Material:
+	if not (GfxSettings.feature("grit") or GfxSettings.feature("ao")):
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color.WHITE
+		mat.vertex_color_use_as_albedo = true
+		mat.roughness = 0.95
+		return mat
+	if _grit_material == null:
+		var sm := ShaderMaterial.new()
+		sm.shader = load("res://assets/shaders/voxel_grit.gdshader")
+		sm.set_shader_parameter("grit_enabled", GfxSettings.feature("grit"))
+		sm.set_shader_parameter("ao_enabled", GfxSettings.feature("ao"))
+		_grit_material = sm
+	return _grit_material
+
+
+static var _grime_texture: Texture2D = null
+
+
+## Procedural decal texture: layered soft blotches (oil/grime) with
+## speckled edges, alpha strongest at the centre. One shared texture;
+## per-decal variety comes from random rotation/scale/modulate.
+static func grime_texture() -> Texture2D:
+	if _grime_texture != null:
+		return _grime_texture
+	var n := 256
+	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 9009
+	var blobs: Array = []
+	for i in 42:
+		blobs.append([Vector2(rng.randf_range(50, 206), rng.randf_range(50, 206)),
+			rng.randf_range(14.0, 62.0), rng.randf_range(0.10, 0.30)])
+	for y in n:
+		for x in n:
+			var p := Vector2(x, y)
+			var a := 0.0
+			for b in blobs:
+				var d := p.distance_to(b[0])
+				a += b[2] * clampf(1.0 - d / b[1], 0.0, 1.0)
+			# Radial containment: stains never touch the decal quad edge.
+			var dc := p.distance_to(Vector2(128, 128)) / 128.0
+			a *= clampf(1.2 - dc, 0.0, 1.0)
+			a *= 0.85 + 0.15 * rng.randf()
+			img.set_pixel(x, y, Color(0.05, 0.04, 0.03, clampf(a, 0.0, 0.85)))
+	_grime_texture = ImageTexture.create_from_image(img)
+	return _grime_texture
+
+
+## Scatter flat ground decals (grime / scorch / oil) over the arena
+## floor. High tier only; counts stay in the tens. y: decal box spans
+## 0..1.5 so it projects onto the y=0 ground slab (and anything low).
+func _build_ground_decals(count: int, extent: float) -> void:
+	if not GfxSettings.feature("decals"):
+		return
+	var root := Node3D.new()
+	root.name = "GroundDecals"
+	add_child(root)
+	for i in count:
+		var d := Decal.new()
+		var s := _rng.randf_range(2.5, 6.5)
+		d.size = Vector3(s, 1.5, s)
+		d.position = Vector3(_rng.randf_range(-extent, extent), 0.75,
+			_rng.randf_range(-extent, extent))
+		d.rotation.y = _rng.randf_range(0.0, TAU)
+		d.texture_albedo = grime_texture()
+		d.modulate = Color(1, 1, 1, _rng.randf_range(0.4, 0.75))
+		root.add_child(d)
 
 
 # Per-map environment: the map's sky profile drives sky, fog colour,
@@ -271,7 +395,7 @@ func _build_environment(fog_density := 0.0075, sun_angle := Vector3(-48, -32, 0)
 	var profile := sky_profile(profile_name)
 	var we := WorldEnvironment.new()
 	we.name = "WorldEnvironment"
-	we.environment = make_environment(profile, fog_density)
+	we.environment = gfx_environment(profile, fog_density, profile_name)
 	add_child(we)
 
 	var sun := DirectionalLight3D.new()
@@ -287,6 +411,7 @@ func _build_environment(fog_density := 0.0075, sun_angle := Vector3(-48, -32, 0)
 	sun.shadow_bias = 0.05
 	sun.shadow_normal_bias = 1.0
 	sun.shadow_blur = 1.0
+	gfx_sun(sun)  # BB-9: PSSM cascades + reach when the shadows feature is on
 	add_child(sun)
 
 	_collision_root = StaticBody3D.new()
@@ -368,10 +493,7 @@ func _build_spawn_markers(player_spawns: Array, doors: Array, forge_pads: Array,
 
 
 func _commit_multimeshes(aabb: AABB) -> void:
-	var mat_main := StandardMaterial3D.new()
-	mat_main.albedo_color = Color.WHITE
-	mat_main.vertex_color_use_as_albedo = true
-	mat_main.roughness = 0.95
+	var mat_main := gfx_main_material()  # BB-9: grit/AO shader when on
 	var mmi := _commit(_main, mat_main, aabb)
 	mmi.name = "StaticVoxels"
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON

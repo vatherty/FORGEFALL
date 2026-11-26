@@ -81,9 +81,17 @@ func _ready() -> void:
 				_body.add_child(quality)
 				_controls.quality = quality
 				quality.item_selected.connect(func(index: int): _save("quality", index))
+				var gfx := OptionButton.new()
+				for label in ["GRAPHICS · LOW (phone-safe)", "GRAPHICS · HIGH (shadows, grading, glow, grit)"]:
+					gfx.add_item(label)
+				gfx.selected = int(Preferences.values.gfx_tier)
+				gfx.custom_minimum_size.y = 52
+				_body.add_child(gfx)
+				_controls.gfx_tier = gfx
+				gfx.item_selected.connect(func(index: int): _save("gfx_tier", index))
 				_toggle("Vertical sync", "vsync", OS.has_feature("web"))
 				_toggle("Fullscreen", "fullscreen", OS.has_feature("web"))
-				_note("In browsers, use your browser's fullscreen and display controls." if OS.has_feature("web") else "Display changes apply immediately.")
+				_note("In browsers, use your browser's fullscreen and display controls." if OS.has_feature("web") else "Display changes apply immediately. The GRAPHICS tier applies when the next map loads.")
 			"MOBILE":
 				_slider("Touch look sensitivity", "touch_sensitivity", 0.2, 3, 0.05)
 				_slider("Action button opacity", "touch_opacity", 0.3, 1, 0.05)

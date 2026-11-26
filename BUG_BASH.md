@@ -94,7 +94,7 @@ reticle weight. Device verdict pending.
 - [x] BB-1d ALL OPTICS (Colin): extend the BB-1c lens treatment beyond the ACOG. The
       red dot (reflex) sights get the same in-glass picture + parallax, but WITHOUT
       the zoom (lens camera = main camera fov exactly, 1.0x extra) — just parallax.
-- [ ] BB-9 GRAPHICS PUSH (Colin): add ALL of it — real cascaded shadows with blocks
+- [x] BB-9 GRAPHICS PUSH (implemented; Deck FPS cuts pending) (Colin): add ALL of it — real cascaded shadows with blocks
       casting, per-map colour grading + LUT, glow, grit (triplanar grunge + AO),
       decals, MSAA — behind a graphics quality tier (phones keep Low). THEN measure
       FPS and REMOVE any major change that causes a major FPS drop. Colin's target:
@@ -110,3 +110,16 @@ Shader renamed acog_lens -> optic_lens (uid preserved); ACOG behaviour
 unchanged (layer D passes as before). verify_ads_alignment 149/0 headless,
 244/0 xvfb. If Colin wants the ACOG-style full-frame picture in the red dot
 instead of the registered crop: one-line sample_rect change in _tick_lens_pip.
+
+BB-9 implemented (ws-gfx): GfxSettings resolver (cmdline > Preferences > tier);
+Low = today's look (default), High = all on; Settings > DISPLAY gains GRAPHICS
+LOW/HIGH. Shadows: PSSM 4 splits @ 250 m (blocks already cast; the OFF helper was
+the apron). Grading: real per-map 32^3 LUTs built at runtime via _set_images
+(ImageTexture3D.create upload path is broken in this engine build). Glow:
+threshold 1.15, levels 0-2, skies do not bloom. Grit+AO: voxel_grit.gdshader
+(world-space noise, dirt creep, edge wear, contact band) on main block
+MultiMeshes. Decals: base-builder scatter (Cinder x18, Factory x12). MSAA 4x at
+High. verify_skies contract now tier-aware (Low + High runs pass).
+llvmpipe-relative frame costs: msaa +143..299% (software-inflated), glow
++38..67%, shadows +33..47%, grading +10..15%, grit/ao/decals ~0. DECK bench +
+Colin's cut rule (60 target / 30 floor) still to run.

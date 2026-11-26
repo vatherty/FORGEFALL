@@ -227,7 +227,7 @@ func _build_environment() -> void:
 	var profile := MapBuilderBase.sky_profile("dustline")
 	var we := WorldEnvironment.new()
 	we.name = "WorldEnvironment"
-	we.environment = MapBuilderBase.make_environment(profile, 0.0075)
+	we.environment = MapBuilderBase.gfx_environment(profile, 0.0075, "dustline")
 	add_child(we)
 
 	var sun := DirectionalLight3D.new()
@@ -262,6 +262,7 @@ func _build_environment() -> void:
 	sun.shadow_bias = 0.05
 	sun.shadow_normal_bias = 1.0  # was 0.3: primary acne fix
 	sun.shadow_blur = 1.0  # was 0.0: Godot default, softens texel moire
+	MapBuilderBase.gfx_sun(sun)  # BB-9: PSSM cascades + reach when shadows feature is on
 	add_child(sun)
 
 	_collision_root = StaticBody3D.new()
@@ -610,10 +611,7 @@ func _build_spawn_markers() -> void:
 # --------------------------------------------------------------- multimesh
 
 func _commit_multimeshes() -> void:
-	var mat_main := StandardMaterial3D.new()
-	mat_main.albedo_color = Color.WHITE
-	mat_main.vertex_color_use_as_albedo = true
-	mat_main.roughness = 0.95
+	var mat_main := MapBuilderBase.gfx_main_material()  # BB-9: grit/AO shader when on
 	var mmi := _commit(_main, mat_main,
 		AABB(Vector3(-ARENA_HALF, -2, -ARENA_HALF), Vector3(ARENA_HALF * 2, 20, ARENA_HALF * 2)))
 	mmi.name = "StaticVoxels"

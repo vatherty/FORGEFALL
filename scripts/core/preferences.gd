@@ -13,6 +13,13 @@ const DEFAULTS := {
 	# BB-8: TDM bot difficulty tier (BotFighter.SKILL_TIERS id). Set
 	# from the DEPLOY panel's BOT LEVEL selector; read by BotTDM.
 	"bot_difficulty": "regular",
+	# BB-9: graphics tier + per-feature overrides, resolved by
+	# GfxSettings (scripts/core/gfx_settings.gd). gfx_tier: 0 = Low
+	# (today's phone-safe look), 1 = High (all features on).
+	# gfx_<feature>: -1 = follow tier, 0 = force off, 1 = force on.
+	"gfx_tier": 0,
+	"gfx_shadows": -1, "gfx_grading": -1, "gfx_glow": -1, "gfx_grit": -1,
+	"gfx_ao": -1, "gfx_decals": -1, "gfx_msaa": -1,
 }
 var values: Dictionary = DEFAULTS.duplicate()
 
@@ -52,6 +59,7 @@ func apply() -> void:
 			AudioServer.set_bus_mute(index, value <= 0)
 			AudioServer.set_bus_volume_db(index, linear_to_db(maxf(value, 0.001)))
 	get_viewport().scaling_3d_scale = [0.7, 0.85, 1.0][clampi(int(values.quality), 0, 2)]
+	GfxSettings.apply_msaa(get_viewport())  # BB-9: MSAA follows the gfx flags
 	if not OS.has_feature("web") and DisplayServer.get_name() != "headless":
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED if values.vsync else DisplayServer.VSYNC_DISABLED)
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN if values.fullscreen else DisplayServer.WINDOW_MODE_WINDOWED)

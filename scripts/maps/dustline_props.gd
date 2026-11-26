@@ -99,10 +99,7 @@ func _solid(center: Vector3, size: Vector3) -> void:
 # --------------------------------------------------------------- multimesh
 
 func _commit_multimeshes() -> void:
-	var mat_main := StandardMaterial3D.new()
-	mat_main.albedo_color = Color.WHITE
-	mat_main.vertex_color_use_as_albedo = true
-	mat_main.roughness = 0.95
+	var mat_main := MapBuilderBase.gfx_main_material()  # BB-9: grit/AO shader when on
 	multimesh_instance_total = _main.size() + _glow.size()
 	var mmi := _commit(_main, mat_main)
 	mmi.name = "PropVoxels"

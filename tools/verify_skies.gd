@@ -7,9 +7,20 @@
 # WorldEnvironment whose sky is a PanoramaSkyMaterial carrying a real
 # photographic equirect texture (Poly Haven, CC0 — see
 # assets/skies/SOURCES.md), that the texture file exists and differs
-# from every other map's, glow stays OFF, fog_sky_affect stays < 0.5,
-# exactly one DirectionalLight3D exists, and the full sky signature
+# from every other map's, fog_sky_affect stays < 0.5, exactly one
+# DirectionalLight3D exists, and the full sky signature
 # (texture + fog + sun) differs from every other map's.
+#
+# BB-9 CONTRACT CHANGE (documented, not silent): this verify used to
+# assert "glow stays OFF" unconditionally — that was the BB-6 rule when
+# glow was simply banned. BB-9 made glow a tier-gated feature
+# (GfxSettings): OFF at Low (the default run below — the old assertion
+# survives there in feature form), ON at High with the bloom threshold
+# parked at 1.0 so the LDR photo skies cannot bloom out. The assertion
+# is now: env glow/grading state and the sun's shadow mode must MATCH
+# the active GfxSettings features. Run the High path with:
+#   godot --headless --path . --script res://tools/verify_skies.gd -- --gfx-tier=high
+# Both runs must pass; neither weakens the other.
 #
 # With a real renderer it ALSO re-captures the standard audit viewpoints
 # (player spawn, eye height, horizon shot + 22-degree sky shot) into
@@ -62,7 +73,16 @@ func run() -> void:
 			_check(env.background_mode == Environment.BG_SKY, key + ": background is sky")
 			_check(env.sky != null and env.sky.sky_material is PanoramaSkyMaterial,
 				key + ": sky material is PanoramaSkyMaterial (real photo skybox)")
-			_check(not env.glow_enabled, key + ": glow stays OFF")
+			_check(env.glow_enabled == GfxSettings.feature("glow"),
+				key + ": glow matches gfx feature (glow=%s)" % str(env.glow_enabled))
+			if env.glow_enabled:
+				_check(env.glow_bloom >= 0.99,
+					key + ": glow threshold %.2f >= ~1.0 (photo skies cannot bloom out)" % env.glow_bloom)
+			_check(env.adjustment_enabled == GfxSettings.feature("grading"),
+				key + ": colour grading matches gfx feature (grading=%s)" % str(env.adjustment_enabled))
+			if env.adjustment_enabled:
+				_check(env.adjustment_color_correction != null,
+					key + ": grading LUT is set")
 			_check(env.fog_sky_affect < 0.5, key + ": fog_sky_affect %.2f < 0.5 (no peach wash)" % env.fog_sky_affect)
 			if env.sky != null and env.sky.sky_material is PanoramaSkyMaterial:
 				var m := env.sky.sky_material as PanoramaSkyMaterial
@@ -78,6 +98,11 @@ func run() -> void:
 						_check(true, key + ": panorama texture distinct (" + tp + ")")
 				var sun := _find_sun(arena)
 				_check(sun != null, key + ": exactly the shared sun exists")
+				if sun != null:
+					var want_mode := DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS \
+						if GfxSettings.feature("shadows") else DirectionalLight3D.SHADOW_ORTHOGONAL
+					_check(sun.directional_shadow_mode == want_mode,
+						key + ": sun shadow mode matches gfx shadows feature (mode=%d)" % sun.directional_shadow_mode)
 				var sig := _signature(m, env, sun)
 				if signatures.has(sig):
 					_check(false, key + ": sky signature COLLIDES with " + str(signatures[sig]))
