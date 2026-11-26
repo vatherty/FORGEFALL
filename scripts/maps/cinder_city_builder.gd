@@ -201,7 +201,7 @@ func _ready() -> void:
 	_unit_box = BoxMesh.new()
 	_unit_box.size = Vector3.ONE
 
-	_build_environment(0.0045)  # clearer air than Dustline: 130 m sightlines
+	_build_environment(0.0042, Vector3(-30, -32, 0), "cinder_city")  # clearer air than Dustline: 130 m sightlines; low smoky sun
 	_build_ground()
 	_build_perimeter(ARENA_HALF, 5.0, 6.0)
 	var bi := 0
@@ -402,10 +402,10 @@ func _build_cars() -> void:
 func _build_distant_city() -> void:
 	for i in 48:
 		var ang := float(i) / 48.0 * TAU + _rng.randf_range(-0.05, 0.05)
-		var r := _rng.randf_range(150, 230)
+		var r := _rng.randf_range(88, 118)  # BB-6: was 150-230, where fog left only pale ghosts
 		var bw := _rng.randf_range(10, 24)
 		var bh := _rng.randf_range(14, 55)
 		var bd := _rng.randf_range(10, 24)
 		var shade := _rng.randf_range(0.8, 1.3)
 		_c(Vector3(cos(ang) * r, bh * 0.5 - 2.0, sin(ang) * r), Vector3(bw, bh, bd),
-			Color(0.17 * shade, 0.15 * shade, 0.25 * shade))
+			Color(0.085 * shade, 0.07 * shade, 0.13 * shade))

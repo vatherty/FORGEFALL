@@ -6,7 +6,7 @@
 #      mobile settings (orthogonal, tight frustum, blur 1.0 to soften
 #      texel moire — dustline_builder sets 1.0 deliberately). Shadow map
 #      SIZE is a project setting in Godot 4.7, reported not asserted.
-#   3. A WorldEnvironment with fog + ACES tonemapping + gradient sky,
+#   3. A WorldEnvironment with fog + ACES tonemapping + per-map sky,
 #      glow (bloom) explicitly OFF, ambient fill present.
 #   4. GlowVoxels emissive boosted (>= 3.0x), glow/city cast no shadows.
 #   5. Draw-call footprint unchanged: exactly 3 map MultiMeshInstance3Ds.
@@ -93,12 +93,16 @@ func _run_checks() -> void:
 		_check(env.ambient_light_energy > 0.3,
 			"ambient fill present (energy %.2f, shadowed sides not black)" % env.ambient_light_energy)
 		_check(not env.glow_enabled, "glow/bloom OFF (no expensive post-processing)")
-		_check(env.sky != null and env.sky.sky_material is PanoramaSkyMaterial,
-			"gradient sky via PanoramaSkyMaterial (no procedural-sky shader)")
-		if env.sky != null and env.sky.sky_material is PanoramaSkyMaterial:
-			var pano := env.sky.sky_material as PanoramaSkyMaterial
-			_check(pano.panorama is GradientTexture2D,
-				"sky panorama is a GradientTexture2D (cheap gradient)")
+		# BB-6 (2026-11-26): the panorama gradient was fog-washed into a
+		# featureless peach void on every map; Dustline now uses its named
+		# ProceduralSkyMaterial profile (sun disc + generated cloud cover).
+		# Per-map distinctness for all maps lives in verify_skies.gd.
+		_check(env.sky != null and env.sky.sky_material is ProceduralSkyMaterial,
+			"per-map procedural sky (BB-6, not the old panorama wash)")
+		if env.sky != null and env.sky.sky_material is ProceduralSkyMaterial:
+			var proc := env.sky.sky_material as ProceduralSkyMaterial
+			_check(proc.sky_cover != null,
+				"sky has a cover texture (cloud structure, not a bare gradient)")
 
 	# 4. Emissive glow boosted, no shadow cost from glow/city.
 	var glow := _map.get_node_or_null("GlowVoxels") as MultiMeshInstance3D

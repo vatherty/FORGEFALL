@@ -552,32 +552,79 @@ static func _mod_stats(weapon_id: String) -> Dictionary:
 #endregion
 
 
-## Sight-line height (viewmodel-local Y of the aiming point) per weapon.
-## WeaponBase reads this to place ADS_POS so the sight sits exactly on the
-## screen center: ADS y = -sight_height. Values match the "Sight" marker
-## each builder places (iron-sight line / scope centre / red-dot centre).
-const SIGHT_Y := {
-	"ar7": 0.090,    # iron-sight line (front post tip / rear notch)
-	"lr8": 0.095,    # scope tube centre
-	"sg12": 0.078,   # bead / ghost-ring line
-	"smg9": 0.088,   # red-dot centre
-	"lmg": 0.092,    # iron-sight line (AR-7 viewmodel reuse)
-	"p9": 0.055,     # iron-sight line
-	"br3": 0.092,    # red-dot centre (raised sight line)
-	"hv44": 0.062,   # iron-sight line (tall front blade)
-	"ember": 0.055,  # iron-sight line (P9 viewmodel reuse)
-	"raptor": 0.045, # prong-gap centre (no true sight)
+## BB-1 (ADS fix): the AUTHORITATIVE sight anchor per weapon — the
+## viewmodel-local point that IS the aiming point (front-post tip / bead
+## centre / lens centre / scope-tube centre). WeaponBase places the
+## viewmodel at -anchor (x AND y) at full ADS, so this point lands exactly
+## on the camera axis = screen centre. EVERY arsenal weapon has an
+## explicit entry here: no silent defaults (unknown ids fall back to the
+## model JSON anchor, then to a warned default — never for shipped ids).
+##
+## Values were re-derived 2026-11-26 from the shipped GLB geometry +
+## rendered ADS captures (tools/verify_ads_alignment.gd), NOT from the
+## old hand-tuned table: the JSON anchors were wrong for ember (0.074 vs
+## the front-sight paint at 0.093), hv44 (0.089 vs the blade tip at
+## 0.1025), p9 (0.070 vs the slide sight line at 0.0745) and sg12 (0.086
+## vs the bead centre at 0.082), and the old ADS math ignored anchor X
+## entirely (lmg sits 0.024 off the barrel axis -> +38 px on screen).
+const SIGHT_ANCHOR := {
+	"ar7": Vector3(0.0, 0.142, -0.118),   # reflex lens centre
+	"lr8": Vector3(0.0, 0.111, -0.063),   # scope tube centre
+	"sg12": Vector3(0.0, 0.082, -0.170),  # front bead centre (ghost ring)
+	"smg9": Vector3(0.0, 0.147, -0.069),  # red-dot lens centre
+	"lmg": Vector3(0.024, 0.143, 0.007),  # rear aperture centre (off-axis!)
+	"p9": Vector3(0.0, 0.0745, -0.100),   # iron-sight line (post tips)
+	"br3": Vector3(0.0, 0.193, -0.090),   # ACOG lens centre
+	"hv44": Vector3(0.0, 0.1025, -0.180), # front blade tip
+	"ember": Vector3(0.0, 0.093, -0.105), # painted front post tip
+	"raptor": Vector3(0.0, 0.104, -0.120), # housing top centre (no true sight)
+	"launcher": Vector3(0.0, 0.198, 0.001), # visual-family only (Forge-made)
+}
+
+## BB-1: optic class per weapon — drives ADS zoom + sensitivity scaling
+## (player FOV block) and the HUD sniper-scope overlay. Explicit for
+## every arsenal weapon, same rule as SIGHT_ANCHOR.
+const OPTIC_CLASS := {
+	"ar7": "reflex",
+	"lr8": "scope",
+	"sg12": "iron",
+	"smg9": "reflex",
+	"lmg": "iron",
+	"p9": "iron",
+	"br3": "acog",
+	"hv44": "iron",
+	"ember": "iron",
+	"raptor": "none",
+	"launcher": "iron",
+}
+
+## Effective ADS magnification per optic class. The player divides its
+## preferred FOV by this (target_fov = preferred_fov / zoom) and scales
+## ADS look sensitivity by 1/zoom, so a 5x scope is not 5x as twitchy.
+const OPTIC_ZOOM := {
+	"none": 1.0,
+	"iron": 1.1,
+	"reflex": 1.15,
+	"acog": 3.0,
+	"scope": 5.0,
 }
 
 
-static func sight_height(weapon_id: String) -> float:
+## The family/id whose sight data a weapon uses: mod weapons resolve to
+## their visual family (same rule sight_height always used).
+static func _sight_family(weapon_id: String) -> String:
 	if is_mod_weapon(weapon_id):
-		# A mod weapon aims down its base weapon's sight line.
 		var rec := _mod_record(weapon_id)
 		if not rec.is_empty():
 			var base_id := _mod_base_id(rec)
-			return sight_height(visual_family_for(rec.get("block_info", {}), base_id))
-		return 0.090
+			return visual_family_for(rec.get("block_info", {}), base_id)
+		return weapon_id
+	return weapon_id
+
+
+## The model's JSON "Sight" anchor (fallback for ids with no table
+## entry — generated families etc.), or Vector3.INF when absent.
+static func _json_sight_anchor(weapon_id: String) -> Vector3:
 	var metadata_path := "res://assets/models/weapons/%s.json" % weapon_id
 	if FileAccess.file_exists(metadata_path):
 		var metadata: Variant = JSON.parse_string(FileAccess.get_file_as_string(metadata_path))
@@ -585,8 +632,35 @@ static func sight_height(weapon_id: String) -> float:
 			var anchors: Dictionary = (metadata as Dictionary).get("anchors", {})
 			var sight: Variant = anchors.get("Sight", [])
 			if sight is Array and (sight as Array).size() == 3:
-				return float((sight as Array)[1])
-	return float(SIGHT_Y.get(weapon_id, 0.090))
+				return Vector3(float((sight as Array)[0]), float((sight as Array)[1]), float((sight as Array)[2]))
+	return Vector3.INF
+
+
+## BB-1: the aiming point of a weapon in viewmodel-local space.
+static func sight_anchor(weapon_id: String) -> Vector3:
+	var fam := _sight_family(weapon_id)
+	if SIGHT_ANCHOR.has(fam):
+		return SIGHT_ANCHOR[fam]
+	var from_json := _json_sight_anchor(fam)
+	if from_json != Vector3.INF:
+		return from_json
+	push_warning("Arsenal.sight_anchor: no sight data for '%s' — using default" % weapon_id)
+	return Vector3(0.0, 0.090, -0.100)
+
+
+static func sight_height(weapon_id: String) -> float:
+	return sight_anchor(weapon_id).y
+
+
+## BB-1: "iron" / "reflex" / "acog" / "scope" / "none" for a weapon.
+static func optic_class(weapon_id: String) -> String:
+	var fam := _sight_family(weapon_id)
+	return str(OPTIC_CLASS.get(fam, "iron"))
+
+
+## BB-1: effective ADS magnification for a weapon (per optic class).
+static func ads_zoom(weapon_id: String) -> float:
+	return float(OPTIC_ZOOM.get(optic_class(weapon_id), 1.0))
 
 
 static func get_stats(weapon_id: String) -> Dictionary:
@@ -675,6 +749,21 @@ static func _glow(parent: Node3D, size: Vector3, color: Color, pos: Vector3) -> 
 ## A mod weapon reuses its base weapon's viewmodel (mods are stat +
 ## hook compositions, not new geometry).
 static func build_viewmodel(weapon_id: String, visual_info: Dictionary = {}) -> Node3D:
+	var vm := _build_viewmodel_raw(weapon_id, visual_info)
+	# BB-1: the "Sight" marker IS the contract for the aiming point —
+	# force it to the authoritative SIGHT_ANCHOR so the marker, the ADS
+	# math and the rendered sight picture can never drift apart again
+	# (the shipped JSON anchors disagreed with the actual geometry for
+	# ember / hv44 / p9 / sg12). No-op when the id has no table entry
+	# (JSON-only families keep their extracted anchor).
+	if vm != null and SIGHT_ANCHOR.has(_sight_family(weapon_id)):
+		var sight := vm.get_node_or_null("Sight") as Marker3D
+		if sight != null:
+			sight.position = SIGHT_ANCHOR[_sight_family(weapon_id)]
+	return vm
+
+
+static func _build_viewmodel_raw(weapon_id: String, visual_info: Dictionary = {}) -> Node3D:
 	if is_mod_weapon(weapon_id):
 		var rec := _mod_record(weapon_id)
 		if not rec.is_empty():

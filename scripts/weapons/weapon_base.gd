@@ -115,7 +115,9 @@ var _reload_stage: int = _ReloadStage.NONE
 var _reload_t: float = 0.0
 var _raise_t: float = 999.0
 var _lowering: bool = false
-var _ads_pos := ADS_POS # per-weapon ADS target; Y = -Arsenal.sight_height(id)
+var _ads_pos := ADS_POS # per-weapon ADS target; = -Arsenal.sight_anchor(id) (x+y), ADS_POS.z
+var _optic := "iron"    # BB-1: Arsenal.optic_class(weapon_id) — zoom/scope/dot behaviour
+var _ads_dot: MeshInstance3D = null # BB-1: projected dot for reflex/ACOG sights
 var _ads: bool = false
 var _ads_blend: float = 0.0
 var _shot_index: int = 0
@@ -175,11 +177,15 @@ func setup(stats: Dictionary) -> void:
 		mod_projectile_spec = (stats["mod_projectile_spec"] as Dictionary).duplicate(true)
 	if stats.has("mod_hooks") and stats["mod_hooks"] is Array:
 		mod_hooks = (stats["mod_hooks"] as Array).duplicate(true)
-	# ADS target: shift the viewmodel so this weapon's sight line
-	# (Arsenal.sight_height) lands exactly on the camera's -Z axis, i.e.
-	# the sight sits centered on screen. Shared ADS_POS is the fallback.
-	_ads_pos = Vector3(0.0, -Arsenal.sight_height(weapon_id), ADS_POS.z)
+	# BB-1 ADS target: shift the viewmodel so this weapon's sight anchor
+	# (Arsenal.sight_anchor — the actual aiming point of the model) lands
+	# exactly on the camera's -Z axis, i.e. the sight sits centered on
+	# screen. BOTH axes: the old math zeroed X, which left the LMG's
+	# off-axis aperture +38 px right of centre. Shared ADS_POS z is kept.
+	_optic = Arsenal.optic_class(weapon_id)
+	_ads_pos = _ads_pos_for(weapon_id)
 	_viewmodel = Arsenal.build_viewmodel(weapon_id)
+	_build_ads_dot()
 	add_child(_viewmodel)
 	_muzzle = _viewmodel.get_node_or_null("Muzzle") as Marker3D
 	_eject = _viewmodel.get_node_or_null("Eject") as Marker3D
@@ -215,7 +221,9 @@ func set_visual_recipe(info: Dictionary) -> void:
 	_viewmodel = replacement
 	_muzzle = replacement.get_node_or_null("Muzzle") as Marker3D
 	_eject = replacement.get_node_or_null("Eject") as Marker3D
-	_ads_pos = Vector3(0.0, -Arsenal.sight_height(family), ADS_POS.z)
+	_optic = Arsenal.optic_class(family)
+	_ads_pos = _ads_pos_for(family)
+	_build_ads_dot()
 
 
 func attach(p_player: Node, p_camera: Camera3D) -> void:
@@ -295,6 +303,63 @@ func is_ready() -> bool:
 
 func set_ads(active: bool) -> void:
 	_ads = active
+
+
+## BB-1: 0 = hip, 1 = fully aimed. The HUD reads this to fade the
+## sniper-scope overlay in only once the scope is truly up.
+func get_ads_blend() -> float:
+	return _ads_blend
+
+
+## BB-1: optic class of the equipped configuration ("iron" / "reflex" /
+## "acog" / "scope" / "none") — follows visual-recipe swaps.
+func get_optic_class() -> String:
+	return _optic
+
+
+## BB-1: ADS viewmodel target for a weapon/family id: the negated sight
+## anchor on x/y (so the anchor lands on the camera axis), shared z.
+static func _ads_pos_for(id: String) -> Vector3:
+	var anchor := Arsenal.sight_anchor(id)
+	return Vector3(-anchor.x, -anchor.y, ADS_POS.z)
+
+
+## BB-1: reflex/ACOG sights get a projected dot at the sight anchor.
+## The shipped GLB optics render as opaque dark glass with NO dot in
+## them (the procedural builders' glow dot was lost in the GLB pass),
+## so aiming through them was guesswork. The dot is a tiny unshaded
+## cube with no_depth_test — it reads as a dot projected on the lens,
+## exactly at the aiming point, and only appears once the sight is
+## mostly raised (blend > 0.5) so it never ghosts through the gun at
+## hip. Iron/scope/none weapons get no dot (their picture is physical).
+func _build_ads_dot() -> void:
+	if _ads_dot != null and is_instance_valid(_ads_dot):
+		_ads_dot.queue_free()
+	_ads_dot = null
+	if _viewmodel == null or not (_optic in ["reflex", "acog"]):
+		return
+	var sight := _viewmodel.get_node_or_null("Sight") as Marker3D
+	if sight == null:
+		return
+	var dot := MeshInstance3D.new()
+	dot.name = "AdsDot"
+	var bm := BoxMesh.new()
+	bm.size = Vector3(0.0055, 0.0055, 0.002)
+	dot.mesh = bm
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(1.0, 0.10, 0.08)
+	mat.emission_enabled = true
+	mat.emission = Color(1.0, 0.10, 0.08)
+	mat.emission_energy_multiplier = 2.0
+	mat.no_depth_test = true
+	mat.render_priority = 10
+	dot.material_override = mat
+	dot.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	dot.position = sight.position
+	dot.visible = false
+	_viewmodel.add_child(dot)
+	_ads_dot = dot
 
 
 func emit_ammo() -> void:
@@ -914,3 +979,13 @@ func _tick_sway_bob(delta: float) -> void:
 	# Don't fight the raise animation: blend sway in as raise completes.
 	var raise_blend := clampf(_raise_t / maxf(raise_time, 0.001), 0.0, 1.0)
 	_viewmodel.rotation = target_rot + sway * raise_blend + Vector3(_vm_kick_pitch, 0.0, 0.0)
+	# BB-1: reflex/ACOG dot appears only once the sight is mostly up.
+	if _ads_dot != null:
+		_ads_dot.visible = _ads_blend > 0.5
+	# BB-1: at full ADS a sniper scope hands the view to the HUD scope
+	# overlay (the GLB scope is an opaque prop — there is nothing to see
+	# through it). Hide the viewmodel while scoped; it returns as the
+	# blend falls. Only while equipped (parented to the camera) — a
+	# parked viewmodel's visibility belongs to on_unequip.
+	if _optic == "scope" and _viewmodel.get_parent() == _camera:
+		_viewmodel.visible = _ads_blend < 0.85

@@ -20,6 +20,13 @@ const SPRINT_SPEED := 11.0
 const CROUCH_SPEED := 3.2
 const ACCEL_GROUND := 60.0
 const FRICTION_GROUND := 45.0
+# BB-2 (bug-bash): grounded decay rate for speed ABOVE the input's target
+# speed (landing / wall-jump / fling momentum). The old ground model
+# dragged velocity per-component toward wish*speed at ACCEL_GROUND, so
+# excess speed vanished in ~5 frames whenever the sprint latch happened
+# to be off — and survived untouched when it was on. One uniform gentle
+# bleed makes every landing behave the same. See _update_horizontal.
+const OVERSPEED_BLEED := 15.0
 const AIR_CONTROL := 0.55
 const GRAVITY := 20.0
 const JUMP_VELOCITY := 5.8
@@ -41,6 +48,17 @@ const WALLRUN_ENTRY_BOOST := 1.5
 const WALLRUN_MIN_SPEED := 6.0  # == WALK_SPEED: full walking speed
 const WALLRUN_AIM_DOT := 0.5  # aimed-at-wall: aim . (-wall_normal) > 0.5
 const WALLRUN_PARALLEL_DOT := 0.7  # moving parallel: |vel_dir . tangent| > 0.7
+# BB-3 (bug-bash): diagonal-approach band. Velocity angled steeply toward
+# the wall while the player looks along the corridor fell in a dead zone
+# between the parallel and aim gates and never attached. If velocity has
+# at least this fraction BOTH along the wall and closing on it, the
+# velocity itself is committed — that is entry intent, no aim needed.
+const WALLRUN_DIAGONAL_DOT := 0.3
+# BB-3: seconds a wall-run tolerates wish input dipping to ~zero
+# (analog-stick flicker on gamepad) before detaching. A flicker detach
+# also set the blocked normal, so the same wall refused re-entry until
+# landing — a big slice of "wall running only works sometimes".
+const WALLRUN_WISH_GRACE := 0.15
 const WALLRUN_GRAVITY_SCALE := 0.12
 const WALLRUN_ROLL_DEG := 12.0
 const WALL_JUMP_AWAY := 8.0
@@ -124,6 +142,10 @@ var _pitch := 0.0
 var invert_y := false
 var preferred_fov := 90.0
 var ads_sensitivity := ADS_SENS_MULT
+# BB-1: ADS magnification of the CURRENT weapon's optic (1.1 iron ...
+# 5.0 sniper scope), pushed by WeaponManager on every equip/swap via
+# set_ads_zoom(). Drives the FOV zoom and the ADS sensitivity scale.
+var _ads_zoom := 1.0
 var look_sensitivity := 1.0  # user setting; options menu wires this later
 var _hp := MAX_HP
 var _dead := false
@@ -140,6 +162,7 @@ var _can_wallrun := true
 var _wallrun_blocked_normal := Vector3.ZERO
 var _wallrun_detach_cooldown := 0.0
 var _wall_contact_grace := 0.0
+var _wallrun_wish_grace := 0.0
 var _coyote := 0.0
 var _jump_buf := 0.0
 var _just_jumped := false  # jump fired this tick: horizontal uses the air branch (is_on_floor() is stale-true pre-move_and_slide)
@@ -203,10 +226,17 @@ func _ready() -> void:
 
 # Public look entry: every caller passes RADIANS (see LOOK CONTRACT above).
 # Yaw accumulates on the body, pitch on the head, clamped to ±89°.
+## BB-1: WeaponManager pushes the equipped weapon's optic zoom here.
+func set_ads_zoom(z: float) -> void:
+	_ads_zoom = maxf(z, 1.0)
+
+
 func add_look(relative: Vector2) -> void:
 	if _dead:
 		return
-	var s: float = look_sensitivity * (ads_sensitivity if _ads else 1.0)
+	# BB-1: ADS sensitivity also divides by the optic zoom — a 5x scope
+	# at iron-sight sensitivity would be unusably twitchy.
+	var s: float = look_sensitivity * (ads_sensitivity / _ads_zoom if _ads else 1.0)
 	rotate_y(-relative.x * s)
 	_pitch = clampf(_pitch - relative.y * s * (-1.0 if invert_y else 1.0),
 			-deg_to_rad(PITCH_LIMIT_DEG), deg_to_rad(PITCH_LIMIT_DEG))
@@ -487,8 +517,16 @@ func _update_wallrun(delta: float, wish: Vector3) -> void:
 				_wall_contact_grace = 0.08
 		else:
 			_wall_contact_grace = maxf(0.0, _wall_contact_grace - delta)
+		# BB-3: wish flicker grace — a one-frame input dip (analog stick
+		# noise at the deadzone edge) used to end the run AND set the
+		# blocked normal, so the same wall then refused re-entry until
+		# landing. The run now tolerates WALLRUN_WISH_GRACE of input loss.
+		if wish.length() > 0.1:
+			_wallrun_wish_grace = WALLRUN_WISH_GRACE
+		else:
+			_wallrun_wish_grace = maxf(_wallrun_wish_grace - delta, 0.0)
 		var keep := (contact or _wall_contact_grace > 0.0) and not is_on_floor() \
-			and not grapple.is_active() and wish.length() > 0.1 \
+			and not grapple.is_active() and _wallrun_wish_grace > 0.0 \
 			and _wallrun_time + delta < WALLRUN_MAX_TIME * class_wallrun_mult()
 		if keep:
 			_wallrun_time += delta
@@ -524,10 +562,10 @@ func _update_wallrun(delta: float, wish: Vector3) -> void:
 	var n := ray.get_collision_normal()
 	if absf(n.y) > 0.35 or n.dot(_wallrun_blocked_normal) > 0.95:
 		return
-	# GAMEPLAY REWORK attach gate (Colin's spec): speed >= full walk AND
-	# (aimed at the wall OR moving parallel to it). No more attaching at
-	# weird times — e.g. drifting away from a wall, or strafing past it
-	# while looking away, no longer attaches.
+	# Attach gate: speed >= full walk AND _wallrun_attach_allowed (aimed
+	# at the wall, moving parallel to it, or — BB-3 — velocity committed
+	# diagonally toward it). No attaching at weird times — e.g. drifting
+	# away from a wall, or strafing past it while looking away.
 	if not _wallrun_attach_allowed(n):
 		return
 	# Wall-run entry: redirect momentum along the wall with a bounded boost
@@ -539,6 +577,7 @@ func _update_wallrun(delta: float, wish: Vector3) -> void:
 	_wall_normal = n
 	_wallrun_time = 0.0
 	_wall_contact_grace = 0.08
+	_wallrun_wish_grace = WALLRUN_WISH_GRACE
 	_wallrun_blocked_normal = Vector3.ZERO
 	_walljump_cut_armed = false
 	# Goal 2: wall-run scrape — a 2.8 s ONE-SHOT fired once on entry.
@@ -557,14 +596,22 @@ func _update_wallrun(delta: float, wish: Vector3) -> void:
 	velocity.y = 0.0
 
 
-## Wall-run attach gate (Gameplay Rework, Colin's spec): speed >= full
-## walking speed (WALLRUN_MIN_SPEED, checked by the caller) AND the player
-## is aimed at the wall OR moving parallel to it.
-## - Aimed: camera aim (horizontal) points against the wall normal by more
-##   than WALLRUN_AIM_DOT — i.e. within ~60 deg of straight at the wall.
+## Wall-run attach gate (Gameplay Rework, Colin's spec + BB-3 extension):
+## speed >= full walking speed (WALLRUN_MIN_SPEED, checked by the caller)
+## AND one of three intent tests passes:
 ## - Parallel: horizontal velocity direction runs along the wall tangent
 ##   (|vel_dir . tangent| > WALLRUN_PARALLEL_DOT, within ~45 deg).
-## Uses VELOCITY (actual movement), not wish/input, for the parallel test.
+## - Diagonal (BB-3): velocity angled steeply toward the wall while the
+##   player looks along the corridor fell between the parallel and aim
+##   gates and never attached. If velocity carries a real component both
+##   along the wall AND closing on it (> WALLRUN_DIAGONAL_DOT each), the
+##   velocity itself is committed to the wall — entry intent, no aim
+##   needed. Moving AWAY never qualifies (closing component negative,
+##   and the away-drift guard above rejects it first).
+## - Aimed: camera aim (horizontal) points against the wall normal by
+##   more than WALLRUN_AIM_DOT — i.e. within ~60 deg of straight at the
+##   wall. This is the head-on (forward-ray) path.
+## Uses VELOCITY (actual movement), not wish/input, for the motion tests.
 func _wallrun_attach_allowed(n: Vector3) -> bool:
 	if Vector2(velocity.x, velocity.z).length() < WALLRUN_MIN_SPEED:
 		return false
@@ -574,6 +621,8 @@ func _wallrun_attach_allowed(n: Vector3) -> bool:
 	var hv := horizontal.normalized()
 	var tangent := n.cross(Vector3.UP).normalized()
 	if absf(hv.dot(tangent)) > WALLRUN_PARALLEL_DOT:
+		return true
+	if hv.dot(-n) > WALLRUN_DIAGONAL_DOT and absf(hv.dot(tangent)) > WALLRUN_DIAGONAL_DOT:
 		return true
 	var aim := -camera.global_transform.basis.z
 	aim.y = 0.0
@@ -604,6 +653,7 @@ func _end_wallrun() -> void:
 		_wallrun_detach_cooldown = 0.2
 	_wallrunning = false
 	_wallrun_time = 0.0
+	_wallrun_wish_grace = 0.0
 
 
 ## Crouch held / tapped through EITHER the crouch or the slide action.
@@ -775,11 +825,33 @@ func _update_horizontal(delta: float, wish: Vector3) -> void:
 			velocity.x = hv.x
 			velocity.z = hv.y
 		return
-	var rate := ACCEL_GROUND
+	# BB-2: the ground model works on the horizontal VECTOR, and excess
+	# speed is treated uniformly. The old per-component move_toward
+	# toward wish*speed burned overspeed at ACCEL_GROUND per axis — so a
+	# landing at sprint speed kept everything if the sprint latch was on
+	# (target 11) but lost ~5 m/s in ~5 frames if the stick had rolled
+	# off "forward" and dropped the latch (target 6). Same landing, two
+	# outcomes, decided by an invisible input threshold.
+	var hv := Vector2(velocity.x, velocity.z)
 	if wish == Vector3.ZERO:
-		rate = FRICTION_GROUND
-	velocity.x = move_toward(velocity.x, wish.x * speed, rate * delta)
-	velocity.z = move_toward(velocity.z, wish.z * speed, rate * delta)
+		# No input: uniform magnitude friction. (Per-component friction
+		# stopped diagonal movement up to sqrt(2)x faster than axial.)
+		hv = hv.move_toward(Vector2.ZERO, FRICTION_GROUND * delta)
+	elif hv.length() > speed:
+		# Overspeed with input held (landing / boost / fling): KEEP the
+		# speed, steer the direction toward wish at the ground accel
+		# rate, and bleed only the excess at OVERSPEED_BLEED — every
+		# landing, every fall height, latch or no latch.
+		var wish_dir := Vector2(wish.x, wish.z).normalized()
+		var steered := hv.move_toward(wish_dir * hv.length(), ACCEL_GROUND * delta)
+		if steered.length() > speed:
+			hv = steered.normalized() * maxf(speed, steered.length() - OVERSPEED_BLEED * delta)
+		else:
+			hv = steered
+	else:
+		hv = hv.move_toward(Vector2(wish.x, wish.z) * speed, ACCEL_GROUND * delta)
+	velocity.x = hv.x
+	velocity.z = hv.y
 
 
 func _update_gravity(delta: float) -> void:
@@ -1114,9 +1186,12 @@ func _process(delta: float) -> void:
 	_update_gamepad_look(delta)
 
 	# --- FOV: ADS zoom vs sprint kick ---
+	# BB-1: per-optic zoom (was one global 52/75 ratio for every sight —
+	# irons and the sniper scope zoomed identically). target = preferred
+	# / zoom: iron ~1.1x, reflex ~1.15x, ACOG 3x, scope 5x.
 	var fov_t := preferred_fov
 	if _ads:
-		fov_t = preferred_fov * FOV_ADS / FOV_NORMAL
+		fov_t = preferred_fov / _ads_zoom
 	elif _sprinting:
 		fov_t = preferred_fov + FOV_SPRINT - FOV_NORMAL
 	camera.fov = lerpf(camera.fov, fov_t, 1.0 - exp(-FOV_LERP_RATE * delta))

@@ -202,59 +202,24 @@ func _scheme_colors(scheme: int) -> Array:
 # ------------------------------------------------------------- environment
 
 func _build_environment() -> void:
-	# A1 (v0.5) — "Modern Voxfare 2" dusk. Cheap gradient sky: a 16x256
-	# vertical gradient texture in a PanoramaSkyMaterial (one texture lookup,
-	# no procedural-sky shader math). GradientTexture2D fill runs top->bottom,
-	# so offset 0 = zenith, ~0.5 = horizon, 1 = below-horizon ground haze.
-	var grad := Gradient.new()
-	grad.offsets = PackedFloat32Array([0.0, 0.42, 0.50, 0.56, 1.0])
-	grad.colors = PackedColorArray([
-		Color(0.13, 0.08, 0.24),   # zenith: dusk purple
-		Color(0.45, 0.20, 0.42),   # upper sky: purple -> orange
-		Color(1.0, 0.52, 0.22),    # horizon: burnt orange
-		Color(0.55, 0.32, 0.20),   # just below horizon
-		Color(0.10, 0.07, 0.07),   # ground haze: dark warm brown
-	])
-	var gtex := GradientTexture2D.new()
-	gtex.gradient = grad
-	gtex.width = 16
-	gtex.height = 256
-	gtex.fill = GradientTexture2D.FILL_LINEAR
-	gtex.fill_from = Vector2(0, 0)
-	gtex.fill_to = Vector2(0, 1)
-	var smat := PanoramaSkyMaterial.new()
-	smat.panorama = gtex
-	var sky := Sky.new()
-	sky.sky_material = smat
-	var env := Environment.new()
-	env.background_mode = Environment.BG_SKY
-	env.sky = sky
-	# Hemisphere-ish fill from the sky itself: shadowed sides stay readable,
-	# never pitch black. No extra fill light (zero extra draw cost).
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.65
-	env.tonemap_mode = Environment.TONE_MAPPER_ACES
-	env.tonemap_exposure = 1.1
-	env.glow_enabled = false  # NO bloom: too expensive on a Galaxy S23.
-	# Fog: density tuned so the far wall (~70 m) is lightly hazed and the
-	# distant city ring (130-190 m) is ~60-75% hazed, while gameplay ranges
-	# (<35 m) stay clear. Warm fog color keeps the dusk palette.
-	env.fog_enabled = true
-	env.fog_light_color = Color(0.95, 0.62, 0.38)
-	env.fog_density = 0.0075
-	env.fog_sun_scatter = 0.15
-	env.fog_sky_affect = 0.5
+	# BB-6 (2026-11-26): was a private copy of the shared dusk gradient
+	# panorama — the sky that fog washed into a featureless peach void on
+	# every map. Dustline now uses the shared "dustline" sky profile
+	# (MapBuilderBase statics): ProceduralSkyMaterial with a low orange
+	# sun disc + streaky dusk clouds. Fog density stays Dustline's 0.0075:
+	# the far wall (~70 m) is lightly hazed, gameplay ranges (<35 m) clear.
+	var profile := MapBuilderBase.sky_profile("dustline")
 	var we := WorldEnvironment.new()
 	we.name = "WorldEnvironment"
-	we.environment = env
+	we.environment = MapBuilderBase.make_environment(profile, 0.0075)
 	add_child(we)
 
 	var sun := DirectionalLight3D.new()
 	sun.name = "Sun"
 	sun.position = Vector3(0, 40, 0)  # centers the tight ortho shadow box
-	sun.rotation_degrees = Vector3(-48, -32, 0)  # late-afternoon angle
-	sun.light_color = Color(1.0, 0.72, 0.50)
-	sun.light_energy = 1.35
+	sun.rotation_degrees = Vector3(-30, -38, 0)  # BB-6: low sunset (was -48: high sun, no disc in view)
+	sun.light_color = profile["sun_color"]
+	sun.light_energy = profile["sun_energy"]
 	# Shadows: single ortho cascade, tight 90 m box around the 70 m arena
 	# (no 4-split). Per-light shadow map size does NOT exist in Godot 4.7 —
 	# the size is the project setting
@@ -562,13 +527,13 @@ func _build_props() -> void:
 	# Distant city silhouette ring (unshaded dark boxes, separate MultiMesh).
 	for i in 44:
 		var ang := float(i) / 44.0 * TAU + _rng.randf_range(-0.05, 0.05)
-		var r := _rng.randf_range(130, 190)
+		var r := _rng.randf_range(88, 118)  # BB-6: was 130-190, where fog left only pale ghosts
 		var bw := _rng.randf_range(8, 20)
 		var bh := _rng.randf_range(10, 45)
 		var bd := _rng.randf_range(8, 20)
 		var shade := _rng.randf_range(0.8, 1.3)
 		_c(Vector3(cos(ang) * r, bh * 0.5 - 2.0, sin(ang) * r), Vector3(bw, bh, bd),
-			Color(0.17 * shade, 0.15 * shade, 0.25 * shade))
+			Color(0.085 * shade, 0.07 * shade, 0.13 * shade))
 
 
 # ------------------------------------------------------------ spawn markers

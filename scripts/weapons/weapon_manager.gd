@@ -57,6 +57,7 @@ func _ready() -> void:
 	_current = _weapons[_current_slot]
 	_current.on_equip()
 	_hook_ads()
+	_push_ads_zoom()
 	weapon_changed.emit.call_deferred(_current.display_name)
 	_current.emit_ammo.call_deferred()
 
@@ -189,6 +190,7 @@ func switch_to(slot: String) -> void:
 	_current.attach(_player, _camera)
 	_current.on_equip()
 	_current.set_ads(_ads_active)
+	_push_ads_zoom()
 	_switching = false
 	weapon_changed.emit(_current.display_name)
 
@@ -306,7 +308,17 @@ func set_slot(slot: String, weapon_id: String) -> void:
 		_current = w
 		_current.on_equip()
 		_current.set_ads(_ads_active)
+		_push_ads_zoom()
 		weapon_changed.emit(_current.display_name)
+
+
+## BB-1: the player's FOV zoom + ADS sensitivity scale come from the
+## CURRENT weapon's optic class (iron 1.1x ... sniper scope 5x). Pushed
+## on every equip/swap so the player never has to know weapon data.
+## Duck-typed: a player without set_ads_zoom keeps the legacy feel.
+func _push_ads_zoom() -> void:
+	if _player != null and _current != null and _player.has_method("set_ads_zoom"):
+		_player.set_ads_zoom(Arsenal.ads_zoom(_current.weapon_id))
 
 
 ## True when `weapon_id` is a live SCRIPT-mod weapon id.

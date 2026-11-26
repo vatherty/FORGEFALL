@@ -76,6 +76,15 @@ const FORGE_CHIPS := ["Build a wall", "Spawn turret", "Need ammo", "UAV now", "S
 var _crosshair: Control
 var _ch_lines: Array[ColorRect] = []
 var _ch_dot: ColorRect
+# BB-1: sniper-scope overlay (black surround + circular aperture +
+# crosshair reticle), shown while a scope-class weapon is at full ADS.
+var _scope_root: Control
+var _scope_shade: ColorRect
+var _scope_reticle: Control
+var _scope_hline: ColorRect
+var _scope_vline: ColorRect
+var _scope_dot: ColorRect
+var _weapon_manager_node: Node
 # Goal 5: portal pair pips (blue = left, orange = right) under the crosshair.
 var _portal_pip_blue: ColorRect
 var _portal_pip_orange: ColorRect
@@ -223,6 +232,7 @@ func _build_all() -> void:
 	# in _apply_ui_scale, which also re-runs _update_health_display).
 	_health_bar_w = _scaled_size(HEALTH_BAR_W)
 	_build_crosshair()
+	_build_scope_overlay()
 	_build_hitmarker()
 	_build_ammo()
 	_build_health()
@@ -286,6 +296,101 @@ func _build_crosshair() -> void:
 	_portal_pip_orange.visible = false
 	_crosshair.add_child(_portal_pip_orange)
 	_layout_crosshair()
+
+
+## BB-1: sniper-scope overlay. The LR-8's model scope is an opaque prop
+## (solid lens — nothing to see through), so at full ADS the HUD takes
+## over the sight picture: a fullscreen black shade with a circular
+## aperture punched by a canvas shader, plus a plain crosshair reticle.
+## The viewmodel hides itself at the same blend (weapon_base), so the
+## aperture shows the zoomed world + reticle and nothing else.
+func _build_scope_overlay() -> void:
+	_scope_root = _full()
+	_scope_root.visible = false
+	_scope_shade = ColorRect.new()
+	_scope_shade.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_scope_shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_scope_shade.color = Color.WHITE
+	var shader := Shader.new()
+	shader.code = "shader_type canvas_item;\n" \
+		+ "uniform float aspect = 1.7778;\n" \
+		+ "uniform float radius = 0.39;\n" \
+		+ "uniform float fade = 0.0;\n" \
+		+ "void fragment() {\n" \
+		+ "\tvec2 p = (UV - vec2(0.5)) * vec2(aspect, 1.0);\n" \
+		+ "\tfloat d = length(p);\n" \
+		+ "\tfloat hole = smoothstep(radius, radius - 0.012, d);\n" \
+		+ "\tCOLOR = vec4(0.0, 0.0, 0.0, (1.0 - hole) * fade);\n" \
+		+ "}\n"
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	_scope_shade.material = mat
+	_scope_root.add_child(_scope_shade)
+	_scope_reticle = Control.new()
+	_scope_reticle.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_scope_root.add_child(_scope_reticle)
+	var rc := Color(0, 0, 0, 0.92)
+	_scope_hline = ColorRect.new()
+	_scope_hline.color = rc
+	_scope_hline.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_scope_reticle.add_child(_scope_hline)
+	_scope_vline = ColorRect.new()
+	_scope_vline.color = rc
+	_scope_vline.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_scope_reticle.add_child(_scope_vline)
+	_scope_dot = ColorRect.new()
+	_scope_dot.color = rc
+	_scope_dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_scope_reticle.add_child(_scope_dot)
+
+
+func _layout_scope_reticle() -> void:
+	var vp := get_viewport().get_visible_rect().size
+	if vp.y <= 0.0:
+		return
+	var d := vp.y * 0.78 # aperture diameter (matches shader radius 0.39)
+	_scope_reticle.size = Vector2(d, d)
+	_scope_reticle.position = (vp - Vector2(d, d)) * 0.5
+	_scope_hline.size = Vector2(d, 2)
+	_scope_hline.position = Vector2(0, d * 0.5 - 1)
+	_scope_vline.size = Vector2(2, d)
+	_scope_vline.position = Vector2(d * 0.5 - 1, 0)
+	_scope_dot.size = Vector2(4, 4)
+	_scope_dot.position = Vector2(d * 0.5 - 2, d * 0.5 - 2)
+	var mat := _scope_shade.material as ShaderMaterial
+	if mat != null:
+		mat.set_shader_parameter("aspect", vp.x / vp.y)
+
+
+## BB-1: per-frame scope-overlay state. Shows only while the CURRENT
+## weapon is scope-class AND its ADS blend is nearly full (> 0.8),
+## fading in across the last of the blend. Duck-typed against the
+## weapon manager in group "weapon_manager" (same style as the UAV
+## contract): no manager / no scope = overlay stays hidden.
+func _update_scope_overlay() -> void:
+	if _scope_root == null:
+		return
+	var show := false
+	var fade := 0.0
+	if _ads and not _dead and not _hud_hidden:
+		if _weapon_manager_node == null or not is_instance_valid(_weapon_manager_node):
+			_weapon_manager_node = get_tree().get_first_node_in_group("weapon_manager")
+		var wm := _weapon_manager_node
+		if wm != null and wm.has_method("current_weapon"):
+			var w: Variant = wm.call("current_weapon")
+			if w != null and w.has_method("get_ads_blend") and w.has_method("get_optic_class"):
+				if str(w.call("get_optic_class")) == "scope":
+					var blend := float(w.call("get_ads_blend"))
+					if blend > 0.8:
+						show = true
+						fade = clampf((blend - 0.8) / 0.2, 0.0, 1.0)
+	_scope_root.visible = show
+	if show:
+		var mat := _scope_shade.material as ShaderMaterial
+		if mat != null:
+			mat.set_shader_parameter("fade", fade)
+		_scope_reticle.modulate.a = fade
+		_layout_scope_reticle()
 
 
 func _layout_crosshair() -> void:
@@ -1271,6 +1376,9 @@ func _process(delta: float) -> void:
 	if _player_node == null or not is_instance_valid(_player_node):
 		_player_node = null
 		_try_bind_player()
+
+	# BB-1: sniper-scope overlay follows the current weapon's ADS blend.
+	_update_scope_overlay()
 
 	# Hitmarker lifetime: full-strength hold, then a short fade (no pop-off).
 	if _hit_snd_t > 0.0:

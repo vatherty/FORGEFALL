@@ -55,10 +55,11 @@ func _ready() -> void:
 	_unit_box = BoxMesh.new()
 	_unit_box.size = Vector3.ONE
 
-	_build_environment(0.006)
+	_build_environment(0.006, Vector3(-35, -32, 0), "zombies_night")  # BB-6: zombies is a night map — moon + stars, not dusk
 	_build_ground()
 	_build_perimeter(ARENA_HALF, 2.5, 3.0)
 	_build_crate_clusters()
+	_build_city()
 	_build_spawn_markers(PLAYER_SPAWNS, SPAWN_DOORS, FORGE_PADS, ARENA_HALF)
 	_commit_multimeshes(AABB(Vector3(-ARENA_HALF, -2, -ARENA_HALF),
 		Vector3(ARENA_HALF * 2, 20, ARENA_HALF * 2)))
@@ -70,6 +71,21 @@ func _build_ground() -> void:
 	_v(Vector3(0, -0.25, 0), Vector3(120, 0.5, 120), C_DIRT)
 	_solid(Vector3(0, -0.25, 0), Vector3(120, 0.5, 120))
 	_nav_boxes.append([Vector3(0, 0, 0), Vector3(120, 0.5, 120)])
+
+
+# BB-6: this map had NO horizon content at all — a 120 m plane, a 2.5 m
+# wall, then bare fog. Give the night a skyline: a ring of ruined towers
+# just outside the wall, near-black blue, looming through the fog.
+func _build_city() -> void:
+	for i in 40:
+		var ang := float(i) / 40.0 * TAU + _rng.randf_range(-0.06, 0.06)
+		var r := _rng.randf_range(88, 112)
+		var bw := _rng.randf_range(7, 16)
+		var bh := _rng.randf_range(7, 21)
+		var bd := _rng.randf_range(7, 16)
+		var shade := _rng.randf_range(0.8, 1.3)
+		_c(Vector3(cos(ang) * r, bh * 0.5 - 2.0, sin(ang) * r), Vector3(bw, bh, bd),
+			Color(0.012 * shade, 0.016 * shade, 0.030 * shade))
 
 
 func _build_crate_clusters() -> void:

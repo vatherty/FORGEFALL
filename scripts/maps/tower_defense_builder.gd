@@ -56,7 +56,7 @@ func _ready() -> void:
 	_unit_box = BoxMesh.new()
 	_unit_box.size = Vector3.ONE
 
-	_build_environment(0.006)
+	_build_environment(0.006, Vector3(-42, -32, 0), "tower_defense")
 	_build_ground()
 	_build_perimeter(ARENA_HALF, 3.0, 4.2)
 	_build_lanes()
@@ -243,10 +243,10 @@ func _build_dressing() -> void:
 func _build_city() -> void:
 	for i in 44:
 		var ang := float(i) / 44.0 * TAU + _rng.randf_range(-0.05, 0.05)
-		var r := _rng.randf_range(130, 190)
+		var r := _rng.randf_range(88, 118)  # BB-6: was 130-190, where fog left only pale ghosts
 		var bw := _rng.randf_range(8, 20)
 		var bh := _rng.randf_range(10, 45)
 		var bd := _rng.randf_range(8, 20)
 		var shade := _rng.randf_range(0.8, 1.3)
 		_c(Vector3(cos(ang) * r, bh * 0.5 - 2.0, sin(ang) * r), Vector3(bw, bh, bd),
-			Color(0.17 * shade, 0.15 * shade, 0.25 * shade))
+			Color(0.085 * shade, 0.07 * shade, 0.13 * shade))
