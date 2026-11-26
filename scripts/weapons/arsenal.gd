@@ -769,7 +769,45 @@ static func build_viewmodel(weapon_id: String, visual_info: Dictionary = {}) -> 
 	if vm != null and optic_class(weapon_id) in ["reflex", "acog"]:
 		_carve_sight_tunnel(vm, sight_anchor(weapon_id))
 		_make_optic_glass(vm)
+	# BB-1c: ACOG weapons gain the picture-in-picture lens screen inside
+	# the carved tunnel (Colin: keep the 3x FOV zoom AND "a zoom and
+	# parallax effect on the lens as well"). The disc itself is inert —
+	# WeaponBase owns the lens camera rig, binds the viewport texture
+	# and drives the shader (pip_strength / eye_offset). With no rig
+	# bound it renders as BB-1b glass, so standalone builds (verifies,
+	# Studio previews) keep the see-through tunnel.
+	if vm != null and optic_class(weapon_id) == "acog":
+		_add_acog_pip_screen(vm, sight_anchor(weapon_id))
 	return vm
+
+
+## BB-1c: the PiP screen for the BR-3's ACOG. Measured from the shipped
+## GLB (2026-11-26): the optic window ("Optic front glass") is 52x36 mm
+## at z -0.125 around the anchor (0, 0.193, -0.090); the BB-1b tunnel
+## spans z -0.145..-0.035. A 34 mm disc (the window's inner height,
+## less a bezel's width) sits at the tunnel's REAR plane, z -0.048 —
+## from the eye it overfills the window vertically and reads as the
+## scope's rear lens. The shader discards outside the circle, so a
+## quad is the whole mesh. Added AFTER the carve: the disc is the
+## sight picture, not a blocker (the ADS verify's tunnel check skips
+## it by name).
+const ACOG_PIP_SCREEN_SIZE := 0.034  # disc diameter (m)
+const ACOG_PIP_SCREEN_Z := 0.042     # rearward offset from the anchor (m)
+
+static func _add_acog_pip_screen(vm: Node3D, anchor: Vector3) -> void:
+	if vm.get_node_or_null("AcogPipScreen") != null:
+		return # mod weapons: the recursive base build already added it
+	var disc := MeshInstance3D.new()
+	disc.name = "AcogPipScreen"
+	var quad := QuadMesh.new()
+	quad.size = Vector2(ACOG_PIP_SCREEN_SIZE, ACOG_PIP_SCREEN_SIZE)
+	disc.mesh = quad
+	var mat := ShaderMaterial.new()
+	mat.shader = preload("res://assets/shaders/acog_lens.gdshader")
+	disc.material_override = mat
+	disc.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	disc.position = Vector3(anchor.x, anchor.y, anchor.z + ACOG_PIP_SCREEN_Z)
+	vm.add_child(disc)
 
 
 ## BB-1b: the GLB optics are SOLID — behind the front lens plate, two

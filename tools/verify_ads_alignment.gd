@@ -36,12 +36,28 @@
 # sight line and must be VISIBLE through the ar7/smg9/br3 apertures
 # (green fraction + mean luminance inside the projected lens rect).
 #
+# BB-1c (Colin: "I still want a fov zoom as you have to get closer to
+# the gun, but then a zoom and parallax effect on the lens as well" +
+# "The zoom on the acog lens should only be 1.5x the fov zoom 3x"):
+# the BR-3's ACOG gains a picture-in-picture lens — the full-screen 3x
+# FOV zoom is UNCHANGED, and the glass itself shows the world through
+# a second camera at main_fov / 1.5 (WeaponBase.LENS_EXTRA_ZOOM,
+# pinned 1.5), with the reticle drawn in the glass, parallax swim and
+# scope shadow (assets/shaders/acog_lens.gdshader). Layer B pins the
+# new pose contract for the ACOG (floating AdsDot hidden while the
+# lens is up; lens rig active) and the parallax conversion math;
+# layer D proves magnification + parallax in rendered pixels against
+# a checkerboard target and the glass fallback at hip. The BB-1b
+# tunnel check skips the AcogPipScreen disc by name: it is the sight
+# picture sitting in the tunnel by design, not a GLB blocker.
+#
 # NOTE: game scripts are load()ed dynamically inside _process (repo
 # pattern — compile-time references fail in --script mode because the
 # Sfx autoload does not exist yet at compile time).
 extends SceneTree
 
 const OUT_DIR := "/tmp/ads_verify"
+const PIP_OUT := "/home/hatch/workspace/bugbash-finish/ads-audit/pip"
 const CENTRE := Vector2(640, 360)
 
 # Audited contract values (see Arsenal.SIGHT_ANCHOR / OPTIC_CLASS).
@@ -87,6 +103,7 @@ func _process(_delta: float) -> bool:
 
 func _run() -> void:
 	_check_data()
+	_check_lens_math()
 	_check_glass()
 	_check_poses()
 	if DisplayServer.get_name() == "headless":
@@ -125,6 +142,25 @@ func _check_data() -> void:
 				_check(is_equal_approx(float(ArsenalScript.call("ads_zoom", wid)), float(EXPECT_ZOOM[cls])),
 					"ads_zoom(%s)=%s for class %s" % [wid, EXPECT_ZOOM[cls], cls])
 				break
+
+
+# ------------------------------------------------------- BB-1c lens math
+# The pinned ratio + the parallax conversion, checkable headlessly.
+func _check_lens_math() -> void:
+	var src := FileAccess.get_file_as_string("res://scripts/weapons/weapon_base.gd")
+	_check(src.contains("const LENS_EXTRA_ZOOM := 1.5"),
+		"LENS_EXTRA_ZOOM pinned at exactly 1.5 (Colin's spec)")
+	var WB: GDScript = load("res://scripts/weapons/weapon_base.gd")
+	_check(WB.call("lens_eye_offset_for", Vector3(0, 0, -0.47)) == Vector2.ZERO,
+		"lens parallax offset is zero when the sight is on the eye axis")
+	var ox: Vector2 = WB.call("lens_eye_offset_for", Vector3(0.0235, 0, -0.47))
+	_check(ox.x > 0.10 and ox.x < 0.12 and is_zero_approx(ox.y),
+		"sight right of axis -> +u parallax offset (%s)" % ox)
+	var oy: Vector2 = WB.call("lens_eye_offset_for", Vector3(0, 0.0235, -0.47))
+	_check(oy.y < -0.10 and oy.y > -0.12 and is_zero_approx(oy.x),
+		"sight above axis -> -v parallax offset (%s)" % oy)
+	var big: Vector2 = WB.call("lens_eye_offset_for", Vector3(0.47, 0, -0.47))
+	_check(big.length() <= 0.161, "lens parallax offset clamped (%s)" % big)
 
 
 func _const_block(src: String, name: String) -> String:
@@ -174,7 +210,21 @@ func _check_poses() -> void:
 			else:
 				_check(vm.visible, "%s viewmodel stays visible at full ADS" % id)
 			var dot := vm.get_node_or_null("AdsDot")
-			if optic in ["reflex", "acog"]:
+			if optic == "acog":
+				# BB-1c supersedes the BB-1 dot assertion for the ACOG:
+				# at full ADS the PiP lens is up and the floating dot
+				# stands down — the in-glass reticle replaces it.
+				_check(dot != null and not (dot as MeshInstance3D).visible,
+					"%s acog: AdsDot present but hidden while the PiP lens is up" % id)
+				_check(bool(w.call("is_lens_pip_active")),
+					"%s acog: PiP lens active at full ADS" % id)
+				var lvp: Variant = w.call("get_lens_viewport")
+				_check(lvp != null and (lvp as SubViewport).render_target_update_mode
+					== SubViewport.UPDATE_ALWAYS,
+					"%s acog: lens viewport rendering at full ADS" % id)
+				_check(w.call("get_lens_screen") != null,
+					"%s acog: lens screen bound to the rig" % id)
+			elif optic == "reflex":
 				_check(dot != null and (dot as MeshInstance3D).visible,
 					"%s %s: AdsDot present + visible at full ADS" % [id, optic])
 			else:
@@ -212,6 +262,10 @@ func _check_glass() -> void:
 		var meshes: Array = []
 		_collect_meshes(vm, meshes)
 		for mi in meshes:
+			# BB-1c: the PiP screen sits IN the tunnel by design — it
+			# IS the sight picture, not a GLB blocker.
+			if (mi as MeshInstance3D).name == "AcogPipScreen":
+				continue
 			var mesh := (mi as MeshInstance3D).mesh
 			if mesh == null:
 				continue
@@ -338,6 +392,7 @@ func _check_rendered() -> void:
 	]
 	for c in cases:
 		await _render_case(player, manager, camera, hud, str(c[0]), str(c[1]), str(c[2]))
+	await _check_pip(player, manager, camera, panel)
 	stage.queue_free()
 	await process_frame
 
@@ -452,6 +507,237 @@ func _aperture_stats(img: Image, camera: Camera3D, lens: MeshInstance3D) -> Arra
 			if p.g > 0.55 and p.g - p.r > 0.25 and p.g - p.b > 0.25:
 				green += 1
 	return [lum_sum / maxf(n, 1), float(green) / maxf(n, 1)]
+
+
+# ------------------------------------------------- D. BB-1c PiP (rendered)
+# Checkerboard target (regular cells, measurable along both axes —
+# the same physical feature is measured in both views, so the ratio
+# needs no knowledge of the cell size): magnification is read on the
+# vertical (fov) axis — the lens texture
+# period vs the main frame period, each normalised by its frame
+# height; parallax is read horizontally: freeze the weapon, drive the
+# shader's eye_offset, and the in-lens image must swim against the
+# offset while the in-glass reticle stays put and the edges darken.
+func _check_pip(player: Node, manager: Node, camera: Camera3D, panel: MeshInstance3D) -> void:
+	DirAccess.make_dir_recursive_absolute(PIP_OUT)
+	panel.visible = false
+	var board := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(8, 4, 0.1)
+	board.mesh = bm
+	var bimg := Image.create(800, 400, false, Image.FORMAT_RGB8)
+	for y in 400:
+		for x in 800:
+			var cell := (x / 40 + y / 40) % 2
+			bimg.set_pixel(x, y, Color(0.95, 0.95, 0.95) if cell == 0 else Color(0.05, 0.05, 0.05))
+	var bmat := StandardMaterial3D.new()
+	bmat.albedo_texture = ImageTexture.create_from_image(bimg)
+	bmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	board.material_override = bmat
+	board.position = Vector3(0, camera.global_position.y, -11.55)
+	player.get_parent().add_child(board)
+	await _wait_frames(3)
+
+	manager.call("equip_loadout", "ar7", "p9")
+	manager.call("switch_to", "primary")
+	manager.call("set_slot", "primary", "br3")
+	var equipped := await _wait_until(func() -> bool: return _weapon_is(manager, "br3"), 5000)
+	_check(equipped, "br3 PiP case: weapon equipped")
+	var weapon: Variant = manager.call("current_weapon")
+	if weapon == null:
+		return
+	Input.action_press("ads")
+	var settled := await _wait_until(
+		func() -> bool: return _ads_settled(player, weapon, camera, 3.0), 6000)
+	_check(settled, "br3 PiP case: ADS settles (full-screen 3x zoom intact)")
+	await _wait_frames(6) # let the lens viewport render real frames
+	await RenderingServer.frame_post_draw
+	var frame := root.get_texture().get_image()
+	frame.save_png(PIP_OUT + "/pip_ads_centred.png")
+	frame.save_png(OUT_DIR + "/pip_ads_centred.png")
+
+	var lvp: SubViewport = weapon.call("get_lens_viewport")
+	_check(lvp != null, "br3 PiP: lens viewport exists")
+	if lvp == null:
+		Input.action_release("ads")
+		return
+	var lcam := lvp.get_child(0) as Camera3D
+	_check(lcam != null and absf(lcam.fov - camera.fov / 1.5) < 0.6,
+		"lens camera fov = main fov / 1.5 (%.2f vs %.2f)" % [lcam.fov if lcam != null else -1.0, camera.fov])
+	# Magnification on the fov (vertical) axis, from the lens texture
+	# itself (512px — the precise read) vs the main frame (720px).
+	var tex_img := lvp.get_texture().get_image()
+	var period_tex := _stripe_period_v(tex_img, 256, 60, 452)
+	var period_main := _stripe_period_v(frame, 200, 150, 570)
+	_check(period_tex > 0.0 and period_main > 0.0,
+		"checker period measurable (lens tex %.1f px, main %.1f px)" % [period_tex, period_main])
+	if period_tex > 0.0 and period_main > 0.0:
+		var mag := (period_tex / 512.0) / (period_main / 720.0)
+		_check(mag > 1.30 and mag < 1.75,
+			"in-lens magnification %.2f ~= 1.5x the main view (Colin's pin)" % mag)
+	# On screen: the checker must be visible INSIDE the lens aperture.
+	var disc: MeshInstance3D = weapon.call("get_lens_screen")
+	_check(disc != null, "br3 PiP: lens screen bound in the rendered case")
+	if disc == null:
+		Input.action_release("ads")
+		return
+	var rect := _project_rect(camera, disc)
+	var row := int((rect.position.y + rect.end.y) * 0.5) - 10
+	var transitions := _row_transitions(frame, row,
+		int(rect.position.x) + 4, int(rect.end.x) - 4)
+	_check(transitions >= 3,
+		"checker visible inside the lens on screen (%d transitions across the aperture)" % transitions)
+	# Parallax: freeze the weapon so the test owns the shader param.
+	weapon.set_process(false)
+	var mat := disc.material_override as ShaderMaterial
+	var profile_a := _row_profile(frame, row, int(rect.position.x), int(rect.end.x))
+	var ring_a := _ring_lum(frame, rect)
+	var ret_a := _red_centroid_in(frame, rect)
+	mat.set_shader_parameter("eye_offset", Vector2(0.12, 0.0))
+	await _wait_frames(3)
+	await RenderingServer.frame_post_draw
+	var frame_b := root.get_texture().get_image()
+	frame_b.save_png(PIP_OUT + "/pip_parallax_offset.png")
+	frame_b.save_png(OUT_DIR + "/pip_parallax_offset.png")
+	var profile_b := _row_profile(frame_b, row, int(rect.position.x), int(rect.end.x))
+	var shift := _profile_shift(profile_a, profile_b)
+	_check(absf(shift) >= 2.0,
+		"parallax: in-lens image swims under eye_offset (shift %.1f px)" % shift)
+	_check(shift < 0.0,
+		"parallax: image swims AGAINST the eye offset (+u -> content -x, got %.1f)" % shift)
+	var ret_b := _red_centroid_in(frame_b, rect)
+	_check(ret_a.x >= 0.0 and ret_b.x >= 0.0 and (ret_a - ret_b).length() <= 2.0,
+		"parallax: reticle stays fixed in the glass (A %s, B %s)" % [ret_a, ret_b])
+	var ring_b := _ring_lum(frame_b, rect)
+	_check(ring_b < ring_a * 0.9,
+		"scope shadow: aperture edges darken when misaligned (ring lum %.3f -> %.3f)" % [ring_a, ring_b])
+	mat.set_shader_parameter("eye_offset", Vector2.ZERO)
+	weapon.set_process(true)
+	# Hip: lens stands down — viewport not updating, shader back to glass.
+	Input.action_release("ads")
+	var released := await _wait_until(
+		func() -> bool: return float(weapon.call("get_ads_blend")) < 0.05, 4000)
+	_check(released, "br3 PiP case: ADS releases")
+	await _wait_frames(3)
+	_check(not bool(weapon.call("is_lens_pip_active")),
+		"br3 PiP: lens inactive at hip")
+	_check(lvp.render_target_update_mode == SubViewport.UPDATE_DISABLED,
+		"br3 PiP: lens viewport NOT updating at hip")
+	_check(float(mat.get_shader_parameter("pip_strength")) < 0.05,
+		"br3 PiP: shader back to the glass fallback at hip (strength %.2f)"
+			% float(mat.get_shader_parameter("pip_strength")))
+	await RenderingServer.frame_post_draw
+	var hip := root.get_texture().get_image()
+	hip.save_png(PIP_OUT + "/pip_hip.png")
+	hip.save_png(OUT_DIR + "/pip_hip.png")
+	board.queue_free()
+
+
+# Mean spacing (px) of luminance transitions down a column — one
+# spacing per checker cell.
+func _stripe_period_v(img: Image, x: int, y0: int, y1: int) -> float:
+	var transitions: Array = []
+	var prev := _lum(img.get_pixel(x, y0)) > 0.5
+	for y in range(y0 + 1, y1):
+		var cur := _lum(img.get_pixel(x, y)) > 0.5
+		if cur != prev:
+			transitions.append(y)
+			prev = cur
+	if transitions.size() < 3:
+		return -1.0
+	var sum := 0.0
+	for i in range(1, transitions.size()):
+		sum += float(transitions[i] - transitions[i - 1])
+	return sum / float(transitions.size() - 1)
+
+
+# Projected screen rect of a mesh's AABB (same pattern as _aperture_stats).
+func _project_rect(camera: Camera3D, mi: MeshInstance3D) -> Rect2:
+	var aabb := mi.get_aabb()
+	var gt := mi.global_transform
+	var lo := Vector2(INF, INF)
+	var hi := Vector2(-INF, -INF)
+	for xi in [aabb.position.x, aabb.end.x]:
+		for yi in [aabb.position.y, aabb.end.y]:
+			for zi in [aabb.position.z, aabb.end.z]:
+				var px := camera.unproject_position(gt * Vector3(xi, yi, zi))
+				lo = lo.min(px)
+				hi = hi.max(px)
+	return Rect2(lo, hi - lo)
+
+
+func _row_profile(img: Image, y: int, x0: int, x1: int) -> Array:
+	var out: Array = []
+	for x in range(x0, x1):
+		out.append(_lum(img.get_pixel(x, y)))
+	return out
+
+
+func _row_transitions(img: Image, y: int, x0: int, x1: int) -> int:
+	var n := 0
+	var prev := _lum(img.get_pixel(x0, y)) > 0.5
+	for x in range(x0 + 1, x1):
+		var cur := _lum(img.get_pixel(x, y)) > 0.5
+		if cur != prev:
+			n += 1
+			prev = cur
+	return n
+
+
+# Best integer lag of profile b vs a by mean absolute difference —
+# negative means b's content moved LEFT (smaller x) relative to a.
+func _profile_shift(a: Array, b: Array) -> float:
+	var best_lag := 0
+	var best_err := INF
+	var n := mini(a.size(), b.size())
+	for lag in range(-24, 25):
+		var err := 0.0
+		var cnt := 0
+		for i in n:
+			var j := i + lag
+			if j < 0 or j >= n:
+				continue
+			err += absf(float(a[i]) - float(b[j]))
+			cnt += 1
+		if cnt > 0:
+			err /= float(cnt)
+			if err < best_err:
+				best_err = err
+				best_lag = lag
+	return float(best_lag)
+
+
+# Red centroid restricted to a rect (the in-glass reticle).
+func _red_centroid_in(img: Image, rect: Rect2) -> Vector2:
+	var sum := Vector2.ZERO
+	var n := 0
+	for y in range(int(rect.position.y), int(rect.end.y), 1):
+		for x in range(int(rect.position.x), int(rect.end.x), 1):
+			if x < 0 or y < 0 or x >= img.get_width() or y >= img.get_height():
+				continue
+			var p := img.get_pixel(x, y)
+			if p.r > 0.55 and p.r - p.g > 0.25 and p.r - p.b > 0.25:
+				sum += Vector2(x, y)
+				n += 1
+	if n < 4:
+		return Vector2(-1, -1)
+	return sum / float(n)
+
+
+# Mean luminance of the rect's outer ring (the aperture's edge band).
+func _ring_lum(img: Image, rect: Rect2) -> float:
+	var sum := 0.0
+	var n := 0
+	var inset := rect.size * 0.16
+	for y in range(int(rect.position.y), int(rect.end.y), 2):
+		for x in range(int(rect.position.x), int(rect.end.x), 2):
+			var inside := x > rect.position.x + inset.x and x < rect.end.x - inset.x \
+				and y > rect.position.y + inset.y and y < rect.end.y - inset.y
+			if inside:
+				continue
+			sum += _lum(img.get_pixel(x, y))
+			n += 1
+	return sum / maxf(n, 1)
 
 
 # Red-dot centroid: pixels that are strongly red (the AdsDot emission).

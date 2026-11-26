@@ -39,6 +39,17 @@ const HIP_ROT := Vector3(0.0, -0.07, 0.0)
 const ADS_ROT := Vector3.ZERO
 const MAX_HITSCAN_RANGE := 400.0
 const MOVE_SPREAD_REF_SPEED := 6.0  # speed (m/s) at which move penalty maxes
+# BB-1c ACOG PiP lens (Colin: the full-screen 3x FOV zoom STAYS, and the
+# lens glass gets "a zoom and parallax effect" on top). A second camera
+# renders the world into the ACOG's lens disc; its FOV is the main
+# camera's CURRENT fov divided by LENS_EXTRA_ZOOM — pinned by Colin at
+# exactly 1.5 ("The zoom on the acog lens should only be 1.5x the fov
+# zoom 3x"), i.e. 4.5x total vs the hip view at full ADS.
+const LENS_EXTRA_ZOOM := 1.5
+const LENS_VIEWPORT_SIZE := 512     # square lens render target (px)
+const LENS_LAYER := 20              # viewmodel-only render layer (bit 19)
+const LENS_PARALLAX_GAIN := 2.2     # lens UV swim per radian of eye misalignment
+const LENS_PARALLAX_MAX := 0.16     # UV clamp for the swim
 #endregion
 
 enum FireMode { AUTO, SEMI, BOLT, PUMP, BURST }
@@ -118,6 +129,12 @@ var _lowering: bool = false
 var _ads_pos := ADS_POS # per-weapon ADS target; = -Arsenal.sight_anchor(id) (x+y), ADS_POS.z
 var _optic := "iron"    # BB-1: Arsenal.optic_class(weapon_id) — zoom/scope/dot behaviour
 var _ads_dot: MeshInstance3D = null # BB-1: projected dot for reflex/ACOG sights
+# BB-1c: ACOG PiP lens rig (ACOG only; null for every other optic).
+var _lens_viewport: SubViewport = null
+var _lens_camera: Camera3D = null
+var _lens_screen: MeshInstance3D = null # the viewmodel's AcogPipScreen disc
+var _lens_mat: ShaderMaterial = null
+var _lens_active := false           # viewport rendering + picture up
 var _ads: bool = false
 var _ads_blend: float = 0.0
 var _shot_index: int = 0
@@ -191,6 +208,7 @@ func setup(stats: Dictionary) -> void:
 	_eject = _viewmodel.get_node_or_null("Eject") as Marker3D
 	_build_flash()
 	_build_shell_pool()
+	_setup_lens_pip()
 
 
 ## Apply a generated weapon's visual description after Forge grants its
@@ -224,6 +242,12 @@ func set_visual_recipe(info: Dictionary) -> void:
 	_optic = Arsenal.optic_class(family)
 	_ads_pos = _ads_pos_for(family)
 	_build_ads_dot()
+	# BB-1c: a recipe swap can change the optic family — (re)build/bind
+	# the lens rig for the new viewmodel, or park it if ACOG went away.
+	if _optic == "acog":
+		_setup_lens_pip()
+	else:
+		_set_lens_active(false)
 
 
 func attach(p_player: Node, p_camera: Camera3D) -> void:
@@ -277,6 +301,7 @@ func on_equip() -> void:
 ## Called by WeaponManager when switching away: park the viewmodel back on
 ## the weapon node and hide it so only the active gun renders.
 func on_unequip() -> void:
+	_set_lens_active(false) # BB-1c: never render the lens for a parked gun
 	_lowering = false
 	_burst_left = 0
 	_reload_stage = _ReloadStage.NONE
@@ -360,6 +385,123 @@ func _build_ads_dot() -> void:
 	dot.visible = false
 	_viewmodel.add_child(dot)
 	_ads_dot = dot
+
+
+# --- BB-1c: ACOG picture-in-picture lens --------------------------------
+# The rig is a SubViewport + Camera3D owned by the weapon. The camera
+# copies the main camera's transform every frame and uses its CURRENT
+# fov / LENS_EXTRA_ZOOM (pinned 1.5), so the lens picture is a
+# magnified centre crop of exactly what the player sees — the sight
+# axis stays the shot axis. Separation is by render layer: the ACOG
+# viewmodel subtree moves to LENS_LAYER, the main camera keeps its
+# default all-layer mask (portal cameras copy it, unchanged), and the
+# lens camera's mask excludes that layer — it renders the world, never
+# the gun or the disc itself. The viewport renders ONLY while the lens
+# is up (equipped + ADS blend > 0.5); at hip the disc falls back to
+# the shader's BB-1b glass look.
+
+func _setup_lens_pip() -> void:
+	if _optic != "acog" or _viewmodel == null:
+		return
+	_apply_viewmodel_layer(_viewmodel)
+	if _lens_viewport == null:
+		_lens_viewport = SubViewport.new()
+		_lens_viewport.name = "AcogLensViewport"
+		_lens_viewport.size = Vector2i(LENS_VIEWPORT_SIZE, LENS_VIEWPORT_SIZE)
+		_lens_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		add_child(_lens_viewport)
+		_lens_camera = Camera3D.new()
+		_lens_camera.name = "AcogLensCamera"
+		# Every layer EXCEPT the viewmodel layer.
+		_lens_camera.cull_mask = 0xFFFFF & ~(1 << (LENS_LAYER - 1))
+		_lens_camera.near = 0.05
+		_lens_camera.far = 500.0
+		_lens_viewport.add_child(_lens_camera)
+		_lens_camera.current = true
+	_bind_lens_screen()
+
+
+func _apply_viewmodel_layer(node: Node) -> void:
+	if node is GeometryInstance3D:
+		(node as GeometryInstance3D).layers = 1 << (LENS_LAYER - 1)
+	for child in node.get_children():
+		_apply_viewmodel_layer(child)
+
+
+func _bind_lens_screen() -> void:
+	_lens_screen = null
+	_lens_mat = null
+	if _viewmodel == null or _lens_viewport == null:
+		return
+	var disc := _viewmodel.get_node_or_null("AcogPipScreen") as MeshInstance3D
+	if disc == null:
+		return
+	_lens_screen = disc
+	_lens_mat = disc.material_override as ShaderMaterial
+	if _lens_mat != null:
+		_lens_mat.set_shader_parameter("lens_tex", _lens_viewport.get_texture())
+
+
+func _set_lens_active(active: bool) -> void:
+	if _lens_viewport == null:
+		_lens_active = false
+		return
+	if active == _lens_active:
+		return
+	_lens_active = active
+	_lens_viewport.render_target_update_mode = \
+		SubViewport.UPDATE_ALWAYS if active else SubViewport.UPDATE_DISABLED
+
+
+## BB-1c: sight-anchor position in camera space -> lens UV swim.
+## The anchor's angular offset from the eye axis IS the eye
+## misalignment: x right / y up in camera space become a UV offset
+## with y flipped (texture v grows downward). Pure + static so the
+## ADS verify can pin the conversion without a renderer.
+static func lens_eye_offset_for(local_sight: Vector3) -> Vector2:
+	if local_sight.z > -0.05:
+		return Vector2.ZERO
+	var ang := Vector2(local_sight.x, local_sight.y) / -local_sight.z
+	return (Vector2(ang.x, -ang.y) * LENS_PARALLAX_GAIN).limit_length(LENS_PARALLAX_MAX)
+
+
+func _tick_lens_pip() -> void:
+	if _lens_viewport == null:
+		return
+	var equipped := _camera != null and _viewmodel != null \
+		and _viewmodel.get_parent() == _camera
+	_set_lens_active(equipped and _ads_blend > 0.5)
+	if _lens_mat != null:
+		var strength := 0.0
+		if equipped:
+			strength = clampf((_ads_blend - 0.5) / 0.4, 0.0, 1.0)
+		_lens_mat.set_shader_parameter("pip_strength", strength)
+		var off := Vector2.ZERO
+		if _camera != null and _viewmodel != null:
+			var sight := _viewmodel.get_node_or_null("Sight") as Marker3D
+			if sight != null:
+				var local := _camera.global_transform.affine_inverse() \
+					* sight.global_position
+				off = lens_eye_offset_for(local)
+		_lens_mat.set_shader_parameter("eye_offset", off)
+	if _lens_active and _camera != null:
+		_lens_camera.global_transform = _camera.global_transform
+		# Colin's pin: the lens zoom is 1.5x the FOV zoom — the lens
+		# camera's fov is the main camera's current fov / 1.5, always.
+		_lens_camera.fov = _camera.fov / LENS_EXTRA_ZOOM
+
+
+## BB-1c: verify hooks (also just useful API).
+func get_lens_viewport() -> SubViewport:
+	return _lens_viewport
+
+
+func is_lens_pip_active() -> bool:
+	return _lens_active
+
+
+func get_lens_screen() -> MeshInstance3D:
+	return _lens_screen
 
 
 func emit_ammo() -> void:
@@ -878,6 +1020,7 @@ func _process(delta: float) -> void:
 	_tick_flash(delta)
 	_tick_shells(delta)
 	_tick_sway_bob(delta)
+	_tick_lens_pip()
 
 
 func _tick_reload(delta: float) -> void:
@@ -980,8 +1123,10 @@ func _tick_sway_bob(delta: float) -> void:
 	var raise_blend := clampf(_raise_t / maxf(raise_time, 0.001), 0.0, 1.0)
 	_viewmodel.rotation = target_rot + sway * raise_blend + Vector3(_vm_kick_pitch, 0.0, 0.0)
 	# BB-1: reflex/ACOG dot appears only once the sight is mostly up.
+	# BB-1c: on the ACOG the floating dot stands down while the PiP lens
+	# is up — the in-glass reticle replaces it (no double reticles).
 	if _ads_dot != null:
-		_ads_dot.visible = _ads_blend > 0.5
+		_ads_dot.visible = _ads_blend > 0.5 and not _lens_active
 	# BB-1: at full ADS a sniper scope hands the view to the HUD scope
 	# overlay (the GLB scope is an opaque prop — there is nothing to see
 	# through it). Hide the viewmodel while scoped; it returns as the

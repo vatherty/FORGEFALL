@@ -78,3 +78,16 @@ default Regular), per-bot +-20% jitter. Measured hit rates at 25 m: 60 m/s cross
 Rookie .017 / Regular .000 / Hardened .046 / Elite .011; stationary Regular .591,
 Elite .947. verify_bot_skill 59/0. MP bot fill + zombies/TD enemies untouched (legacy
 paths preserved). Round-2 (BB-6a/6b, BB-1b, BB-7, BB-8) integrated on the merged tree.
+- [x] BB-1c ACOG LENS (Colin's spec): KEEP the full-screen FOV zoom on ADS (that's how
+      you get closer to the gun) AND add a zoom + parallax effect on the ACOG lens
+      itself — magnified picture-in-picture inside the glass (PINNED by Colin: lens zoom = 1.5x the 3x FOV zoom, i.e. sub-camera fov = main ADS fov / 1.5, 4.5x effective), reticle in the glass,
+      eye-relief parallax + scope shadow. BR-3 only for now.
+
+BB-1c done: ACOG PiP lens (weapon_base.gd rig + arsenal.gd disc + acog_lens.gdshader).
+Full-screen 3x FOV zoom untouched; lens sub-camera fov = main fov / LENS_EXTRA_ZOOM
+(pinned 1.5 by Colin; measured 1.52x in rendered frames). Reticle lives in the glass;
+parallax swim measured -13.0 px against a +0.12 eye offset while the reticle centroid
+held (639.0, 359.5); scope shadow darkens the rim with misalignment. Viewport renders
+only while br3 equipped + ADS blend > 0.5. verify_ads_alignment 135/0 headless,
+194/0 xvfb. Taste knobs for Colin: LENS_PARALLAX_GAIN (2.2), shadow factor (0.85),
+reticle weight. Device verdict pending.
