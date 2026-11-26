@@ -769,44 +769,87 @@ static func build_viewmodel(weapon_id: String, visual_info: Dictionary = {}) -> 
 	if vm != null and optic_class(weapon_id) in ["reflex", "acog"]:
 		_carve_sight_tunnel(vm, sight_anchor(weapon_id))
 		_make_optic_glass(vm)
-	# BB-1c: ACOG weapons gain the picture-in-picture lens screen inside
-	# the carved tunnel (Colin: keep the 3x FOV zoom AND "a zoom and
-	# parallax effect on the lens as well"). The disc itself is inert —
-	# WeaponBase owns the lens camera rig, binds the viewport texture
-	# and drives the shader (pip_strength / eye_offset). With no rig
-	# bound it renders as BB-1b glass, so standalone builds (verifies,
-	# Studio previews) keep the see-through tunnel.
-	if vm != null and optic_class(weapon_id) == "acog":
-		_add_acog_pip_screen(vm, sight_anchor(weapon_id))
+	# BB-1c/BB-1d: glass-optic weapons gain the picture-in-picture lens
+	# screen inside the carved tunnel (BB-1c ACOG — Colin: keep the 3x
+	# FOV zoom AND "a zoom and parallax effect on the lens as well";
+	# BB-1d extends it to the reflex family — "the red dot sight needs
+	# similar treatment. Just without the zoom, just parallax"). The
+	# screen itself is inert — WeaponBase owns the lens camera rig,
+	# binds the viewport texture and drives the shader (pip_strength /
+	# eye_offset / sample_rect). With no rig bound it renders as BB-1b
+	# glass, so standalone builds (verifies, Studio previews) keep the
+	# see-through tunnel.
+	if vm != null and optic_class(weapon_id) in ["reflex", "acog"]:
+		_add_pip_screen(vm, sight_anchor(weapon_id), optic_class(weapon_id),
+			_sight_family(weapon_id))
 	return vm
 
 
-## BB-1c: the PiP screen for the BR-3's ACOG. Measured from the shipped
-## GLB (2026-11-26): the optic window ("Optic front glass") is 52x36 mm
-## at z -0.125 around the anchor (0, 0.193, -0.090); the BB-1b tunnel
-## spans z -0.145..-0.035. A 34 mm disc (the window's inner height,
-## less a bezel's width) sits at the tunnel's REAR plane, z -0.048 —
-## from the eye it overfills the window vertically and reads as the
-## scope's rear lens. The shader discards outside the circle, so a
-## quad is the whole mesh. Added AFTER the carve: the disc is the
+## BB-1c/BB-1d: PiP screen geometry per sight family, measured from
+## the shipped GLBs (2026-11-26). The screen sits at the tunnel's rear
+## plane; from the eye it overfills the window and reads as the
+## optic's rear lens. The shader discards outside the aperture, so a
+## quad is the whole mesh. Added AFTER the carve: the screen is the
 ## sight picture, not a blocker (the ADS verify's tunnel check skips
 ## it by name).
-const ACOG_PIP_SCREEN_SIZE := 0.034  # disc diameter (m)
-const ACOG_PIP_SCREEN_Z := 0.042     # rearward offset from the anchor (m)
+##   br3 (ACOG): window ("Optic front glass") 52x36 mm at z -0.125
+##     around the anchor (0, 0.193, -0.090) -> 34 mm disc (the window's
+##     inner height, less a bezel's width) at anchor + 0.042.
+##   ar7 (reflex): lens plate ("Optic lens front") 49x45 mm at
+##     z -0.154 around the anchor (0, 0.142, -0.118); plate layers at
+##     z -0.152 / -0.083 -> 40x34 mm rounded-rect screen at +0.038.
+##   smg9 (reflex): lens plate ("Red dot front lens") 48x39 mm at
+##     z -0.101 around the anchor (0, 0.147, -0.069), same 3-plate
+##     pattern -> 40x30 mm rounded-rect screen at +0.038.
+const PIP_SCREEN_SIZE := {
+	"br3": Vector2(0.034, 0.034),
+	"ar7": Vector2(0.040, 0.034),
+	"smg9": Vector2(0.040, 0.030),
+}
+const PIP_SCREEN_Z := {"br3": 0.042, "ar7": 0.038, "smg9": 0.038}
+# Fallback for mod families built on a reflex/ACOG base without their
+# own table entry (their anchor comes from the base family too).
+const PIP_SCREEN_SIZE_DEFAULT := Vector2(0.036, 0.030)
+const PIP_SCREEN_Z_DEFAULT := 0.038
 
-static func _add_acog_pip_screen(vm: Node3D, anchor: Vector3) -> void:
-	if vm.get_node_or_null("AcogPipScreen") != null:
+
+## The viewmodel node name of a family's PiP screen (WeaponBase binds
+## the lens rig by this name).
+static func pip_screen_name(optic: String) -> String:
+	return "AcogPipScreen" if optic == "acog" else "ReflexPipScreen"
+
+
+static func _add_pip_screen(vm: Node3D, anchor: Vector3, optic: String, family: String) -> void:
+	var screen_name := pip_screen_name(optic)
+	if vm.get_node_or_null(screen_name) != null:
 		return # mod weapons: the recursive base build already added it
+	var size: Vector2 = PIP_SCREEN_SIZE.get(family, PIP_SCREEN_SIZE_DEFAULT)
 	var disc := MeshInstance3D.new()
-	disc.name = "AcogPipScreen"
+	disc.name = screen_name
 	var quad := QuadMesh.new()
-	quad.size = Vector2(ACOG_PIP_SCREEN_SIZE, ACOG_PIP_SCREEN_SIZE)
+	quad.size = size
 	disc.mesh = quad
 	var mat := ShaderMaterial.new()
-	mat.shader = preload("res://assets/shaders/acog_lens.gdshader")
+	mat.shader = preload("res://assets/shaders/optic_lens.gdshader")
+	# Per-family look (see optic_lens.gdshader's header): the ACOG
+	# keeps the shader defaults (full-frame sample, cross + dot,
+	# circular aperture, 0.85 shadow); the reflex family gets the
+	# dot-only reticle in a rounded-rect aperture, a subtler shadow
+	# (open housing — the swim is the star), a chunkier dot, and a
+	# centre-crop sample_rect that WeaponBase feeds per frame (its
+	# camera runs at main fov — no zoom — so the crop is what makes
+	# the picture register 1:1 with the surrounding view).
+	if optic == "reflex":
+		mat.set_shader_parameter("reticle_style", 1)
+		mat.set_shader_parameter("aperture_shape", 1)
+		mat.set_shader_parameter("aperture_aspect", size.x / size.y)
+		mat.set_shader_parameter("corner_radius", 0.16)
+		mat.set_shader_parameter("shadow_strength", 0.45)
+		mat.set_shader_parameter("dot_radius", 0.07)
 	disc.material_override = mat
 	disc.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	disc.position = Vector3(anchor.x, anchor.y, anchor.z + ACOG_PIP_SCREEN_Z)
+	disc.position = Vector3(anchor.x, anchor.y,
+		anchor.z + float(PIP_SCREEN_Z.get(family, PIP_SCREEN_Z_DEFAULT)))
 	vm.add_child(disc)
 
 

@@ -91,3 +91,22 @@ held (639.0, 359.5); scope shadow darkens the rim with misalignment. Viewport re
 only while br3 equipped + ADS blend > 0.5. verify_ads_alignment 135/0 headless,
 194/0 xvfb. Taste knobs for Colin: LENS_PARALLAX_GAIN (2.2), shadow factor (0.85),
 reticle weight. Device verdict pending.
+- [x] BB-1d ALL OPTICS (Colin): extend the BB-1c lens treatment beyond the ACOG. The
+      red dot (reflex) sights get the same in-glass picture + parallax, but WITHOUT
+      the zoom (lens camera = main camera fov exactly, 1.0x extra) — just parallax.
+- [ ] BB-9 GRAPHICS PUSH (Colin): add ALL of it — real cascaded shadows with blocks
+      casting, per-map colour grading + LUT, glow, grit (triplanar grunge + AO),
+      decals, MSAA — behind a graphics quality tier (phones keep Low). THEN measure
+      FPS and REMOVE any major change that causes a major FPS drop. Colin's target:
+      60 fps, floor 30 fps.
+
+BB-1d done: lens rig generalised per family (weapon_base.gd). Reflex (ar7/smg9):
+extra zoom pinned 1.0 — the shader shows the lens camera's angular crop so the
+picture registers 1:1 with the world around the housing (NOT a squeezed full
+frame); dot-only reticle, rounded-rect aperture, shadow 0.45 (open housing),
+viewport 1024 (the window shows a ~5% centre crop). Measured: magnification
+1.00x both guns, swim -4.0 px, dot centroid identical centred vs offset.
+Shader renamed acog_lens -> optic_lens (uid preserved); ACOG behaviour
+unchanged (layer D passes as before). verify_ads_alignment 149/0 headless,
+244/0 xvfb. If Colin wants the ACOG-style full-frame picture in the red dot
+instead of the registered crop: one-line sample_rect change in _tick_lens_pip.

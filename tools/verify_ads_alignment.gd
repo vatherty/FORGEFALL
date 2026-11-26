@@ -43,13 +43,31 @@
 # FOV zoom is UNCHANGED, and the glass itself shows the world through
 # a second camera at main_fov / 1.5 (WeaponBase.LENS_EXTRA_ZOOM,
 # pinned 1.5), with the reticle drawn in the glass, parallax swim and
-# scope shadow (assets/shaders/acog_lens.gdshader). Layer B pins the
+# scope shadow (assets/shaders/optic_lens.gdshader). Layer B pins the
 # new pose contract for the ACOG (floating AdsDot hidden while the
 # lens is up; lens rig active) and the parallax conversion math;
 # layer D proves magnification + parallax in rendered pixels against
 # a checkerboard target and the glass fallback at hip. The BB-1b
-# tunnel check skips the AcogPipScreen disc by name: it is the sight
-# picture sitting in the tunnel by design, not a GLB blocker.
+# tunnel check skips the PipScreen quads by name: they are the sight
+# picture sitting in the tunnel by design, not GLB blockers.
+#
+# BB-1d (Colin: "Do it with all the sights not just the acog, the red
+# dot sight needs similar treatment. Just without the zoom, just
+# parallax"): the SAME rig generalised to the reflex family (ar7,
+# smg9) with the zoom pinned OFF — WeaponBase.LENS_EXTRA_ZOOM_REFLEX
+# is exactly 1.0, so the reflex lens camera's fov EQUALS the main
+# camera's fov, and the shader displays the screen's own angular crop
+# of that frame (WeaponBase.lens_sample_rect_for): the picture
+# registers 1:1 with the world around the housing (no magnification)
+# and the treatment is pure parallax — image swim + a dot-only
+# reticle in the glass, in a rounded-rect aperture fitted to each
+# measured reflex window. Layer B's pose contract extends to reflex
+# (BB-1d supersedes the BB-1 reflex dot assertion exactly as BB-1c
+# superseded the ACOG one: floating dot hidden while the lens is up),
+# layer E proves the no-zoom pin (texture-normalised magnification
+# ~1.0 AND on-screen in-window period ~ the surrounding view's),
+# parallax swim against a fixed dot, and the hip fallback, for both
+# reflex weapons.
 #
 # NOTE: game scripts are load()ed dynamically inside _process (repo
 # pattern — compile-time references fail in --script mode because the
@@ -58,6 +76,7 @@ extends SceneTree
 
 const OUT_DIR := "/tmp/ads_verify"
 const PIP_OUT := "/home/hatch/workspace/bugbash-finish/ads-audit/pip"
+const PIP_REFLEX_OUT := "/home/hatch/workspace/bugbash-finish/ads-audit/pip-reflex"
 const CENTRE := Vector2(640, 360)
 
 # Audited contract values (see Arsenal.SIGHT_ANCHOR / OPTIC_CLASS).
@@ -144,13 +163,37 @@ func _check_data() -> void:
 				break
 
 
-# ------------------------------------------------------- BB-1c lens math
-# The pinned ratio + the parallax conversion, checkable headlessly.
+# ------------------------------------------------- BB-1c/1d lens math
+# The pinned ratios + the parallax conversion, checkable headlessly.
 func _check_lens_math() -> void:
 	var src := FileAccess.get_file_as_string("res://scripts/weapons/weapon_base.gd")
 	_check(src.contains("const LENS_EXTRA_ZOOM := 1.5"),
 		"LENS_EXTRA_ZOOM pinned at exactly 1.5 (Colin's spec)")
+	_check(src.contains("const LENS_EXTRA_ZOOM_REFLEX := 1.0"),
+		"LENS_EXTRA_ZOOM_REFLEX pinned at exactly 1.0 (Colin's no-zoom spec)")
 	var WB: GDScript = load("res://scripts/weapons/weapon_base.gd")
+	_check(is_equal_approx(float(WB.call("lens_extra_zoom_for", "acog")), 1.5),
+		"lens extra zoom for acog == 1.5")
+	_check(is_equal_approx(float(WB.call("lens_extra_zoom_for", "reflex")), 1.0),
+		"lens extra zoom for reflex == 1.0 (no zoom, pure parallax)")
+	_check(bool(WB.call("has_lens_pip", "acog")) and bool(WB.call("has_lens_pip", "reflex")),
+		"acog + reflex carry the PiP lens")
+	_check(not bool(WB.call("has_lens_pip", "iron")) and not bool(WB.call("has_lens_pip", "scope"))
+		and not bool(WB.call("has_lens_pip", "none")),
+		"iron/scope/none stay out of the PiP lens (BB-1d scope limit)")
+	# BB-1d: the reflex crop — a screen centred on the axis maps to a
+	# centred rect; a 40 mm screen 0.46 m out at fov 78.26 spans
+	# 0.040 / (2 * 0.46 * tan(39.13 deg)) = 0.0533 of the frame.
+	var rect: Vector4 = WB.call("lens_sample_rect_for",
+		Vector3(0, 0, -0.46), Vector2(0.040, 0.034), 78.26)
+	_check(absf(rect.x - 0.5) < 0.001 and absf(rect.y - 0.5) < 0.001,
+		"reflex crop is centred for an on-axis screen (%s)" % rect)
+	_check(absf(rect.z - 0.0533) < 0.002 and absf(rect.w - 0.0453) < 0.002,
+		"reflex crop size is the screen's angular footprint (%s)" % rect)
+	var off_rect: Vector4 = WB.call("lens_sample_rect_for",
+		Vector3(0.046, 0.046, -0.46), Vector2(0.040, 0.034), 78.26)
+	_check(off_rect.x > 0.55 and off_rect.y < 0.45,
+		"reflex crop follows an off-axis screen (+x -> +u, +y -> -v) (%s)" % off_rect)
 	_check(WB.call("lens_eye_offset_for", Vector3(0, 0, -0.47)) == Vector2.ZERO,
 		"lens parallax offset is zero when the sight is on the eye axis")
 	var ox: Vector2 = WB.call("lens_eye_offset_for", Vector3(0.0235, 0, -0.47))
@@ -210,23 +253,21 @@ func _check_poses() -> void:
 			else:
 				_check(vm.visible, "%s viewmodel stays visible at full ADS" % id)
 			var dot := vm.get_node_or_null("AdsDot")
-			if optic == "acog":
-				# BB-1c supersedes the BB-1 dot assertion for the ACOG:
-				# at full ADS the PiP lens is up and the floating dot
-				# stands down — the in-glass reticle replaces it.
+			if optic in ["acog", "reflex"]:
+				# BB-1c superseded the BB-1 dot assertion for the ACOG,
+				# BB-1d extends the same contract to reflex: at full
+				# ADS the PiP lens is up and the floating dot stands
+				# down — the in-glass reticle replaces it.
 				_check(dot != null and not (dot as MeshInstance3D).visible,
-					"%s acog: AdsDot present but hidden while the PiP lens is up" % id)
+					"%s %s: AdsDot present but hidden while the PiP lens is up" % [id, optic])
 				_check(bool(w.call("is_lens_pip_active")),
-					"%s acog: PiP lens active at full ADS" % id)
+					"%s %s: PiP lens active at full ADS" % [id, optic])
 				var lvp: Variant = w.call("get_lens_viewport")
 				_check(lvp != null and (lvp as SubViewport).render_target_update_mode
 					== SubViewport.UPDATE_ALWAYS,
-					"%s acog: lens viewport rendering at full ADS" % id)
+					"%s %s: lens viewport rendering at full ADS" % [id, optic])
 				_check(w.call("get_lens_screen") != null,
-					"%s acog: lens screen bound to the rig" % id)
-			elif optic == "reflex":
-				_check(dot != null and (dot as MeshInstance3D).visible,
-					"%s %s: AdsDot present + visible at full ADS" % [id, optic])
+					"%s %s: lens screen bound to the rig" % [id, optic])
 			else:
 				_check(dot == null, "%s %s: no AdsDot for non-dot optic" % [id, optic])
 		w.call("on_unequip")
@@ -262,9 +303,9 @@ func _check_glass() -> void:
 		var meshes: Array = []
 		_collect_meshes(vm, meshes)
 		for mi in meshes:
-			# BB-1c: the PiP screen sits IN the tunnel by design — it
-			# IS the sight picture, not a GLB blocker.
-			if (mi as MeshInstance3D).name == "AcogPipScreen":
+			# BB-1c/BB-1d: the PiP screens sit IN the tunnel by design
+			# — they ARE the sight picture, not GLB blockers.
+			if (mi as MeshInstance3D).name.contains("PipScreen"):
 				continue
 			var mesh := (mi as MeshInstance3D).mesh
 			if mesh == null:
@@ -393,6 +434,7 @@ func _check_rendered() -> void:
 	for c in cases:
 		await _render_case(player, manager, camera, hud, str(c[0]), str(c[1]), str(c[2]))
 	await _check_pip(player, manager, camera, panel)
+	await _check_pip_reflex(player, manager, camera, panel)
 	stage.queue_free()
 	await process_frame
 
@@ -631,6 +673,195 @@ func _check_pip(player: Node, manager: Node, camera: Camera3D, panel: MeshInstan
 	hip.save_png(PIP_OUT + "/pip_hip.png")
 	hip.save_png(OUT_DIR + "/pip_hip.png")
 	board.queue_free()
+
+
+# ------------------------------------------------- E. BB-1d reflex PiP
+# The reflex treatment, proven per weapon (ar7, smg9) against a fine
+# checkerboard (0.2 m cells — ~9 px per cell at the reflex ADS fov, in
+# the main frame and in the window alike):
+#   * the no-zoom pin: lens camera fov == main camera fov, and the
+#     texture-normalised magnification (the BB-1c method) is ~1.0;
+#   * registration: the on-screen checker period INSIDE the window
+#     matches the period in the surrounding main view (~1:1);
+#   * parallax: a small driven eye_offset swims the in-window image
+#     against the offset while the in-glass dot holds its place, and
+#     a large offset visibly darkens the aperture rim (subtle shadow);
+#   * hip: viewport parked, shader back to glass.
+func _check_pip_reflex(player: Node, manager: Node, camera: Camera3D, panel: MeshInstance3D) -> void:
+	DirAccess.make_dir_recursive_absolute(PIP_REFLEX_OUT)
+	panel.visible = false
+	await _wait_frames(2) # let _check_pip's board finish freeing
+	var board := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(8, 4, 0.1)
+	board.mesh = bm
+	var bimg := Image.create(800, 400, false, Image.FORMAT_RGB8)
+	for y in 400:
+		for x in 800:
+			var cell := (x / 20 + y / 20) % 2
+			bimg.set_pixel(x, y, Color(0.95, 0.95, 0.95) if cell == 0 else Color(0.05, 0.05, 0.05))
+	var bmat := StandardMaterial3D.new()
+	bmat.albedo_texture = ImageTexture.create_from_image(bimg)
+	bmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	board.material_override = bmat
+	board.position = Vector3(0, camera.global_position.y, -11.55)
+	player.get_parent().add_child(board)
+	await _wait_frames(3)
+	for id in ["ar7", "smg9"]:
+		await _pip_reflex_case(player, manager, camera, id)
+	board.queue_free()
+
+
+func _pip_reflex_case(player: Node, manager: Node, camera: Camera3D, id: String) -> void:
+	manager.call("equip_loadout", "ar7", "p9")
+	manager.call("switch_to", "primary")
+	manager.call("set_slot", "primary", id)
+	var equipped := await _wait_until(func() -> bool: return _weapon_is(manager, id), 5000)
+	_check(equipped, "%s reflex PiP case: weapon equipped" % id)
+	var weapon: Variant = manager.call("current_weapon")
+	if weapon == null:
+		return
+	Input.action_press("ads")
+	var settled := await _wait_until(
+		func() -> bool: return _ads_settled(player, weapon, camera, 1.15), 6000)
+	_check(settled, "%s reflex PiP case: ADS settles (full-screen reflex zoom intact)" % id)
+	await _wait_frames(6) # let the lens viewport render real frames
+	await RenderingServer.frame_post_draw
+	var frame := root.get_texture().get_image()
+	frame.save_png(PIP_REFLEX_OUT + "/pip_reflex_%s_ads.png" % id)
+	frame.save_png(OUT_DIR + "/pip_reflex_%s_ads.png" % id)
+
+	var lvp: SubViewport = weapon.call("get_lens_viewport")
+	_check(lvp != null, "%s reflex PiP: lens viewport exists" % id)
+	if lvp == null:
+		Input.action_release("ads")
+		return
+	_check(lvp.size == Vector2i(1024, 1024),
+		"%s reflex PiP: lens viewport at the reflex size (%s)" % [id, lvp.size])
+	var lcam := lvp.get_child(0) as Camera3D
+	_check(lcam != null and absf(lcam.fov - camera.fov) < 0.6,
+		"%s reflex PiP: lens camera fov == main fov (%.2f vs %.2f) — no zoom (Colin's pin)"
+			% [id, lcam.fov if lcam != null else -1.0, camera.fov])
+	# No-zoom, texture-normalised (the BB-1c method): the lens frame
+	# and the main frame must show the same checker at the same scale.
+	var tex_img := lvp.get_texture().get_image()
+	var period_tex := _stripe_period_v(tex_img, tex_img.get_width() / 2, 300, 724)
+	var period_main := _stripe_period_v(frame, 560, 150, 570)
+	_check(period_tex > 0.0 and period_main > 0.0,
+		"%s reflex PiP: checker period measurable (lens tex %.1f px, main %.1f px)"
+			% [id, period_tex, period_main])
+	if period_tex > 0.0 and period_main > 0.0:
+		var mag := (period_tex / float(tex_img.get_height())) / (period_main / 720.0)
+		_check(mag > 0.90 and mag < 1.10,
+			"%s reflex PiP: in-lens magnification %.2f ~= 1.0x (no-zoom pin)" % [id, mag])
+	# Registration on screen: the period inside the window matches
+	# the surrounding view's — the picture is the world at 1:1.
+	var disc: MeshInstance3D = weapon.call("get_lens_screen")
+	_check(disc != null, "%s reflex PiP: lens screen bound in the rendered case" % id)
+	if disc == null:
+		Input.action_release("ads")
+		return
+	var rect := _project_rect(camera, disc)
+	# Registration is read on the HORIZONTAL period: the window is
+	# only ~2 checker cells tall, but ~2 cells wide too — pooled over
+	# its rows the horizontal spacings are plentiful and clean.
+	var win_period := _region_period_h(frame, rect)
+	var main_period_h := _region_period_h(frame, Rect2(500, 298, 110, 34))
+	_check(win_period > 0.0 and main_period_h > 0.0
+		and win_period / main_period_h > 0.70 and win_period / main_period_h < 1.40,
+		"%s reflex PiP: on-screen window period %.1f px ~ main view %.1f px (1:1 registration)"
+			% [id, win_period, main_period_h])
+	var transitions := _row_transitions(frame, int((rect.position.y + rect.end.y) * 0.5) - 6,
+		int(rect.position.x) + 4, int(rect.end.x) - 4)
+	_check(transitions >= 2,
+		"%s reflex PiP: world visible inside the window (%d transitions across the aperture)"
+			% [id, transitions])
+	# The in-glass dot sits at the window's centre (= screen centre).
+	var ret_a := _red_centroid_in(frame, rect)
+	_check(ret_a.x >= 0.0 and (ret_a - CENTRE).length() <= 4.0,
+		"%s reflex PiP: in-glass dot at centre (centroid %s)" % [id, ret_a])
+	# Parallax: freeze the weapon so the test owns the shader param.
+	weapon.set_process(false)
+	var mat := disc.material_override as ShaderMaterial
+	var row := int((rect.position.y + rect.end.y) * 0.5) - 8 # above the dot
+	var ix0 := int(rect.position.x + rect.size.x * 0.2)
+	var ix1 := int(rect.end.x - rect.size.x * 0.2)
+	var profile_a := _row_profile(frame, row, ix0, ix1)
+	# The reflex scope shadow is deliberately subtle and lives at the
+	# aperture edge — measured on the rect's outer ring (the quad
+	# rect is tight to the aperture, so the ring IS the edge band).
+	var ring_a := _ring_lum(frame, rect)
+	mat.set_shader_parameter("eye_offset", Vector2(0.005, 0.0))
+	await _wait_frames(3)
+	await RenderingServer.frame_post_draw
+	var frame_b := root.get_texture().get_image()
+	frame_b.save_png(PIP_REFLEX_OUT + "/pip_reflex_%s_offset.png" % id)
+	frame_b.save_png(OUT_DIR + "/pip_reflex_%s_offset.png" % id)
+	var shift := _profile_shift(profile_a, _row_profile(frame_b, row, ix0, ix1))
+	_check(shift <= -2.0,
+		"%s reflex PiP: parallax — in-window image swims against the eye offset (shift %.1f px)"
+			% [id, shift])
+	var ret_b := _red_centroid_in(frame_b, rect)
+	_check(ret_a.x >= 0.0 and ret_b.x >= 0.0 and (ret_a - ret_b).length() <= 2.0,
+		"%s reflex PiP: parallax — dot stays fixed in the glass (A %s, B %s)" % [id, ret_a, ret_b])
+	# Scope shadow: a big offset must measurably darken the aperture
+	# edge (subtle by design on the open reflex housing — but present).
+	mat.set_shader_parameter("eye_offset", Vector2(0.12, 0.0))
+	await _wait_frames(3)
+	await RenderingServer.frame_post_draw
+	var frame_c := root.get_texture().get_image()
+	var ring_c := _ring_lum(frame_c, rect)
+	_check(ring_c < ring_a * 0.95,
+		"%s reflex PiP: scope shadow darkens the aperture edge when misaligned (ring lum %.3f -> %.3f)"
+			% [id, ring_a, ring_c])
+	mat.set_shader_parameter("eye_offset", Vector2.ZERO)
+	weapon.set_process(true)
+	# Hip: lens stands down — viewport not updating, shader back to glass.
+	Input.action_release("ads")
+	var released := await _wait_until(
+		func() -> bool: return float(weapon.call("get_ads_blend")) < 0.05, 4000)
+	_check(released, "%s reflex PiP case: ADS releases" % id)
+	await _wait_frames(3)
+	_check(not bool(weapon.call("is_lens_pip_active")),
+		"%s reflex PiP: lens inactive at hip" % id)
+	_check(lvp.render_target_update_mode == SubViewport.UPDATE_DISABLED,
+		"%s reflex PiP: lens viewport NOT updating at hip" % id)
+	_check(float(mat.get_shader_parameter("pip_strength")) < 0.05,
+		"%s reflex PiP: shader back to the glass fallback at hip (strength %.2f)"
+			% [id, float(mat.get_shader_parameter("pip_strength"))])
+	await RenderingServer.frame_post_draw
+	var hip := root.get_texture().get_image()
+	hip.save_png(PIP_REFLEX_OUT + "/pip_reflex_%s_hip.png" % id)
+	hip.save_png(OUT_DIR + "/pip_reflex_%s_hip.png" % id)
+
+
+# BB-1d: pooled horizontal checker period over a screen region —
+# the reflex window is small (~40x33 px, barely 2 cells tall), so a
+# single line yields too few clean spacings. Pool the spacings of
+# every row in the rect (skipping the in-glass dot's own rows around
+# screen centre) and average.
+func _region_period_h(img: Image, rect: Rect2) -> float:
+	var spacings: Array = []
+	var x0 := int(rect.position.x) + 2
+	var x1 := int(rect.end.x) - 2
+	for y in range(int(rect.position.y) + 2, int(rect.end.y) - 2, 2):
+		if absf(y - CENTRE.y) < 5.0:
+			continue # the in-glass dot lives here
+		var edges: Array = []
+		var prev := _lum(img.get_pixel(x0, y)) > 0.5
+		for x in range(x0 + 1, x1):
+			var cur := _lum(img.get_pixel(x, y)) > 0.5
+			if cur != prev:
+				edges.append(x)
+				prev = cur
+		for i in range(1, edges.size()):
+			spacings.append(float(edges[i] - edges[i - 1]))
+	if spacings.size() < 6:
+		return -1.0
+	var sum := 0.0
+	for s in spacings:
+		sum += s
+	return sum / float(spacings.size())
 
 
 # Mean spacing (px) of luminance transitions down a column — one

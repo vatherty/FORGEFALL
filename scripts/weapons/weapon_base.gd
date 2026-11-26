@@ -39,17 +39,51 @@ const HIP_ROT := Vector3(0.0, -0.07, 0.0)
 const ADS_ROT := Vector3.ZERO
 const MAX_HITSCAN_RANGE := 400.0
 const MOVE_SPREAD_REF_SPEED := 6.0  # speed (m/s) at which move penalty maxes
-# BB-1c ACOG PiP lens (Colin: the full-screen 3x FOV zoom STAYS, and the
-# lens glass gets "a zoom and parallax effect" on top). A second camera
-# renders the world into the ACOG's lens disc; its FOV is the main
-# camera's CURRENT fov divided by LENS_EXTRA_ZOOM — pinned by Colin at
-# exactly 1.5 ("The zoom on the acog lens should only be 1.5x the fov
-# zoom 3x"), i.e. 4.5x total vs the hip view at full ADS.
+# BB-1c/BB-1d optic PiP lens (BB-1c ACOG — Colin: the full-screen 3x
+# FOV zoom STAYS, and the lens glass gets "a zoom and parallax effect"
+# on top; BB-1d — "Do it with all the sights not just the acog, the
+# red dot sight needs similar treatment. Just without the zoom, just
+# parallax"). A second camera renders the world into the optic's lens
+# screen; its FOV is the main camera's CURRENT fov divided by the
+# family's extra zoom:
+#   ACOG   — LENS_EXTRA_ZOOM, pinned by Colin at exactly 1.5 ("The
+#            zoom on the acog lens should only be 1.5x the fov zoom
+#            3x"), i.e. 4.5x total vs the hip view at full ADS.
+#   reflex — LENS_EXTRA_ZOOM_REFLEX, pinned at exactly 1.0: the lens
+#            camera matches the main camera, NO extra zoom; the
+#            shader shows the screen's own angular crop of that frame
+#            so the picture registers 1:1 with the surrounding view
+#            and the treatment is pure parallax.
 const LENS_EXTRA_ZOOM := 1.5
-const LENS_VIEWPORT_SIZE := 512     # square lens render target (px)
+const LENS_EXTRA_ZOOM_REFLEX := 1.0
+const LENS_VIEWPORT_SIZE := 512     # square lens render target, ACOG (px)
+const LENS_VIEWPORT_SIZE_REFLEX := 1024 # reflex: the window shows a small
+                                        # centre crop of the frame, so the
+                                        # frame needs the extra resolution
 const LENS_LAYER := 20              # viewmodel-only render layer (bit 19)
 const LENS_PARALLAX_GAIN := 2.2     # lens UV swim per radian of eye misalignment
 const LENS_PARALLAX_MAX := 0.16     # UV clamp for the swim
+
+
+## BB-1d: which optic classes carry the PiP lens (irons have no glass;
+## the lr8 scope has its own HUD-overlay treatment — both untouched).
+static func has_lens_pip(optic: String) -> bool:
+	return optic in ["acog", "reflex"]
+
+
+## BB-1d: the family's pinned lens extra zoom (see the constants).
+static func lens_extra_zoom_for(optic: String) -> float:
+	match optic:
+		"acog":
+			return LENS_EXTRA_ZOOM
+		"reflex":
+			return LENS_EXTRA_ZOOM_REFLEX
+	return 1.0
+
+
+## BB-1d: the family's lens render-target size (square, px).
+static func lens_viewport_size_for(optic: String) -> int:
+	return LENS_VIEWPORT_SIZE_REFLEX if optic == "reflex" else LENS_VIEWPORT_SIZE
 #endregion
 
 enum FireMode { AUTO, SEMI, BOLT, PUMP, BURST }
@@ -129,10 +163,10 @@ var _lowering: bool = false
 var _ads_pos := ADS_POS # per-weapon ADS target; = -Arsenal.sight_anchor(id) (x+y), ADS_POS.z
 var _optic := "iron"    # BB-1: Arsenal.optic_class(weapon_id) — zoom/scope/dot behaviour
 var _ads_dot: MeshInstance3D = null # BB-1: projected dot for reflex/ACOG sights
-# BB-1c: ACOG PiP lens rig (ACOG only; null for every other optic).
+# BB-1c/BB-1d: PiP lens rig (ACOG + reflex families; null otherwise).
 var _lens_viewport: SubViewport = null
 var _lens_camera: Camera3D = null
-var _lens_screen: MeshInstance3D = null # the viewmodel's AcogPipScreen disc
+var _lens_screen: MeshInstance3D = null # the viewmodel's PipScreen quad
 var _lens_mat: ShaderMaterial = null
 var _lens_active := false           # viewport rendering + picture up
 var _ads: bool = false
@@ -242,12 +276,15 @@ func set_visual_recipe(info: Dictionary) -> void:
 	_optic = Arsenal.optic_class(family)
 	_ads_pos = _ads_pos_for(family)
 	_build_ads_dot()
-	# BB-1c: a recipe swap can change the optic family — (re)build/bind
-	# the lens rig for the new viewmodel, or park it if ACOG went away.
-	if _optic == "acog":
+	# BB-1c/BB-1d: a recipe swap can change the optic family —
+	# (re)build/bind the lens rig for the new viewmodel, or park it
+	# (and drop the stale screen binding) if the lens went away.
+	if has_lens_pip(_optic):
 		_setup_lens_pip()
 	else:
 		_set_lens_active(false)
+		_lens_screen = null
+		_lens_mat = null
 
 
 func attach(p_player: Node, p_camera: Camera3D) -> void:
@@ -387,37 +424,46 @@ func _build_ads_dot() -> void:
 	_ads_dot = dot
 
 
-# --- BB-1c: ACOG picture-in-picture lens --------------------------------
-# The rig is a SubViewport + Camera3D owned by the weapon. The camera
-# copies the main camera's transform every frame and uses its CURRENT
-# fov / LENS_EXTRA_ZOOM (pinned 1.5), so the lens picture is a
-# magnified centre crop of exactly what the player sees — the sight
-# axis stays the shot axis. Separation is by render layer: the ACOG
-# viewmodel subtree moves to LENS_LAYER, the main camera keeps its
-# default all-layer mask (portal cameras copy it, unchanged), and the
-# lens camera's mask excludes that layer — it renders the world, never
-# the gun or the disc itself. The viewport renders ONLY while the lens
-# is up (equipped + ADS blend > 0.5); at hip the disc falls back to
-# the shader's BB-1b glass look.
+# --- BB-1c/BB-1d: optic picture-in-picture lens -------------------------
+# One rig, shared by both glass families (the ACOG of BB-1c and the
+# reflex/red-dot family of BB-1d): a SubViewport + Camera3D owned by
+# the weapon. The camera copies the main camera's transform every
+# frame and uses its CURRENT fov / the family's pinned extra zoom
+# (ACOG 1.5, reflex 1.0 — no zoom), so the lens picture is exactly
+# what the player sees and the sight axis stays the shot axis.
+# Separation is by render layer: the PiP viewmodel subtree moves to
+# LENS_LAYER, the main camera keeps its default all-layer mask
+# (portal cameras copy it, unchanged), and the lens camera's mask
+# excludes that layer — it renders the world, never the gun or the
+# screen itself. The viewport renders ONLY while the lens is up
+# (equipped + ADS blend > 0.5 + a screen bound); at hip the screen
+# falls back to the shader's BB-1b glass look. The two families
+# differ only in parameters: extra zoom, render-target size, and the
+# shader's sample_rect (ACOG: the full frame; reflex: the screen's
+# angular crop, fed per frame by _lens_sample_rect).
 
 func _setup_lens_pip() -> void:
-	if _optic != "acog" or _viewmodel == null:
+	if not has_lens_pip(_optic) or _viewmodel == null:
 		return
 	_apply_viewmodel_layer(_viewmodel)
 	if _lens_viewport == null:
 		_lens_viewport = SubViewport.new()
-		_lens_viewport.name = "AcogLensViewport"
-		_lens_viewport.size = Vector2i(LENS_VIEWPORT_SIZE, LENS_VIEWPORT_SIZE)
+		_lens_viewport.name = "OpticLensViewport"
 		_lens_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 		add_child(_lens_viewport)
 		_lens_camera = Camera3D.new()
-		_lens_camera.name = "AcogLensCamera"
+		_lens_camera.name = "OpticLensCamera"
 		# Every layer EXCEPT the viewmodel layer.
 		_lens_camera.cull_mask = 0xFFFFF & ~(1 << (LENS_LAYER - 1))
 		_lens_camera.near = 0.05
 		_lens_camera.far = 500.0
 		_lens_viewport.add_child(_lens_camera)
 		_lens_camera.current = true
+	# One shared viewport across families; its size is the family's
+	# (the reflex crop needs the resolution, the ACOG doesn't).
+	var want := lens_viewport_size_for(_optic)
+	if _lens_viewport.size != Vector2i(want, want):
+		_lens_viewport.size = Vector2i(want, want)
 	_bind_lens_screen()
 
 
@@ -433,7 +479,7 @@ func _bind_lens_screen() -> void:
 	_lens_mat = null
 	if _viewmodel == null or _lens_viewport == null:
 		return
-	var disc := _viewmodel.get_node_or_null("AcogPipScreen") as MeshInstance3D
+	var disc := _viewmodel.get_node_or_null(Arsenal.pip_screen_name(_optic)) as MeshInstance3D
 	if disc == null:
 		return
 	_lens_screen = disc
@@ -465,12 +511,37 @@ static func lens_eye_offset_for(local_sight: Vector3) -> Vector2:
 	return (Vector2(ang.x, -ang.y) * LENS_PARALLAX_GAIN).limit_length(LENS_PARALLAX_MAX)
 
 
+## BB-1d: the reflex family's sample_rect — the screen's own angular
+## footprint in the lens frame. The reflex lens camera runs at the
+## main camera's fov (extra zoom 1.0, Colin's no-zoom pin), so the
+## region of that frame the window should show is exactly the region
+## the window itself subtends from the eye: projecting the screen's
+## centre + size through the lens camera's own projection gives a
+## picture that registers 1:1 with the world seen around the housing
+## — no magnification, pure parallax (the eye_offset swim rides on
+## top, as on the ACOG). Pure function of the screen's camera-space
+## position/size and the lens fov; the ACOG never calls this (its
+## sample_rect stays the full frame — its zoom IS the extra fov).
+static func lens_sample_rect_for(local_centre: Vector3, size: Vector2, fov_deg: float) -> Vector4:
+	var dist := maxf(-local_centre.z, 0.05)
+	var tan_v := tan(deg_to_rad(fov_deg) * 0.5)
+	# Square lens frame: horizontal fov == vertical fov.
+	var span := 2.0 * dist * tan_v # frame width/height at the screen's depth
+	return Vector4(
+		0.5 + local_centre.x / span,
+		0.5 - local_centre.y / span,
+		clampf(size.x / span, 0.01, 1.0),
+		clampf(size.y / span, 0.01, 1.0))
+
+
 func _tick_lens_pip() -> void:
 	if _lens_viewport == null:
 		return
 	var equipped := _camera != null and _viewmodel != null \
 		and _viewmodel.get_parent() == _camera
-	_set_lens_active(equipped and _ads_blend > 0.5)
+	# A bound screen is what makes this viewmodel a lens at all (a
+	# recipe swap can park the rig on a lens-less family).
+	_set_lens_active(equipped and _ads_blend > 0.5 and _lens_screen != null)
 	if _lens_mat != null:
 		var strength := 0.0
 		if equipped:
@@ -484,14 +555,25 @@ func _tick_lens_pip() -> void:
 					* sight.global_position
 				off = lens_eye_offset_for(local)
 		_lens_mat.set_shader_parameter("eye_offset", off)
+		# BB-1d: the reflex picture is the screen's angular crop of
+		# the (unzoomed) lens frame, recomputed per frame so it
+		# tracks the ADS fov ramp; the ACOG's stays the full frame.
+		if _optic == "reflex" and _lens_screen != null and _camera != null:
+			var qm := (_lens_screen as MeshInstance3D).mesh as QuadMesh
+			if qm != null:
+				var centre := _camera.global_transform.affine_inverse() \
+					* _lens_screen.global_position
+				_lens_mat.set_shader_parameter("sample_rect",
+					lens_sample_rect_for(centre, qm.size, _camera.fov))
 	if _lens_active and _camera != null:
 		_lens_camera.global_transform = _camera.global_transform
-		# Colin's pin: the lens zoom is 1.5x the FOV zoom — the lens
-		# camera's fov is the main camera's current fov / 1.5, always.
-		_lens_camera.fov = _camera.fov / LENS_EXTRA_ZOOM
+		# Colin's pins: the ACOG lens zoom is 1.5x the FOV zoom (the
+		# lens camera's fov is the main camera's current fov / 1.5,
+		# always); the reflex lens adds NO zoom (fov == main fov).
+		_lens_camera.fov = _camera.fov / lens_extra_zoom_for(_optic)
 
 
-## BB-1c: verify hooks (also just useful API).
+## BB-1c/BB-1d: verify hooks (also just useful API).
 func get_lens_viewport() -> SubViewport:
 	return _lens_viewport
 
@@ -1123,8 +1205,9 @@ func _tick_sway_bob(delta: float) -> void:
 	var raise_blend := clampf(_raise_t / maxf(raise_time, 0.001), 0.0, 1.0)
 	_viewmodel.rotation = target_rot + sway * raise_blend + Vector3(_vm_kick_pitch, 0.0, 0.0)
 	# BB-1: reflex/ACOG dot appears only once the sight is mostly up.
-	# BB-1c: on the ACOG the floating dot stands down while the PiP lens
-	# is up — the in-glass reticle replaces it (no double reticles).
+	# BB-1c/BB-1d: on a PiP optic (ACOG, reflex) the floating dot stands
+	# down while the lens is up — the in-glass reticle replaces it (no
+	# double reticles).
 	if _ads_dot != null:
 		_ads_dot.visible = _ads_blend > 0.5 and not _lens_active
 	# BB-1: at full ADS a sniper scope hands the view to the HUD scope
