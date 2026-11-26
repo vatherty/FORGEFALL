@@ -4,6 +4,7 @@ const Store = preload("res://shared/document_store.gd")
 const Asset = preload("res://shared/asset_document.gd")
 const Mesher = preload("res://shared/voxel_mesh.gd")
 const History = preload("res://command_history.gd")
+const McpServer = preload("res://mcp_server.gd")
 
 var project_path := ""
 var map_doc: Dictionary = {}
@@ -59,6 +60,7 @@ var map_dialog: FileDialog
 var asset_dialog: FileDialog
 var recovery_dialog: ConfirmationDialog
 var autosave_timer: Timer
+var mcp_server: Node
 
 func _ready() -> void:
 	settings.load("user://studio_settings.cfg")
@@ -75,6 +77,7 @@ func _ready() -> void:
 	autosave_timer.autostart = true
 	autosave_timer.timeout.connect(_autosave)
 	add_child(autosave_timer)
+	_setup_mcp_server()
 
 func _build_ui() -> void:
 	var studio_theme := Theme.new()
@@ -99,6 +102,8 @@ func _build_ui() -> void:
 		_button(toolbar, "Behaviors", _open_behavior_workspace)
 		_button(toolbar, "Content", _open_content_workshop)
 	_button(toolbar, "AI Assist", _open_ai_assistant)
+	if not OS.has_feature("web"):
+		_button(toolbar, "MCP: Off", _toggle_mcp_server)
 	_button(toolbar, "Undo", _undo)
 	_button(toolbar, "Redo", _redo)
 	_button(toolbar, "+ Block", _add_block)
@@ -587,6 +592,8 @@ func _button(parent: Node, caption: String, action: Callable) -> void:
 		button.add_to_group("mode_toggle")
 	if caption.begins_with("Gizmo:"):
 		button.add_to_group("gizmo_toggle")
+	if caption.begins_with("MCP:"):
+		button.add_to_group("mcp_toggle")
 	parent.add_child(button)
 
 func _label(value: String) -> Label:
@@ -716,6 +723,57 @@ func _open_ai_assistant() -> void:
 	assistant.editor = self
 	add_child(assistant)
 	assistant.popup_centered()
+
+# --- MCP server (Studio as an MCP endpoint for external AI agents) ----------
+
+func _setup_mcp_server() -> void:
+	_ensure_mcp_server()
+	_update_mcp_button()
+	# Agent-driven sessions can opt in via the environment: setting
+	# FORGEFALL_STUDIO_MCP_PORT also auto-starts the server on launch.
+	if OS.get_environment("FORGEFALL_STUDIO_MCP_PORT").strip_edges() != "":
+		var error: Error = mcp_server.start(_mcp_port())
+		if error != OK:
+			push_warning("MCP server failed to auto-start on port %d: %s" % [_mcp_port(), error_string(error)])
+		_update_mcp_button()
+		if mcp_server.is_running():
+			status.text = _mcp_on_message()
+
+func _ensure_mcp_server() -> void:
+	if mcp_server == null:
+		mcp_server = McpServer.new()
+		mcp_server.editor = self
+		add_child(mcp_server)
+
+func _mcp_port() -> int:
+	var env := OS.get_environment("FORGEFALL_STUDIO_MCP_PORT").strip_edges()
+	if env.is_valid_int():
+		var parsed := int(env)
+		if parsed > 0 and parsed <= 65535:
+			return parsed
+	return clampi(int(settings.get_value("workspace", "mcp_port", 8772)), 1, 65535)
+
+func _mcp_on_message() -> String:
+	return "MCP server on http://127.0.0.1:%d/mcp — any local MCP client can edit the open map" % mcp_server.port()
+
+func _toggle_mcp_server() -> void:
+	_ensure_mcp_server()
+	if mcp_server.is_running():
+		mcp_server.stop()
+		status.text = "MCP server off."
+	else:
+		var error: Error = mcp_server.start(_mcp_port())
+		if error != OK:
+			status.text = "MCP server failed to start on port %d: %s" % [_mcp_port(), error_string(error)]
+		else:
+			status.text = _mcp_on_message()
+	_update_mcp_button()
+
+func _update_mcp_button() -> void:
+	var running: bool = mcp_server != null and mcp_server.is_running()
+	for child in get_tree().get_nodes_in_group("mcp_toggle"):
+		if child is Button:
+			child.text = "MCP: On :%d" % mcp_server.port() if running else "MCP: Off"
 
 func _open_web_map() -> void:
 	if web_map_window != null and is_instance_valid(web_map_window):

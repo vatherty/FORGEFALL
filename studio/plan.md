@@ -66,6 +66,22 @@ The stage owner should report changed files, commands and results, visual eviden
 
 ## 6. AI and completion — live provider proven 2026-11-25; Deck input + Web parity remain
 
+MCP server mode + adapter removal (2026-11-26, at Colin's direction): Studio itself is
+now an MCP server (studio/mcp_server.gd): off by default, enabled from the toolbar
+("MCP: On :8772") or auto-started with FORGEFALL_STUDIO_MCP_PORT, bound to 127.0.0.1,
+Streamable HTTP, protocol 2025-03-26. External agents (Muse, Codex, any MCP
+client — e.g. running on a subscription instead of a bought API key) get six tools:
+studio_get_state, studio_list_instances, studio_get_map, studio_apply_actions (through
+the same validated, one-undo parse_response/_apply path as AI Assist),
+studio_capture_view (viewport image), studio_save. Guide: tools/STUDIO_MCP.md;
+proof: studio/verify_mcp.gd (in-editor HTTP client, headless + real renderer) plus an
+external Python MCP client drive against an env-autostarted Studio.
+REMOVED the same day: tools/studio_ai_adapter.py and tools/AI_PROVIDERS.md and the
+Deck's adapter service — Colin retired the adapter (the provider-general build remains
+in git history at e37a1b5). Studio's AI Assist window is endpoint-agnostic and now
+expects an external endpoint speaking the proposal schema; verify_ai_live remains as
+that endpoint contract's test.
+
 Provider generalization (2026-11-26): the adapter is no longer DeepSeek-only. A
 FORGEFALL_AI_CONFIG JSON file selects the provider: "openai" (any OpenAI-compatible
 chat-completions API), "anthropic" (any Anthropic-compatible Messages API), "mcp"
