@@ -93,16 +93,19 @@ func _run_checks() -> void:
 		_check(env.ambient_light_energy > 0.3,
 			"ambient fill present (energy %.2f, shadowed sides not black)" % env.ambient_light_energy)
 		_check(not env.glow_enabled, "glow/bloom OFF (no expensive post-processing)")
-		# BB-6 (2026-11-26): the panorama gradient was fog-washed into a
-		# featureless peach void on every map; Dustline now uses its named
-		# ProceduralSkyMaterial profile (sun disc + generated cloud cover).
-		# Per-map distinctness for all maps lives in verify_skies.gd.
-		_check(env.sky != null and env.sky.sky_material is ProceduralSkyMaterial,
-			"per-map procedural sky (BB-6, not the old panorama wash)")
-		if env.sky != null and env.sky.sky_material is ProceduralSkyMaterial:
-			var proc := env.sky.sky_material as ProceduralSkyMaterial
-			_check(proc.sky_cover != null,
-				"sky has a cover texture (cloud structure, not a bare gradient)")
+		# BB-6 (2026-11-26) killed the fog-washed gradient panorama; the
+		# sky is now a REAL photographic skybox per Colin's direction —
+		# Dustline uses the Belfast Sunset photo (Poly Haven, CC0) in a
+		# PanoramaSkyMaterial. Per-map distinctness for all maps lives in
+		# verify_skies.gd; provenance in assets/skies/SOURCES.md.
+		_check(env.sky != null and env.sky.sky_material is PanoramaSkyMaterial,
+			"per-map photographic sky (PanoramaSkyMaterial, not a gradient)")
+		if env.sky != null and env.sky.sky_material is PanoramaSkyMaterial:
+			var pano := env.sky.sky_material as PanoramaSkyMaterial
+			_check(pano.panorama != null
+				and pano.panorama.resource_path.ends_with("dustline_sky.jpg"),
+				"sky carries the Dustline photo texture (got %s)" % (
+					pano.panorama.resource_path if pano.panorama != null else "<none>"))
 
 	# 4. Emissive glow boosted, no shadow cost from glow/city.
 	var glow := _map.get_node_or_null("GlowVoxels") as MultiMeshInstance3D

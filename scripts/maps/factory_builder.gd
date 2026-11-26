@@ -147,7 +147,7 @@ func _ready() -> void:
 	_unit_box = BoxMesh.new()
 	_unit_box.size = Vector3.ONE
 
-	_build_environment(0.0095, Vector3(-40, -32, 0), "factory")  # hazier than Foundry: interior factory air
+	_build_environment(0.0095, Vector3(-23, -33, 0), "factory")  # hazier than Foundry: interior factory air; light aimed at the overcast bright patch (az 33, el 23)
 	_build_ground()
 	_build_perimeter(ARENA_HALF, 5.0, 5.0)
 	_build_spine()

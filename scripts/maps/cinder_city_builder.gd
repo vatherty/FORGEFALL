@@ -201,7 +201,7 @@ func _ready() -> void:
 	_unit_box = BoxMesh.new()
 	_unit_box.size = Vector3.ONE
 
-	_build_environment(0.0042, Vector3(-30, -32, 0), "cinder_city")  # clearer air than Dustline: 130 m sightlines; low smoky sun
+	_build_environment(0.0042, Vector3(-12, -36, 0), "cinder_city")  # clearer air than Dustline: 130 m sightlines; sun aimed at the Camdeboo photo sun (az 36, el 2.6 -> pitch clamped to 12)
 	_build_ground()
 	_build_perimeter(ARENA_HALF, 5.0, 6.0)
 	var bi := 0

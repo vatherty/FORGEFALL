@@ -205,9 +205,10 @@ func _build_environment() -> void:
 	# BB-6 (2026-11-26): was a private copy of the shared dusk gradient
 	# panorama — the sky that fog washed into a featureless peach void on
 	# every map. Dustline now uses the shared "dustline" sky profile
-	# (MapBuilderBase statics): ProceduralSkyMaterial with a low orange
-	# sun disc + streaky dusk clouds. Fog density stays Dustline's 0.0075:
-	# the far wall (~70 m) is lightly hazed, gameplay ranges (<35 m) clear.
+	# (MapBuilderBase statics): a real photographic skybox — Belfast
+	# Sunset (Poly Haven, CC0) — with the sun light aimed at the photo's
+	# sun. Fog density stays Dustline's 0.0075: the far wall (~70 m) is
+	# lightly hazed, gameplay ranges (<35 m) clear.
 	var profile := MapBuilderBase.sky_profile("dustline")
 	var we := WorldEnvironment.new()
 	we.name = "WorldEnvironment"
@@ -217,7 +218,7 @@ func _build_environment() -> void:
 	var sun := DirectionalLight3D.new()
 	sun.name = "Sun"
 	sun.position = Vector3(0, 40, 0)  # centers the tight ortho shadow box
-	sun.rotation_degrees = Vector3(-30, -38, 0)  # BB-6: low sunset (was -48: high sun, no disc in view)
+	sun.rotation_degrees = Vector3(-12, -40, 0)  # aimed at the Belfast photo sun (az 40, el 2.4 -> pitch clamped to 12 so shadows stay readable)
 	sun.light_color = profile["sun_color"]
 	sun.light_energy = profile["sun_energy"]
 	# Shadows: single ortho cascade, tight 90 m box around the 70 m arena

@@ -47,7 +47,7 @@ func _ready() -> void:
 	_unit_box = BoxMesh.new()
 	_unit_box.size = Vector3.ONE
 
-	_build_environment(0.005, Vector3(-56, -40, 0), "outpost")  # clearer air than Dustline: long sightlines, higher bluer sun
+	_build_environment(0.005, Vector3(-43, -36, 0), "outpost")  # clearer air than Dustline: long sightlines; sun aimed at the Kloofendal clear-day photo sun (az 36, el 43)
 	_build_ground()
 	_build_perimeter(ARENA_HALF, 3.0, 4.0)
 	_build_towers()

@@ -56,7 +56,7 @@ func _ready() -> void:
 	_unit_box = BoxMesh.new()
 	_unit_box.size = Vector3.ONE
 
-	_build_environment(0.006, Vector3(-42, -32, 0), "tower_defense")
+	_build_environment(0.006, Vector3(-14, -73, 0), "tower_defense")  # light aimed at the Citrus Orchard glow (az 73, el 14; sun itself is behind the cloud deck)
 	_build_ground()
 	_build_perimeter(ARENA_HALF, 3.0, 4.2)
 	_build_lanes()

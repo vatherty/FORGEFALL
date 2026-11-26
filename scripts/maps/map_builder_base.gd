@@ -107,156 +107,72 @@ func _wall(center: Vector3, size: Vector3, color: Color) -> void:
 
 
 # ------------------------------------------------------------------ skies
-# BB-6 (2026-11-26): every map used to share ONE environment — a 5-stop
-# gradient panorama that fog (fog_sky_affect 0.5, warm fog colour) washed
-# into a featureless peach void on every map: no sun disc, no structure,
-# no identity (see sky-audit/AUDIT.md). Now each map gets a named sky
-# profile: a ProceduralSkyMaterial (real sun/moon disc that tracks the
-# map's DirectionalLight3D, per-map colours) plus a generated sky_cover
-# texture (streaky dusk clouds, or a star field for the zombies night).
-# One fullscreen sky pass + one texture fetch: cheaper than the old
-# panorama, glow stays OFF, one shadowed sun stays the rule.
+# BB-6 (2026-11-26) killed the shared gradient panorama that fog washed
+# into a featureless peach void on every map, and gave each map a named
+# procedural profile. Colin then asked for the real thing: "an actual
+# skybox that's copyright free" — so every profile now points at a REAL
+# photographic sky (Poly Haven, CC0 / public domain; see
+# assets/skies/SOURCES.md for provenance + conversion details).
+# make_sky_material() wraps the map's equirect JPG in a
+# PanoramaSkyMaterial; fog colour is sampled programmatically from the
+# texture's horizon band (sun-core-trimmed mean, linear) so the horizon
+# seam stays invisible, and each builder aims its DirectionalLight3D at
+# the sun/moon position estimated from the HDR's brightest region, so
+# shadows agree with the visible sun. Glow stays OFF, one shadowed sun
+# stays the rule.
 const SKY_PROFILES := {
 	"dustline": {
-		"top": Color(0.145, 0.09, 0.30), "horizon": Color(0.98, 0.44, 0.15),
-		"ground_horizon": Color(0.42, 0.25, 0.15), "ground_bottom": Color(0.07, 0.045, 0.04),
-		"sky_curve": 0.12, "ground_curve": 0.04, "sun_angle_max": 14.0, "sun_curve": 0.35,
-		"energy": 1.0, "fog_color": Color(0.92, 0.50, 0.26), "scatter": 0.15, "sky_affect": 0.25,
-		"sun_color": Color(1.0, 0.66, 0.42), "sun_energy": 1.30, "ambient_energy": 0.55,
-		"exposure": 1.1, "cover": "clouds", "cover_modulate": Color(1.0, 0.74, 0.52, 0.50),
+		"texture": "res://assets/skies/dustline_sky.jpg",
+		"fog_color": Color(0.435, 0.408, 0.430), "scatter": 0.15, "sky_affect": 0.25,
+		"sun_color": Color(1.0, 0.72, 0.50), "sun_energy": 1.30, "ambient_energy": 0.55,
+		"exposure": 1.1,
 	},
 	"cinder_city": {
-		"top": Color(0.16, 0.07, 0.17), "horizon": Color(0.82, 0.24, 0.09),
-		"ground_horizon": Color(0.28, 0.13, 0.09), "ground_bottom": Color(0.05, 0.03, 0.03),
-		"sky_curve": 0.13, "ground_curve": 0.04, "sun_angle_max": 20.0, "sun_curve": 0.12,
-		"energy": 0.95, "fog_color": Color(0.62, 0.30, 0.19), "scatter": 0.10, "sky_affect": 0.25,
-		"sun_color": Color(0.95, 0.50, 0.32), "sun_energy": 1.25, "ambient_energy": 0.55,
-		"exposure": 1.05, "cover": "clouds", "cover_modulate": Color(0.42, 0.28, 0.26, 0.60),
+		"texture": "res://assets/skies/cinder_city_sky.jpg",
+		"fog_color": Color(0.364, 0.309, 0.171), "scatter": 0.10, "sky_affect": 0.25,
+		"sun_color": Color(1.0, 0.73, 0.51), "sun_energy": 1.25, "ambient_energy": 0.55,
+		"exposure": 1.05,
 	},
 	"factory": {
-		"top": Color(0.20, 0.16, 0.23), "horizon": Color(0.72, 0.47, 0.29),
-		"ground_horizon": Color(0.30, 0.22, 0.16), "ground_bottom": Color(0.06, 0.05, 0.045),
-		"sky_curve": 0.14, "ground_curve": 0.04, "sun_angle_max": 18.0, "sun_curve": 0.18,
-		"energy": 0.95, "fog_color": Color(0.66, 0.50, 0.36), "scatter": 0.12, "sky_affect": 0.25,
-		"sun_color": Color(0.98, 0.72, 0.50), "sun_energy": 1.10, "ambient_energy": 0.55,
-		"exposure": 1.05, "cover": "clouds", "cover_modulate": Color(0.62, 0.56, 0.50, 0.55),
+		"texture": "res://assets/skies/factory_sky.jpg",
+		"fog_color": Color(0.460, 0.476, 0.505), "scatter": 0.05, "sky_affect": 0.25,
+		"sun_color": Color(1.0, 0.94, 0.88), "sun_energy": 0.85, "ambient_energy": 0.65,
+		"exposure": 1.05,
 	},
 	"foundry": {
-		"top": Color(0.14, 0.09, 0.17), "horizon": Color(0.85, 0.36, 0.13),
-		"ground_horizon": Color(0.33, 0.18, 0.11), "ground_bottom": Color(0.05, 0.035, 0.03),
-		"sky_curve": 0.13, "ground_curve": 0.04, "sun_angle_max": 15.0, "sun_curve": 0.25,
-		"energy": 0.97, "fog_color": Color(0.78, 0.44, 0.24), "scatter": 0.13, "sky_affect": 0.25,
-		"sun_color": Color(1.0, 0.62, 0.38), "sun_energy": 1.25, "ambient_energy": 0.55,
-		"exposure": 1.08, "cover": "clouds", "cover_modulate": Color(0.55, 0.42, 0.36, 0.55),
+		"texture": "res://assets/skies/foundry_sky.jpg",
+		"fog_color": Color(0.703, 0.683, 0.648), "scatter": 0.13, "sky_affect": 0.25,
+		"sun_color": Color(1.0, 0.58, 0.37), "sun_energy": 1.25, "ambient_energy": 0.55,
+		"exposure": 1.08,
 	},
 	"outpost": {
-		"top": Color(0.16, 0.30, 0.55), "horizon": Color(0.92, 0.60, 0.34),
-		"ground_horizon": Color(0.40, 0.30, 0.20), "ground_bottom": Color(0.07, 0.06, 0.05),
-		"sky_curve": 0.11, "ground_curve": 0.04, "sun_angle_max": 10.0, "sun_curve": 0.50,
-		"energy": 1.05, "fog_color": Color(0.85, 0.58, 0.38), "scatter": 0.15, "sky_affect": 0.22,
-		"sun_color": Color(1.0, 0.85, 0.66), "sun_energy": 1.50, "ambient_energy": 0.70,
-		"exposure": 1.1, "cover": "clouds", "cover_modulate": Color(1.0, 0.92, 0.82, 0.35),
+		"texture": "res://assets/skies/outpost_sky.jpg",
+		"fog_color": Color(0.217, 0.253, 0.298), "scatter": 0.15, "sky_affect": 0.22,
+		"sun_color": Color(1.0, 0.97, 0.92), "sun_energy": 1.50, "ambient_energy": 0.70,
+		"exposure": 1.1,
 	},
 	"tower_defense": {
-		"top": Color(0.17, 0.11, 0.33), "horizon": Color(0.96, 0.46, 0.16),
-		"ground_horizon": Color(0.40, 0.24, 0.14), "ground_bottom": Color(0.07, 0.045, 0.04),
-		"sky_curve": 0.12, "ground_curve": 0.04, "sun_angle_max": 12.0, "sun_curve": 0.40,
-		"energy": 1.0, "fog_color": Color(0.90, 0.52, 0.28), "scatter": 0.15, "sky_affect": 0.25,
-		"sun_color": Color(1.0, 0.70, 0.46), "sun_energy": 1.35, "ambient_energy": 0.60,
-		"exposure": 1.1, "cover": "clouds", "cover_modulate": Color(1.0, 0.72, 0.50, 0.45),
+		"texture": "res://assets/skies/tower_defense_sky.jpg",
+		"fog_color": Color(0.345, 0.389, 0.429), "scatter": 0.10, "sky_affect": 0.25,
+		"sun_color": Color(1.0, 0.72, 0.53), "sun_energy": 1.10, "ambient_energy": 0.60,
+		"exposure": 1.1,
 	},
 	"zombies_night": {
-		"top": Color(0.012, 0.020, 0.050), "horizon": Color(0.050, 0.075, 0.120),
-		"ground_horizon": Color(0.030, 0.040, 0.070), "ground_bottom": Color(0.008, 0.010, 0.020),
-		"sky_curve": 0.10, "ground_curve": 0.03, "sun_angle_max": 5.0, "sun_curve": 0.80,
-		"energy": 1.0, "fog_color": Color(0.050, 0.070, 0.110), "scatter": 0.03, "sky_affect": 0.20,
-		"sun_color": Color(0.60, 0.72, 1.0), "sun_energy": 0.50, "ambient_energy": 0.60,
-		"exposure": 1.05, "cover": "stars", "cover_modulate": Color(1.0, 1.0, 1.0, 1.0),
+		"texture": "res://assets/skies/zombies_flat_sky.jpg",
+		"fog_color": Color(0.008, 0.006, 0.006), "scatter": 0.03, "sky_affect": 0.20,
+		"sun_color": Color(0.60, 0.68, 1.0), "sun_energy": 0.50, "ambient_energy": 0.50,
+		"exposure": 1.05,
 	},
 }
-
-static var _sky_cover_cache: Dictionary = {}
 
 
 static func sky_profile(profile_name: String) -> Dictionary:
 	return SKY_PROFILES.get(profile_name, SKY_PROFILES["dustline"])
 
 
-# Generated once per process, shared by every map: horizontal streaks of
-# value noise in an equirect band above the horizon (v 0.05..0.47; v=0 is
-# the zenith, 0.5 the horizon). Alpha carries the coverage.
-static func _cloud_cover_texture() -> Texture2D:
-	if _sky_cover_cache.has("clouds"):
-		return _sky_cover_cache["clouds"]
-	var w := 512
-	var h := 256
-	var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
-	var n1 := FastNoiseLite.new()
-	n1.seed = 20261
-	n1.frequency = 1.0
-	n1.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	var n2 := FastNoiseLite.new()
-	n2.seed = 7741
-	n2.frequency = 1.0
-	n2.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	for y in h:
-		var v := float(y) / float(h - 1)
-		var band := smoothstep(0.04, 0.16, v) * (1.0 - smoothstep(0.30, 0.46, v))
-		if band <= 0.001:
-			continue
-		for x in w:
-			var streak := n1.get_noise_2d(float(x) * 0.022, float(y) * 0.14) * 0.65 				+ n2.get_noise_2d(float(x) * 0.055 + 300.0, float(y) * 0.34) * 0.35
-			var a := clampf((streak - 0.10) * 1.6, 0.0, 1.0) * band * 0.9
-			if a > 0.003:
-				img.set_pixel(x, y, Color(1.0, 0.93, 0.85, a))
-	var tex := ImageTexture.create_from_image(img)
-	_sky_cover_cache["clouds"] = tex
-	return tex
-
-
-# Star field for the night profile: fixed-seed random points, alpha =
-# brightness, only above the horizon (v < 0.47). A handful of brighter
-# 2 px stars for depth.
-static func _star_cover_texture() -> Texture2D:
-	if _sky_cover_cache.has("stars"):
-		return _sky_cover_cache["stars"]
-	var w := 1024
-	var h := 512
-	var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0, 0, 0, 0))
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 424242
-	for i in 1500:
-		var x := rng.randi_range(0, w - 1)
-		var y := int(pow(rng.randf(), 1.35) * float(h) * 0.46)
-		var b := rng.randf_range(0.30, 1.0)
-		img.set_pixel(x, y, Color(b, b, b, b))
-		if i % 11 == 0 and x + 1 < w:
-			img.set_pixel(x + 1, y, Color(b * 0.7, b * 0.7, b * 0.7, b * 0.7))
-	var tex := ImageTexture.create_from_image(img)
-	_sky_cover_cache["stars"] = tex
-	return tex
-
-
-static func make_sky_material(profile: Dictionary) -> ProceduralSkyMaterial:
-	var smat := ProceduralSkyMaterial.new()
-	smat.sky_top_color = profile["top"]
-	smat.sky_horizon_color = profile["horizon"]
-	smat.sky_curve = profile["sky_curve"]
-	smat.sky_energy_multiplier = profile["energy"]
-	smat.ground_bottom_color = profile["ground_bottom"]
-	smat.ground_horizon_color = profile["ground_horizon"]
-	smat.ground_curve = profile["ground_curve"]
-	smat.ground_energy_multiplier = profile["energy"]
-	smat.sun_angle_max = profile["sun_angle_max"]
-	smat.sun_curve = profile["sun_curve"]
-	match str(profile.get("cover", "")):
-		"clouds":
-			smat.sky_cover = _cloud_cover_texture()
-			smat.sky_cover_modulate = profile["cover_modulate"]
-		"stars":
-			smat.sky_cover = _star_cover_texture()
-			smat.sky_cover_modulate = profile["cover_modulate"]
+static func make_sky_material(profile: Dictionary) -> PanoramaSkyMaterial:
+	var smat := PanoramaSkyMaterial.new()
+	smat.panorama = load(str(profile["texture"])) as Texture2D
 	return smat
 
 

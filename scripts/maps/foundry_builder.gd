@@ -48,7 +48,7 @@ func _ready() -> void:
 	_unit_box = BoxMesh.new()
 	_unit_box.size = Vector3.ONE
 
-	_build_environment(0.009, Vector3(-38, -32, 0), "foundry")  # slightly hazier than Dustline: interior air
+	_build_environment(0.009, Vector3(-12, -36, 0), "foundry")  # slightly hazier than Dustline: interior air; sun aimed at the Qwantani photo sun (az 36, el 6 -> pitch clamped to 12)
 	_build_ground()
 	_build_perimeter(ARENA_HALF, 4.2, 5.2)
 	_build_partitions()

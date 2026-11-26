@@ -21,3 +21,9 @@ Colin's verdict: "team death match is actually kinda good" — movement feels gr
       Colin links this to BB-5: no visual references/distractions in the environment
       makes movement feel floatier. (Recon: a shared dusk gradient sky exists in
       map_builder_base for all maps — audit what it actually renders as.)
+      FOLLOW-UP 2026-11-26 (Colin: "an actual skybox that's copyright free"): the
+      procedural skies were replaced with REAL photographic skyboxes from Poly
+      Haven (CC0) — see assets/skies/SOURCES.md. Per-map photos, sun/moon lights
+      aimed from the HDRs, fog sampled from each texture's horizon band;
+      verify_skies updated to the PanoramaSkyMaterial contract, captures in
+      sky-audit/real-after/.

@@ -55,7 +55,7 @@ func _ready() -> void:
 	_unit_box = BoxMesh.new()
 	_unit_box.size = Vector3.ONE
 
-	_build_environment(0.006, Vector3(-35, -32, 0), "zombies_night")  # BB-6: zombies is a night map — moon + stars, not dusk
+	_build_environment(0.006, Vector3(-34, 11, 0), "zombies_night")  # zombies is a night map: real Rogland night photo (Milky Way + stars); dim blue light aimed at its brightest region (az -11, el 34) as the moon stand-in
 	_build_ground()
 	_build_perimeter(ARENA_HALF, 2.5, 3.0)
 	_build_crate_clusters()

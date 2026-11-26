@@ -1,22 +1,24 @@
-# verify_skies.gd — BB-6 per-map sky checks.
+# verify_skies.gd — per-map sky checks (real photographic skyboxes).
 # Usage:
 #   godot --headless --path . --script res://tools/verify_skies.gd
 #   xvfb-run godot --path . --script res://tools/verify_skies.gd
 #
 # Headless: instantiates every map scene and asserts each produces a
-# WorldEnvironment whose sky is a ProceduralSkyMaterial with a cover
-# texture (clouds/stars), a fog colour matched to the profile, exactly
-# one DirectionalLight3D, and a sky configuration signature that differs
-# from every other map's (no two maps share an identical sky).
+# WorldEnvironment whose sky is a PanoramaSkyMaterial carrying a real
+# photographic equirect texture (Poly Haven, CC0 — see
+# assets/skies/SOURCES.md), that the texture file exists and differs
+# from every other map's, glow stays OFF, fog_sky_affect stays < 0.5,
+# exactly one DirectionalLight3D exists, and the full sky signature
+# (texture + fog + sun) differs from every other map's.
 #
-# With a real renderer it ALSO re-captures the BB-6 audit viewpoints
+# With a real renderer it ALSO re-captures the standard audit viewpoints
 # (player spawn, eye height, horizon shot + 22-degree sky shot) into
-# ~/workspace/bugbash-finish/sky-audit/after/ and prints the average
+# ~/workspace/bugbash-finish/sky-audit/real-after/ and prints the average
 # frame time per map as a rough sky-cost sanity check.
 extends SceneTree
 
 const MAPS := ["dustline", "foundry", "factory", "outpost", "cinder_city", "tower_defense", "zombies_flat"]
-const AFTER_DIR := "/home/hatch/workspace/bugbash-finish/sky-audit/after"
+const AFTER_DIR := "/home/hatch/workspace/bugbash-finish/sky-audit/real-after"
 
 var _fails := 0
 
@@ -39,6 +41,7 @@ func run() -> void:
 		root.size = Vector2i(960, 540)
 		DirAccess.make_dir_recursive_absolute(AFTER_DIR)
 	var signatures := {}
+	var textures := {}
 	for key in MAPS:
 		var arena := Node3D.new()
 		arena.name = "Arena_" + key
@@ -57,13 +60,22 @@ func run() -> void:
 		if we != null and we.environment != null:
 			var env := we.environment
 			_check(env.background_mode == Environment.BG_SKY, key + ": background is sky")
-			_check(env.sky != null and env.sky.sky_material is ProceduralSkyMaterial,
-				key + ": sky material is ProceduralSkyMaterial (not the old panorama)")
+			_check(env.sky != null and env.sky.sky_material is PanoramaSkyMaterial,
+				key + ": sky material is PanoramaSkyMaterial (real photo skybox)")
 			_check(not env.glow_enabled, key + ": glow stays OFF")
 			_check(env.fog_sky_affect < 0.5, key + ": fog_sky_affect %.2f < 0.5 (no peach wash)" % env.fog_sky_affect)
-			if env.sky != null and env.sky.sky_material is ProceduralSkyMaterial:
-				var m := env.sky.sky_material as ProceduralSkyMaterial
-				_check(m.sky_cover != null, key + ": sky has cover texture (clouds/stars)")
+			if env.sky != null and env.sky.sky_material is PanoramaSkyMaterial:
+				var m := env.sky.sky_material as PanoramaSkyMaterial
+				_check(m.panorama != null, key + ": panorama texture is set")
+				if m.panorama != null:
+					var tp := m.panorama.resource_path
+					_check(tp != "" and ResourceLoader.exists(tp),
+						key + ": panorama texture file exists (" + tp + ")")
+					if textures.has(tp):
+						_check(false, key + ": panorama texture COLLIDES with " + str(textures[tp]))
+					else:
+						textures[tp] = key
+						_check(true, key + ": panorama texture distinct (" + tp + ")")
 				var sun := _find_sun(arena)
 				_check(sun != null, key + ": exactly the shared sun exists")
 				var sig := _signature(m, env, sun)
@@ -85,11 +97,11 @@ func run() -> void:
 	quit(1 if _fails > 0 else 0)
 
 
-func _signature(m: ProceduralSkyMaterial, env: Environment, sun: DirectionalLight3D) -> String:
+func _signature(m: PanoramaSkyMaterial, env: Environment, sun: DirectionalLight3D) -> String:
 	var parts := [
-		m.sky_top_color, m.sky_horizon_color, m.ground_bottom_color, m.ground_horizon_color,
-		m.sky_curve, m.ground_curve, m.sun_angle_max, m.sun_curve, m.sky_energy_multiplier,
-		m.sky_cover_modulate, env.fog_light_color, env.fog_density,
+		m.panorama.resource_path if m.panorama != null else "<none>",
+		env.fog_light_color, env.fog_density, env.fog_sky_affect,
+		env.ambient_light_energy, env.tonemap_exposure,
 	]
 	if sun != null:
 		parts.append(sun.light_color)
