@@ -66,6 +66,19 @@ The stage owner should report changed files, commands and results, visual eviden
 
 ## 6. AI and completion — live provider proven 2026-11-25; Deck input + Web parity remain
 
+Provider generalization (2026-11-26): the adapter is no longer DeepSeek-only. A
+FORGEFALL_AI_CONFIG JSON file selects the provider: "openai" (any OpenAI-compatible
+chat-completions API), "anthropic" (any Anthropic-compatible Messages API), "mcp"
+(any Model Context Protocol server, stdio or HTTP, exposing a chat-style tool), or
+"deepseek-cli" (the original connector shell-out, still the default with no config).
+Keys come from a key file / env var / config and are never logged; images are sent in
+each API's native shape; grounding is provider-independent. Wiring guide with worked
+examples: tools/AI_PROVIDERS.md. The Steam Deck service now runs the "openai" provider
+against api.deepseek.com with Colin's own key file (~/forgefall-ai/), text + vision
+proves green on the Deck; both API shapes and both MCP transports are covered by mock
+servers in testing, and the MCP argument contract (prompt / system / image_data_url /
+model) is documented in AI_PROVIDERS.md.
+
 Vision wiring and gizmo anchoring (2026-11-26): AI Assist is now multimodal end to end. The
 DeepSeek CLI accepts images (--image-file / --image-data-url; deepseek-flash is natively
 multimodal since V4.1), the adapter passes image_data_url through (validated, 8 MiB cap)
