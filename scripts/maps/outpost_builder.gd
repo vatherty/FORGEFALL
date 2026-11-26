@@ -49,6 +49,8 @@ func _ready() -> void:
 
 	_build_environment(0.005, Vector3(-43, -36, 0), "outpost")  # clearer air than Dustline: long sightlines; sun aimed at the Kloofendal clear-day photo sun (az 36, el 43)
 	_build_ground()
+	_build_ground_apron(C_DIRT)  # BB-7: ground runs to the horizon (no visible world edge)
+	set_play_bounds(AABB(Vector3(-75, -10, -75), Vector3(150, 70, 150)))  # BB-7: combat area = arena (half 55) + 20 m grace
 	_build_perimeter(ARENA_HALF, 3.0, 4.0)
 	_build_towers()
 	_build_water_tower(Vector3(34, 0, -34))
@@ -242,12 +244,39 @@ func _build_dressing() -> void:
 
 
 func _build_city() -> void:
-	for i in 44:
-		var ang := float(i) / 44.0 * TAU + _rng.randf_range(-0.05, 0.05)
-		var r := _rng.randf_range(88, 118)  # BB-6: was 130-190, where fog left only pale ghosts
-		var bw := _rng.randf_range(8, 20)
-		var bh := _rng.randf_range(10, 45)
-		var bd := _rng.randf_range(8, 20)
-		var shade := _rng.randf_range(0.8, 1.3)
-		_c(Vector3(cos(ang) * r, bh * 0.5 - 2.0, sin(ang) * r), Vector3(bw, bh, bd),
-			Color(0.085 * shade, 0.07 * shade, 0.13 * shade))
+	# BB-6b (2026-11-26): was the shared BUILDING skyline ring — same
+	# mismatch Colin flagged on Dustline. Outpost is a remote DESERT
+	# outpost (berms, rock outcrops, watchtowers); a city skyline around
+	# it makes no sense. Replaced with flat-topped MESA silhouettes in
+	# two layers, sun-bleached rock colours for the clear-day sky, the
+	# far layer blended toward the fog colour. (The multimesh node keeps
+	# its DistantCity name; other tools look it up.)
+	var mesa_cols := [Color(0.320, 0.220, 0.145), Color(0.350, 0.240, 0.150),
+		Color(0.290, 0.200, 0.135)]
+	for i in 14:
+		var ang := float(i) / 14.0 * TAU + _rng.randf_range(-0.08, 0.08)
+		var r := _rng.randf_range(95, 125)
+		var bw := _rng.randf_range(24, 48)
+		var bh := _rng.randf_range(6, 13)
+		var bd := _rng.randf_range(14, 24)
+		var col: Color = mesa_cols[_rng.randi_range(0, mesa_cols.size() - 1)] \
+			* _rng.randf_range(0.85, 1.15)
+		var rot := -ang + _rng.randf_range(-0.12, 0.12)
+		var pos := Vector3(cos(ang) * r, bh * 0.5 - 2.0, sin(ang) * r)
+		_c(pos, Vector3(bw, bh, bd), col, rot)
+		if _rng.randf() < 0.5:
+			var cap_h := _rng.randf_range(2.0, 3.5)
+			_c(pos + Vector3(0, bh * 0.5 + cap_h * 0.5, 0),
+				Vector3(bw * _rng.randf_range(0.55, 0.75), cap_h,
+					bd * _rng.randf_range(0.6, 0.8)),
+				col * 1.12, rot)
+	for i in 9:
+		var ang := float(i) / 9.0 * TAU + _rng.randf_range(-0.1, 0.1) + 0.35
+		var r := _rng.randf_range(130, 160)
+		var bw := _rng.randf_range(38, 64)
+		var bh := _rng.randf_range(5, 9)
+		var bd := _rng.randf_range(18, 28)
+		var col: Color = mesa_cols[_rng.randi_range(0, mesa_cols.size() - 1)] \
+			.lerp(Color(0.217, 0.253, 0.298), 0.40) * _rng.randf_range(0.9, 1.1)
+		_c(Vector3(cos(ang) * r, bh * 0.5 - 2.0, sin(ang) * r),
+			Vector3(bw, bh, bd), col, -ang + _rng.randf_range(-0.12, 0.12))

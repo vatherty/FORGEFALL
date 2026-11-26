@@ -117,6 +117,16 @@ const JETPACK_FUEL_REGEN := 25.0  # fuel/sec, grounded only (4 s to refill)
 const JETPACK_MAX_BURN := 2.5  # sec of continuous thrust before the latch
 # cuts thrust until jump is released (or the player lands). Binds before
 # the tank empties, so burn time — not fuel — is the per-burst cap.
+# --- OUT OF BOUNDS (BB-7, Colin's spec: Black Ops 3 / Battlefield) ---
+# Cross the map's combat-area AABB (map_play_bounds group, registered by
+# the map builders) and a countdown starts; get back inside before it
+# expires or die. The death is a suicide through the normal _die() path
+# (modes respawn the player exactly like a combat death) with NO kill
+# credit anywhere: it never passes through take_damage / register_kill.
+# Falling out of the world is instant death regardless of the timer.
+const OOB_COUNTDOWN := 10.0      # seconds outside before the world kills you
+const OOB_KILL_DROP := 25.0      # below bounds min.y by this = fell out, die now
+const OOB_FALL_DEATH_Y := -100.0 # absolute kill floor on maps with no bounds
 #endregion
 
 #region SIGNALS
@@ -127,6 +137,7 @@ signal landed(hard: bool)
 signal ads_changed(active: bool)
 signal sprint_changed(active: bool)
 signal class_changed(class_id: String)
+signal oob_changed(active: bool, seconds_left: float)
 #endregion
 
 @onready var head: Node3D = $Head
@@ -199,6 +210,14 @@ var ability_scores := DnDTypes.default_ability_scores()
 var _class_max_hp := MAX_HP
 var _second_wind_used := false
 var _was_on_floor := true
+# --- BB-7: out-of-bounds state (see OOB_* constants). Bounds are read
+# from the map node in group "map_play_bounds" (builders register via
+# set_play_bounds); no provider = no countdown, kill floor only.
+var _oob_active := false
+var _oob_left := 0.0
+var _bounds := AABB()
+var _bounds_valid := false
+var _bounds_provider: Node = null
 
 
 func apply_preferences(values: Dictionary) -> void:
@@ -222,6 +241,7 @@ func _ready() -> void:
 		_class_max_hp = MAX_HP * PlayerClasses.get_mod(saved_class, "max_hp_mult", 1.0)
 		_hp = _class_max_hp
 	health_changed.emit(_hp, get_max_hp())
+	_resolve_bounds()  # BB-7: the map (and its bounds) exists by now in Main's deploy order; _update_oob retries if not
 
 
 # Public look entry: every caller passes RADIANS (see LOOK CONTRACT above).
@@ -450,6 +470,7 @@ func _physics_process(delta: float) -> void:
 	grapple.clamp_floor()
 	_update_landing(pre_vy)
 	_update_footsteps(delta)
+	_update_oob(delta)  # BB-7: post-move position decides the countdown
 	_just_jumped = false
 
 
@@ -1014,6 +1035,87 @@ func _update_footsteps(delta: float) -> void:
 		_step_accum = 0.0
 
 
+# ------------------------------------------------------------------ BB-7: OUT OF BOUNDS
+# Black Ops 3 / Battlefield rule (Colin's spec): leave the combat area
+# and a 10 s countdown starts — return before it expires or die. Any
+# axis counts, including UP (jetpack / grapple fly-ups) and DOWN.
+# Overshoots that dip out and come back (wall-run exits, grapple flings)
+# are exactly what the countdown is for: re-entering resets it fully.
+# Runs only while alive (the _dead branch of _physics_process returns
+# before this), so there is no countdown while dead / respawning, and
+# death clears it (see _die / _clear_oob).
+
+## True while the OOB countdown is running (HUD reads via oob_changed;
+## this + get_oob_seconds_left() let a late-binding HUD sync up).
+func is_out_of_bounds() -> bool:
+	return _oob_active
+
+
+func get_oob_seconds_left() -> float:
+	return _oob_left
+
+
+## The registered combat-area AABB (empty when the map has none).
+func get_play_bounds() -> AABB:
+	return _bounds if _bounds_valid else AABB()
+
+
+func _resolve_bounds() -> void:
+	_bounds_valid = false
+	if _bounds_provider == null or not is_instance_valid(_bounds_provider):
+		_bounds_provider = get_tree().get_first_node_in_group("map_play_bounds")
+	if _bounds_provider != null and bool(_bounds_provider.get("has_play_bounds")):
+		_bounds = _bounds_provider.get("play_bounds")
+		_bounds_valid = true
+
+
+func _clear_oob() -> void:
+	if _oob_active:
+		_oob_active = false
+		_oob_left = 0.0
+		oob_changed.emit(false, 0.0)
+
+
+func _update_oob(delta: float) -> void:
+	if not _bounds_valid:
+		_resolve_bounds()
+	# Kill floor FIRST: falling out of the world is an instant death,
+	# timer or no timer, bounds or no bounds.
+	var floor_y := OOB_FALL_DEATH_Y
+	if _bounds_valid:
+		floor_y = _bounds.position.y - OOB_KILL_DROP
+	if global_position.y < floor_y:
+		_die_out_of_bounds()
+		return
+	if not _bounds_valid:
+		return  # Studio / custom map: no combat area, no countdown.
+	if _bounds.has_point(global_position):
+		_clear_oob()
+		return
+	# Outside the combat area: start the countdown, or keep it running.
+	if not _oob_active:
+		_oob_active = true
+		_oob_left = OOB_COUNTDOWN
+	else:
+		_oob_left = maxf(_oob_left - delta, 0.0)
+	oob_changed.emit(true, _oob_left)
+	if _oob_left <= 0.0:
+		_die_out_of_bounds()
+
+
+## World death: HP zeroes and the NORMAL death path runs (_die() ->
+## Game.register_player_death() + died), so every mode respawns the
+## player exactly like a combat death. No attacker exists on this path,
+## so nothing credits a kill for it — a suicide, scored as one.
+func _die_out_of_bounds() -> void:
+	if _dead:
+		return
+	_clear_oob()
+	_hp = 0.0
+	health_changed.emit(_hp, get_max_hp())
+	_die()
+
+
 #region HEALTH / DAMAGE
 # Healing interface: AmmoPickup (health variant) calls this, then frees
 # itself — so heal() must always apply (clamped), never silently no-op,
@@ -1121,6 +1223,7 @@ func _take_damage_hooks() -> Array:
 
 func _die() -> void:
 	_dead = true
+	_clear_oob()  # BB-7: any death clears the countdown + HUD warning
 	_sliding = false
 	_end_wallrun()
 	_walljump_cut_armed = false
@@ -1172,6 +1275,10 @@ func respawn(pos: Vector3) -> void:
 	grapple.release()
 	_land_offset = 0.0
 	_cam_roll = 0.0
+	# BB-7: a fresh life starts in-bounds with no countdown. Silent
+	# reset (no emit): _die() already told the HUD to hide the warning.
+	_oob_active = false
+	_oob_left = 0.0
 	health_changed.emit(_hp, get_max_hp())
 #endregion
 

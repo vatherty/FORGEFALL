@@ -50,6 +50,8 @@ func _ready() -> void:
 
 	_build_environment(0.009, Vector3(-12, -36, 0), "foundry")  # slightly hazier than Dustline: interior air; sun aimed at the Qwantani photo sun (az 36, el 6 -> pitch clamped to 12)
 	_build_ground()
+	_build_ground_apron(C_CONCRETE_D)  # BB-7: ground runs to the horizon (no visible world edge)
+	set_play_bounds(AABB(Vector3(-44, -10, -44), Vector3(88, 70, 88)))  # BB-7: combat area = arena (half 24) + 20 m grace
 	_build_perimeter(ARENA_HALF, 4.2, 5.2)
 	_build_partitions()
 	_build_mezzanine()

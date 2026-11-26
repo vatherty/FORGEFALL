@@ -149,6 +149,8 @@ func _ready() -> void:
 
 	_build_environment(0.0095, Vector3(-23, -33, 0), "factory")  # hazier than Foundry: interior factory air; light aimed at the overcast bright patch (az 33, el 23)
 	_build_ground()
+	_build_ground_apron(C_CONCRETE_D)  # BB-7: ground runs to the horizon (no visible world edge)
+	set_play_bounds(AABB(Vector3(-48, -10, -48), Vector3(96, 70, 96)))  # BB-7: combat area = arena (half 28) + 20 m grace
 	_build_perimeter(ARENA_HALF, 5.0, 5.0)
 	_build_spine()
 	_build_catwalks()

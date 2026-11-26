@@ -42,11 +42,14 @@ var _deploy_title: Label
 var _deploy_desc: Label
 var _deploy_loadout: Button
 var _deploy_tool: OptionButton
+var _deploy_bots: OptionButton
 var _deploy_status: Label
 var _deploy_mode: OptionButton
 var _deploy_preview_label: Label
 var _deploy_preview: TextureRect
 const DEPLOY_TOOLS := ["grapple", "jetpack", "portal", "none"]
+## BB-8: TDM bot difficulty tiers (ids match BotFighter.SKILL_TIERS).
+const DEPLOY_BOT_TIERS := ["rookie", "regular", "hardened", "elite"]
 
 
 func _notification(what: int) -> void:
@@ -980,6 +983,12 @@ func _build_deploy() -> void:
 		_deploy_tool.add_item(tool.replace("grapple", "grapple hook").to_upper())
 	_deploy_tool.item_selected.connect(_set_deploy_tool)
 	_deploy_row(controls, "TRAVERSAL", _deploy_tool)
+	_deploy_bots = OptionButton.new()
+	_deploy_bots.name = "DeployBotDifficulty"
+	for tier in DEPLOY_BOT_TIERS:
+		_deploy_bots.add_item(tier.to_upper())
+	_deploy_bots.item_selected.connect(_set_deploy_bot_difficulty)
+	_deploy_row(controls, "BOT LEVEL", _deploy_bots)
 	_deploy_preview_label = _label("", 16, StencilStyle.TEXT_DIM)
 	_deploy_desc = _label("", 18, StencilStyle.TEXT_DIM)
 	_deploy_desc.custom_minimum_size.x = 470
@@ -1068,6 +1077,8 @@ func _refresh_deploy() -> void:
 	_deploy_tool.select(maxi(0, DEPLOY_TOOLS.find(tool)))
 	_deploy_tool.set_item_disabled(3, _selected_mode == "tower_defense")
 	_deploy_tool.disabled = _selected_mode == "zombies"
+	_deploy_bots.select(maxi(0, DEPLOY_BOT_TIERS.find(_selected_bot_tier())))
+	_deploy_bots.disabled = _selected_mode != "tdm"
 	if _selected_mode == "zombies":
 		_deploy_tool.select(3)
 	_deploy_status.text = "Zombies uses its own starting gear. Traversal is disabled by default." if _selected_mode == "zombies" else ""
@@ -1084,6 +1095,27 @@ func _set_deploy_tool(index: int) -> void:
 		var entry := Loadouts.get_active_loadout()
 		if not entry.is_empty():
 			Loadouts.update_loadout(str(entry["name"]), str(entry["primary"]), str(entry["secondary"]), str(entry.get("forge_preset", "")), tool)
+
+
+## BB-8: BOT LEVEL selector — persists the TDM bot difficulty tier
+## via Preferences ("bot_difficulty"); BotTDM reads it at match start.
+func _set_deploy_bot_difficulty(index: int) -> void:
+	if index < 0 or index >= DEPLOY_BOT_TIERS.size():
+		return
+	var prefs := get_node_or_null("/root/Preferences")
+	if prefs != null and prefs.has_method("change"):
+		prefs.call("change", "bot_difficulty", DEPLOY_BOT_TIERS[index])
+
+
+func _selected_bot_tier() -> String:
+	var prefs := get_node_or_null("/root/Preferences")
+	if prefs != null:
+		var values: Variant = prefs.get("values")
+		if values is Dictionary:
+			var v := str((values as Dictionary).get("bot_difficulty", "regular"))
+			if DEPLOY_BOT_TIERS.has(v):
+				return v
+	return "regular"
 
 
 func _close_deploy() -> void:

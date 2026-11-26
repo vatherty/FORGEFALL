@@ -760,7 +760,238 @@ static func build_viewmodel(weapon_id: String, visual_info: Dictionary = {}) -> 
 		var sight := vm.get_node_or_null("Sight") as Marker3D
 		if sight != null:
 			sight.position = SIGHT_ANCHOR[_sight_family(weapon_id)]
+	# BB-1b: the shipped GLB reflex/ACOG lenses are OPAQUE plates — BB-1
+	# centred the dot on them, but you still can't see through them
+	# (Colin, on device: "the acog now has a dot, but it's still opaque
+	# and can't see"). Turn the lens elements into real glass so the
+	# world shows through around the dot. Scope (lr8) is untouched: its
+	# viewmodel hides at full ADS and the HUD scope takes over.
+	if vm != null and optic_class(weapon_id) in ["reflex", "acog"]:
+		_carve_sight_tunnel(vm, sight_anchor(weapon_id))
+		_make_optic_glass(vm)
 	return vm
+
+
+## BB-1b: the GLB optics are SOLID — behind the front lens plate, two
+## more plates cross the sight line (measured: ar7 layers at z -0.152
+## and -0.083 around the -0.118 anchor; same pattern on smg9/br3), so
+## glass alone still shows a dark plug. Carve a 30 mm tunnel along the
+## sight axis through every mesh in the viewmodel: any triangle whose
+## centroid lands inside the tunnel box is dropped. The lens plate
+## keeps its rim (tunnel is narrower than the lens), the housing keeps
+## its frame — the centre becomes a genuinely open aperture with the
+## AdsDot floating in it. Mesh RESOURCES are never mutated: affected
+## nodes get a rebuilt ArrayMesh (the GLB resource is shared).
+static func _carve_sight_tunnel(vm: Node3D, anchor: Vector3) -> void:
+	var half := 0.015
+	var box := AABB(
+		Vector3(anchor.x - half, anchor.y - half, anchor.z - 0.055),
+		Vector3(half * 2.0, half * 2.0, 0.110))
+	var stack: Array = [vm]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		for child in node.get_children():
+			stack.append(child)
+		if not (node is MeshInstance3D):
+			continue
+		var mi := node as MeshInstance3D
+		if mi.mesh == null:
+			continue
+		var rel := _transform_relative_to(mi, vm)
+		var rebuilt: ArrayMesh = null
+		for s in mi.mesh.get_surface_count():
+			var arrays := mi.mesh.surface_get_arrays(s)
+			var kept: Variant = _drop_tunnel_triangles(arrays, rel, box)
+			if kept == null:
+				if rebuilt != null:
+					rebuilt.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+					var keep_mat := mi.mesh.surface_get_material(s)
+					if keep_mat != null:
+						rebuilt.surface_set_material(rebuilt.get_surface_count() - 1, keep_mat)
+				continue
+			if rebuilt == null:
+				rebuilt = ArrayMesh.new()
+				# Re-add any earlier surfaces untouched before this one.
+				for prev in s:
+					rebuilt.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, mi.mesh.surface_get_arrays(prev))
+					var prev_mat := mi.mesh.surface_get_material(prev)
+					if prev_mat != null:
+						rebuilt.surface_set_material(rebuilt.get_surface_count() - 1, prev_mat)
+			rebuilt.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, kept)
+			var mat := mi.mesh.surface_get_material(s)
+			if mat != null:
+				rebuilt.surface_set_material(rebuilt.get_surface_count() - 1, mat)
+		if rebuilt != null:
+			mi.mesh = rebuilt
+
+
+## Transform of `node` expressed in `root`'s local space (both in the
+## same detached subtree at build time).
+static func _transform_relative_to(node: Node3D, root: Node) -> Transform3D:
+	var t := Transform3D.IDENTITY
+	var cur: Node = node
+	while cur != null and cur != root:
+		if cur is Node3D:
+			t = (cur as Node3D).transform * t
+		cur = cur.get_parent()
+	return t
+
+
+## Return surface arrays with every triangle whose centroid (in
+## viewmodel space) falls inside `box` removed, or null when nothing
+## was removed. Handles indexed and non-indexed triangle arrays.
+static func _drop_tunnel_triangles(arrays: Array, rel: Transform3D, box: AABB) -> Variant:
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	if verts.is_empty():
+		return null
+	var vcount := verts.size()
+	var index: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+	var tri_ids: Array = []
+	if index.size() > 0:
+		for t in range(0, index.size(), 3):
+			tri_ids.append([index[t], index[t + 1], index[t + 2]])
+	else:
+		for t in range(0, vcount, 3):
+			tri_ids.append([t, t + 1, t + 2])
+	var keep: Array = []
+	var removed := 0
+	for tri in tri_ids:
+		var c := Vector3.ZERO
+		for k in 3:
+			c += rel * verts[tri[k]]
+		c /= 3.0
+		if box.has_point(c):
+			removed += 1
+		else:
+			keep.append(tri)
+	if removed == 0:
+		return null
+	var out := []
+	out.resize(Mesh.ARRAY_MAX)
+	if index.size() > 0:
+		# Indexed: keep the vertex arrays whole, filter the index list.
+		for i in Mesh.ARRAY_MAX:
+			out[i] = arrays[i]
+		var new_index := PackedInt32Array()
+		for tri in keep:
+			new_index.append_array(PackedInt32Array([tri[0], tri[1], tri[2]]))
+		out[Mesh.ARRAY_INDEX] = new_index
+	else:
+		# Non-indexed: filter every per-vertex array in lockstep.
+		for i in Mesh.ARRAY_MAX:
+			var arr: Variant = arrays[i]
+			if arr == null or typeof(arr) == TYPE_NIL:
+				out[i] = arr
+				continue
+			var stride := 0
+			match typeof(arr):
+				TYPE_PACKED_VECTOR3_ARRAY:
+					stride = 3
+				TYPE_PACKED_VECTOR2_ARRAY:
+					stride = 2
+				TYPE_PACKED_FLOAT32_ARRAY, TYPE_PACKED_INT32_ARRAY, TYPE_PACKED_BYTE_ARRAY:
+					stride = int(arr.size()) / vcount
+				TYPE_PACKED_COLOR_ARRAY:
+					stride = 4
+				TYPE_PACKED_VECTOR4_ARRAY:
+					stride = 4
+			if stride <= 0:
+				out[i] = arr
+				continue
+			out[i] = _filter_packed(arr, stride, keep)
+	return out
+
+
+static func _filter_packed(arr: Variant, stride: int, keep: Array) -> Variant:
+	match typeof(arr):
+		TYPE_PACKED_VECTOR3_ARRAY:
+			var src := arr as PackedVector3Array
+			var dst := PackedVector3Array()
+			for tri in keep:
+				for k in 3:
+					dst.append(src[tri[k]])
+			return dst
+		TYPE_PACKED_VECTOR2_ARRAY:
+			var src := arr as PackedVector2Array
+			var dst := PackedVector2Array()
+			for tri in keep:
+				for k in 3:
+					dst.append(src[tri[k]])
+			return dst
+		TYPE_PACKED_COLOR_ARRAY:
+			var src := arr as PackedColorArray
+			var dst := PackedColorArray()
+			for tri in keep:
+				for k in 3:
+					dst.append(src[tri[k]])
+			return dst
+		TYPE_PACKED_VECTOR4_ARRAY:
+			var src := arr as PackedVector4Array
+			var dst := PackedVector4Array()
+			for tri in keep:
+				for k in 3:
+					dst.append(src[tri[k]])
+			return dst
+		TYPE_PACKED_FLOAT32_ARRAY:
+			var src := arr as PackedFloat32Array
+			var dst := PackedFloat32Array()
+			for tri in keep:
+				for k in 3:
+					for e in stride:
+						dst.append(src[tri[k] * stride + e])
+			return dst
+		TYPE_PACKED_INT32_ARRAY:
+			var src := arr as PackedInt32Array
+			var dst := PackedInt32Array()
+			for tri in keep:
+				for k in 3:
+					for e in stride:
+						dst.append(src[tri[k] * stride + e])
+			return dst
+		TYPE_PACKED_BYTE_ARRAY:
+			var src := arr as PackedByteArray
+			var dst := PackedByteArray()
+			for tri in keep:
+				for k in 3:
+					for e in stride:
+						dst.append(src[tri[k] * stride + e])
+			return dst
+	return arr
+
+
+## BB-1b: replace the material on every lens/glass element of a
+## reflex/ACOG viewmodel with transparent glass. The GLB names its lens
+## nodes ("Optic lens front", "Red dot front lens", "Optic front
+## glass"); each keeps its own coated-lens hue at low alpha, depth
+## write OFF so the glass never occludes the world or the AdsDot (the
+## dot has no_depth_test + render_priority 10 and draws over it).
+## Surface OVERRIDE only — the shared GLB materials are never mutated.
+static func _make_optic_glass(vm: Node) -> void:
+	for node in _lens_nodes(vm):
+		var mi := node as MeshInstance3D
+		for s in mi.mesh.get_surface_count():
+			var src := mi.get_active_material(s)
+			var glass := StandardMaterial3D.new()
+			glass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			var hue := Color(0.55, 0.62, 0.70)
+			if src is StandardMaterial3D:
+				var a := (src as StandardMaterial3D).albedo_color
+				hue = Color(a.r, a.g, a.b)
+			glass.albedo_color = Color(hue.r, hue.g, hue.b, 0.20)
+			glass.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
+			glass.roughness = 0.12
+			mi.set_surface_override_material(s, glass)
+
+
+static func _lens_nodes(node: Node) -> Array:
+	var out: Array = []
+	if node is MeshInstance3D:
+		var lname := node.name.to_lower()
+		if lname.contains("lens") or lname.contains("glass"):
+			out.append(node)
+	for child in node.get_children():
+		out.append_array(_lens_nodes(child))
+	return out
 
 
 static func _build_viewmodel_raw(weapon_id: String, visual_info: Dictionary = {}) -> Node3D:

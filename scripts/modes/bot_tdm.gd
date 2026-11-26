@@ -41,6 +41,11 @@ const TEAM_BRAVO := 1
 
 ## The player is always ALPHA.
 var player_team := TEAM_ALPHA
+## BB-8: bot difficulty tier for this match (BotFighter.SKILL_TIERS).
+## Resolved at start() from the Preferences key "bot_difficulty"
+## unless set_bot_difficulty() was called first; default "regular".
+var bot_difficulty := BotFighter.DEFAULT_TIER
+var _difficulty_locked := false
 ## Bots in this match (BotFighter bodies, both teams).
 var bots: Array[BotFighter] = []
 var team_scores := [0, 0]
@@ -58,8 +63,41 @@ var _elapsed := 0.0
 ## Start the match. `traversal` is informational here (the player
 ## already got it via Main's set_traversal_tool() call); it is kept
 ## for state/reporting and the verifier.
+## Set the match bot difficulty (BotFighter tier id). Returns false
+## for an unknown tier (current setting kept). Applies immediately to
+## already-spawned bots; future spawns use it via _spawn_bots().
+func set_bot_difficulty(id: String) -> bool:
+	if not BotFighter.is_skill_tier(id):
+		return false
+	bot_difficulty = id
+	_difficulty_locked = true
+	var seed_rng := RandomNumberGenerator.new()
+	seed_rng.randomize()
+	for b in bots:
+		if b != null and is_instance_valid(b):
+			b.apply_skill_tier(bot_difficulty, 0.2, seed_rng.randi())
+	return true
+
+
+## The configured tier: explicit setter wins; otherwise the
+## Preferences "bot_difficulty" key (set from the DEPLOY panel's
+## BOT LEVEL selector); otherwise the default tier.
+func _configured_difficulty() -> String:
+	if _difficulty_locked:
+		return bot_difficulty
+	var prefs := get_node_or_null("/root/Preferences")
+	if prefs != null:
+		var values: Variant = prefs.get("values")
+		if values is Dictionary:
+			var v := str((values as Dictionary).get("bot_difficulty", ""))
+			if BotFighter.is_skill_tier(v):
+				return v
+	return bot_difficulty
+
+
 func start(traversal: String = "grapple") -> bool:
 	traversal_tool = traversal
+	bot_difficulty = _configured_difficulty()
 	team_scores = [0, 0]
 	_respawns.clear()
 	_player_respawn_t = -1.0
@@ -111,10 +149,15 @@ func _spawn_bots() -> void:
 	var players := get_tree().get_nodes_in_group("player")
 	if not players.is_empty():
 		player_pos = (players[0] as Node3D).global_position
+	# BB-8: every bot gets the match tier with per-bot jitter (±20%)
+	# and its own RNG seed, so a squad is not four clones.
+	var seed_rng := RandomNumberGenerator.new()
+	seed_rng.randomize()
 	var name_i := 0
 	for i in ALLY_BOTS:
 		var bot := BotFighter.new()
 		bot.setup(BOT_NAMES[name_i % BOT_NAMES.size()], TEAM_ALPHA, self)
+		bot.apply_skill_tier(bot_difficulty, 0.2, seed_rng.randi())
 		name_i += 1
 		add_child(bot)
 		bots.append(bot)
@@ -122,6 +165,7 @@ func _spawn_bots() -> void:
 	for i in ENEMY_BOTS:
 		var bot := BotFighter.new()
 		bot.setup(BOT_NAMES[name_i % BOT_NAMES.size()], TEAM_BRAVO, self)
+		bot.apply_skill_tier(bot_difficulty, 0.2, seed_rng.randi())
 		name_i += 1
 		add_child(bot)
 		bots.append(bot)
@@ -282,6 +326,7 @@ func get_state() -> Dictionary:
 		"bots_total": bots.size(),
 		"bots_alive": alive,
 		"traversal_tool": traversal_tool,
+		"bot_difficulty": bot_difficulty,
 	}
 
 

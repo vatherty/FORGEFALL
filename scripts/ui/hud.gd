@@ -136,6 +136,12 @@ var _banner_title: Label
 var _banner_sub: Label
 var _banner_tw: Tween
 
+# BB-7: out-of-bounds countdown warning (player signal oob_changed).
+var _oob_root: Control
+var _oob_title: Label
+var _oob_sub: Label
+var _oob_time: Label
+
 var _pips: Array[Panel] = []
 var _pip_names: Array[Label] = []
 var _pip_icons: Array[Label] = []
@@ -239,6 +245,7 @@ func _build_all() -> void:
 	_build_vignettes()
 	_build_killfeed()
 	_build_banner()
+	_build_oob_warning()
 	_build_pips()
 	_build_topbar()
 	_build_minimap()
@@ -628,6 +635,57 @@ func _build_banner() -> void:
 	_banner_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	StencilStyle.apply_hud_body(_banner_sub, _scaled_font(28), StencilStyle.ORANGE, 4)
 	vb.add_child(_banner_sub)
+
+
+## BB-7: out-of-bounds warning (Black Ops 3 / Battlefield style):
+## OUT OF BOUNDS + return instruction + live countdown, centre-top
+## ABOVE the wave banner (top 64 vs BANNER_TOP 132) so a running
+## countdown is never covered by a wave announcement. Purely driven by
+## the player's oob_changed signal — see _on_oob_changed.
+func _build_oob_warning() -> void:
+	_oob_root = Control.new()
+	_oob_root.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_oob_root.offset_left = -500
+	_oob_root.offset_right = 500
+	_oob_root.offset_top = 56.0
+	_oob_root.offset_bottom = 56.0 + 170.0
+	_oob_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_oob_root.visible = false
+	_full().add_child(_oob_root)
+	var vb := VBoxContainer.new()
+	vb.set_anchors_preset(Control.PRESET_FULL_RECT)
+	vb.alignment = BoxContainer.ALIGNMENT_CENTER
+	vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_oob_root.add_child(vb)
+	_oob_title = Label.new()
+	_oob_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_oob_title.text = "OUT OF BOUNDS"
+	StencilStyle.apply_title(_oob_title, _scaled_font(52), StencilStyle.RED, 6)
+	vb.add_child(_oob_title)
+	_oob_sub = Label.new()
+	_oob_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_oob_sub.text = "RETURN TO THE COMBAT AREA"
+	StencilStyle.apply_hud_body(_oob_sub, _scaled_font(26), StencilStyle.ORANGE, 4)
+	vb.add_child(_oob_sub)
+	_oob_time = Label.new()
+	_oob_time.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_oob_time.text = "10.0"
+	StencilStyle.apply_title(_oob_time, _scaled_font(44), StencilStyle.TEXT, 5)
+	vb.add_child(_oob_time)
+
+
+## BB-7: the player emits oob_changed every physics frame while out of
+## bounds (and once with active=false on re-entry / death). Show + tick
+## the countdown while active; hide the moment it clears.
+func _on_oob_changed(active: bool, seconds_left: float) -> void:
+	if _oob_root == null:
+		return
+	_oob_root.visible = active
+	if active:
+		_oob_time.text = "%.1f" % seconds_left
+		# Final 3 s: the number itself goes red (title already is).
+		_oob_time.add_theme_color_override("font_color",
+			StencilStyle.RED if seconds_left <= 3.0 else StencilStyle.TEXT)
 
 
 func _build_pips() -> void:
@@ -1072,6 +1130,11 @@ func _try_bind_player() -> bool:
 	_connect_safe(p, "damaged", _on_damaged)
 	_connect_safe(p, "died", _on_died)
 	_connect_safe(p, "ads_changed", _on_ads_changed)
+	_connect_safe(p, "oob_changed", _on_oob_changed)
+	# BB-7: if the player is already out when the HUD binds (spawn
+	# order), sync the warning to the live countdown immediately.
+	if p.has_method("is_out_of_bounds") and bool(p.call("is_out_of_bounds")):
+		_on_oob_changed(true, float(p.call("get_oob_seconds_left")))
 	_connect_safe(p, "ammo_changed", _on_ammo_changed)
 	_connect_safe(p, "weapon_changed", _on_weapon_changed)
 	# Goal 5: portal crosshair verdict (tint + pair pips) from the emitter.

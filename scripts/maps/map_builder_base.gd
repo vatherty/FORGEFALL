@@ -59,8 +59,8 @@ func _g(pos: Vector3, size: Vector3, color: Color, rot_y: float = 0.0) -> void:
 	_glow.append([pos, size, color, rot_y])
 
 
-func _c(pos: Vector3, size: Vector3, color: Color) -> void:
-	_city.append([pos, size, color, 0.0])
+func _c(pos: Vector3, size: Vector3, color: Color, rot_y: float = 0.0) -> void:
+	_city.append([pos, size, color, rot_y])
 
 
 func _pick(arr: Array):
@@ -106,6 +106,75 @@ func _wall(center: Vector3, size: Vector3, color: Color) -> void:
 	_solid(center, size)
 
 
+# ------------------------------------------------------------------ BB-7: play bounds + ground apron
+# Colin (bug-bash BB-7): "on almost all maps you can fly off and not
+# die." Three-part fix; this is the map side:
+#   1. play_bounds — the combat-area AABB, registered per map via
+#      set_play_bounds(). The player (player.gd) finds it through the
+#      "map_play_bounds" group: outside the box the OOB countdown runs;
+#      falling below play_bounds.min.y - 25 dies outright. Bounds sit
+#      generously OUTSIDE the arena walls, so they only bite when a
+#      player is genuinely leaving, never when hugging an edge.
+#   2. _build_ground_apron() — one huge flat ground plane (visual +
+#      collision) at the map's floor height, extending far past fog
+#      visibility, so the ground visually meets the sky at the horizon
+#      and the world has no visible edge to fly off.
+# Maps that never call set_play_bounds() (Studio / custom maps) get no
+# OOB countdown — the player's absolute kill floor still applies there.
+var play_bounds := AABB()
+var has_play_bounds := false
+
+
+## Register this map's combat-area AABB (world space; builders build at
+## the origin, so local == world). Call once from _ready().
+func set_play_bounds(bounds: AABB) -> void:
+	play_bounds = bounds
+	has_play_bounds = true
+	add_to_group("map_play_bounds")
+
+
+## One big flat ground plane at floor height y (visual mesh + collision)
+## so the world does not visibly end at the arena wall. size is the full
+## width (900 m default: past the fog on every map). The apron's top
+## sits 1 cm BELOW y: inside the arena the map's own ground slab (top
+## exactly at y) hides the overlap seam, and outside the step down is
+## imperceptible while the collision stays continuous.
+func _build_ground_apron(color: Color, size := 900.0, y := 0.0) -> void:
+	build_ground_apron(self, color, size, y)
+
+
+## Static form so Dustline (which predates this base class and keeps
+## its own builder) builds the identical apron. Returns the apron root
+## (name "GroundApron": ApronMesh + ApronCollision children).
+static func build_ground_apron(parent: Node3D, color: Color, size: float, y: float) -> Node3D:
+	var apron := Node3D.new()
+	apron.name = "GroundApron"
+	parent.add_child(apron)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.roughness = 1.0
+	var box := BoxMesh.new()
+	box.size = Vector3(size, 0.5, size)
+	box.material = mat
+	var mi := MeshInstance3D.new()
+	mi.name = "ApronMesh"
+	mi.mesh = box
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.position = Vector3(0.0, y - 0.26, 0.0)
+	apron.add_child(mi)
+	var body := StaticBody3D.new()
+	body.name = "ApronCollision"
+	var cs := CollisionShape3D.new()
+	cs.name = "ApronShape"
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(size, 0.5, size)
+	cs.shape = shape
+	cs.position = Vector3(0.0, y - 0.26, 0.0)
+	body.add_child(cs)
+	apron.add_child(body)
+	return apron
+
+
 # ------------------------------------------------------------------ skies
 # BB-6 (2026-11-26) killed the shared gradient panorama that fog washed
 # into a featureless peach void on every map, and gave each map a named
@@ -129,8 +198,8 @@ const SKY_PROFILES := {
 	},
 	"cinder_city": {
 		"texture": "res://assets/skies/cinder_city_sky.jpg",
-		"fog_color": Color(0.364, 0.309, 0.171), "scatter": 0.10, "sky_affect": 0.25,
-		"sun_color": Color(1.0, 0.73, 0.51), "sun_energy": 1.25, "ambient_energy": 0.55,
+		"fog_color": Color(0.407, 0.447, 0.493), "scatter": 0.10, "sky_affect": 0.25,
+		"sun_color": Color(1.0, 0.66, 0.48), "sun_energy": 1.25, "ambient_energy": 0.55,
 		"exposure": 1.05,
 	},
 	"factory": {

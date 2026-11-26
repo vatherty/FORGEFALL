@@ -10,6 +10,9 @@ const DEFAULTS := {
 	"effects_enabled": false, "effects_look": 0, "effects_strength": 0.65,
 	"effects_lightweight": true, "effects_lens": true, "effects_grain": true,
 	"effects_vignette": true, "effects_chromatic": false, "effects_scanlines": true,
+	# BB-8: TDM bot difficulty tier (BotFighter.SKILL_TIERS id). Set
+	# from the DEPLOY panel's BOT LEVEL selector; read by BotTDM.
+	"bot_difficulty": "regular",
 }
 var values: Dictionary = DEFAULTS.duplicate()
 

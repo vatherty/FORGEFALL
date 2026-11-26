@@ -105,11 +105,24 @@ const FORGE_PADS := [
 var _rng := RandomNumberGenerator.new()
 var _main: Array = []   # [pos, size, color, rot_y] static shaded voxels
 var _glow: Array = []   # emissive voxels (forge pads, door strips, lit windows)
-var _city: Array = []   # distant skyline (unshaded)
+var _city: Array = []   # distant backdrop (unshaded) — mesas since BB-6b
 var _nav_boxes: Array = []  # [center, size] walkable surfaces for nav bake
 var _unit_box: BoxMesh
 var _collision_root: StaticBody3D
 var _nav_region: NavigationRegion3D
+
+# BB-7: play bounds (mirrors MapBuilderBase — Dustline predates the base
+# class and keeps its own copies of its mechanics). The player reads the
+# combat-area AABB through the "map_play_bounds" group: outside it the
+# OOB countdown runs; below min.y - 25 is an instant world death.
+var play_bounds := AABB()
+var has_play_bounds := false
+
+
+func set_play_bounds(bounds: AABB) -> void:
+	play_bounds = bounds
+	has_play_bounds = true
+	add_to_group("map_play_bounds")
 
 
 func _ready() -> void:
@@ -119,6 +132,8 @@ func _ready() -> void:
 
 	_build_environment()
 	_build_ground()
+	MapBuilderBase.build_ground_apron(self, C_DIRT, 900.0, 0.0)  # BB-7: ground runs to the horizon (no visible world edge)
+	set_play_bounds(AABB(Vector3(-55, -10, -55), Vector3(110, 70, 110)))  # BB-7: combat area = arena (perimeter +-34) + ~20 m grace
 	_build_perimeter()
 	for s in SHACKS:
 		_build_shack(s)
@@ -147,8 +162,8 @@ func _g(pos: Vector3, size: Vector3, color: Color, rot_y: float = 0.0) -> void:
 	_glow.append([pos, size, color, rot_y])
 
 
-func _c(pos: Vector3, size: Vector3, color: Color) -> void:
-	_city.append([pos, size, color, 0.0])
+func _c(pos: Vector3, size: Vector3, color: Color, rot_y: float = 0.0) -> void:
+	_city.append([pos, size, color, rot_y])
 
 
 func _pick(arr: Array):
@@ -525,16 +540,42 @@ func _build_props() -> void:
 			_v(pp + Vector3(0, 0.09 + float(i) * 0.18, 0), Vector3(1.2, 0.14, 1.0), C_WOOD_D,
 				_rng.randf_range(-0.1, 0.1))
 		_solid(pp + Vector3(0, 0.3, 0), Vector3(1.2, 0.6, 1.0))
-	# Distant city silhouette ring (unshaded dark boxes, separate MultiMesh).
-	for i in 44:
-		var ang := float(i) / 44.0 * TAU + _rng.randf_range(-0.05, 0.05)
-		var r := _rng.randf_range(88, 118)  # BB-6: was 130-190, where fog left only pale ghosts
-		var bw := _rng.randf_range(8, 20)
-		var bh := _rng.randf_range(10, 45)
-		var bd := _rng.randf_range(8, 20)
-		var shade := _rng.randf_range(0.8, 1.3)
-		_c(Vector3(cos(ang) * r, bh * 0.5 - 2.0, sin(ang) * r), Vector3(bw, bh, bd),
-			Color(0.085 * shade, 0.07 * shade, 0.13 * shade))
+	# Distant backdrop (unshaded, separate MultiMesh — the node keeps its
+	# DistantCity name; other tools look it up). BB-6b (2026-11-26): the
+	# BUILDING ring is gone — Colin: Dustline is a desert/road map, a city
+	# skyline makes no sense here. Replaced by flat-topped MESA / BUTTE
+	# silhouettes in two layers: wide low boxes, some with a narrower cap
+	# box for the plateau top, warm red-brown, the far layer blended
+	# toward the fog colour so it sits in the desert haze. Gaps between
+	# mesas — a desert horizon is not a wall.
+	var mesa_cols := [Color(0.150, 0.088, 0.062), Color(0.168, 0.098, 0.064),
+		Color(0.134, 0.082, 0.060)]
+	for i in 16:
+		var ang := float(i) / 16.0 * TAU + _rng.randf_range(-0.07, 0.07)
+		var r := _rng.randf_range(92, 122)
+		var bw := _rng.randf_range(26, 52)
+		var bh := _rng.randf_range(7, 15)
+		var bd := _rng.randf_range(14, 26)
+		var col: Color = _pick(mesa_cols) * _rng.randf_range(0.85, 1.15)
+		var rot := -ang + _rng.randf_range(-0.12, 0.12)
+		var pos := Vector3(cos(ang) * r, bh * 0.5 - 2.0, sin(ang) * r)
+		_c(pos, Vector3(bw, bh, bd), col, rot)
+		if _rng.randf() < 0.6:
+			var cap_h := _rng.randf_range(2.0, 4.0)
+			_c(pos + Vector3(0, bh * 0.5 + cap_h * 0.5, 0),
+				Vector3(bw * _rng.randf_range(0.55, 0.75), cap_h,
+					bd * _rng.randf_range(0.6, 0.8)),
+				col * 1.12, rot)
+	for i in 10:
+		var ang := float(i) / 10.0 * TAU + _rng.randf_range(-0.1, 0.1) + 0.31
+		var r := _rng.randf_range(128, 158)
+		var bw := _rng.randf_range(40, 70)
+		var bh := _rng.randf_range(5, 10)
+		var bd := _rng.randf_range(18, 30)
+		var col: Color = _pick(mesa_cols).lerp(Color(0.435, 0.408, 0.430), 0.45) \
+			* _rng.randf_range(0.9, 1.1)
+		_c(Vector3(cos(ang) * r, bh * 0.5 - 2.0, sin(ang) * r),
+			Vector3(bw, bh, bd), col, -ang + _rng.randf_range(-0.12, 0.12))
 
 
 # ------------------------------------------------------------ spawn markers

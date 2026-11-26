@@ -26,6 +26,16 @@
 #      overlay shows (black surround, bright aperture, reticle) only
 #      while scoped. Captures land in /tmp/ads_verify/.
 #
+# BB-1b (Colin, on device, after BB-1): "the acog now has a dot, but
+# it's still opaque and can't see [through it]" — the GLB optics are
+# SOLID: behind the front lens plate, two more plates cross the sight
+# line, so the centred dot sat on a dark plug. Layer B now also pins
+# the see-through contract headlessly (lens material is transparent
+# glass; no triangle centroid survives inside the 30 mm sight tunnel),
+# and layer C proves it in pixels: a lime panel sits exactly on the
+# sight line and must be VISIBLE through the ar7/smg9/br3 apertures
+# (green fraction + mean luminance inside the projected lens rect).
+#
 # NOTE: game scripts are load()ed dynamically inside _process (repo
 # pattern — compile-time references fail in --script mode because the
 # Sfx autoload does not exist yet at compile time).
@@ -77,6 +87,7 @@ func _process(_delta: float) -> bool:
 
 func _run() -> void:
 	_check_data()
+	_check_glass()
 	_check_poses()
 	if DisplayServer.get_name() == "headless":
 		print("NOTE: headless renderer — rendered layer C skipped (anchor/dot/"
@@ -173,6 +184,80 @@ func _check_poses() -> void:
 	stage.queue_free()
 
 
+# ------------------------------------------------- BB-1b glass (headless)
+# The see-through contract, checkable without a renderer: for every
+# reflex/ACOG weapon the lens elements carry transparent glass, and
+# the 30 mm sight tunnel along the anchor axis is genuinely empty —
+# no surviving triangle centroid inside it in ANY viewmodel mesh.
+func _check_glass() -> void:
+	for id in ["ar7", "smg9", "br3"]:
+		var vm: Node3D = ArsenalScript.call("build_viewmodel", id)
+		_check(vm != null, "%s viewmodel builds for glass checks" % id)
+		if vm == null:
+			continue
+		var lenses: Array = []
+		_collect_lenses(vm, lenses)
+		_check(not lenses.is_empty(), "%s has a lens element to make glass" % id)
+		for lens in lenses:
+			var mat := (lens as MeshInstance3D).get_active_material(0)
+			_check(mat is StandardMaterial3D
+				and (mat as StandardMaterial3D).transparency == BaseMaterial3D.TRANSPARENCY_ALPHA
+				and (mat as StandardMaterial3D).albedo_color.a <= 0.3,
+				"%s lens '%s' is transparent glass (alpha <= 0.3)" % [id, (lens as MeshInstance3D).name])
+		var anchor: Vector3 = ArsenalScript.call("sight_anchor", id)
+		var box := AABB(
+			Vector3(anchor.x - 0.015, anchor.y - 0.015, anchor.z - 0.055),
+			Vector3(0.030, 0.030, 0.110))
+		var blockers := 0
+		var meshes: Array = []
+		_collect_meshes(vm, meshes)
+		for mi in meshes:
+			var mesh := (mi as MeshInstance3D).mesh
+			if mesh == null:
+				continue
+			var rel := _rel_transform(mi as Node3D, vm)
+			for s in mesh.get_surface_count():
+				var arrays := mesh.surface_get_arrays(s)
+				var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+				var index: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+				var tris := index.size() / 3 if index.size() > 0 else verts.size() / 3
+				for t in tris:
+					var c := Vector3.ZERO
+					for k in 3:
+						var vi := index[t * 3 + k] if index.size() > 0 else t * 3 + k
+						c += rel * verts[vi]
+					if box.has_point(c / 3.0):
+						blockers += 1
+		_check(blockers == 0, "%s sight tunnel is open (0 blocking triangles, found %d)" % [id, blockers])
+		vm.free()
+
+
+func _collect_lenses(node: Node, out: Array) -> void:
+	if node is MeshInstance3D:
+		var lname := node.name.to_lower()
+		if lname.contains("lens") or lname.contains("glass"):
+			out.append(node)
+	for c in node.get_children():
+		_collect_lenses(c, out)
+
+
+func _collect_meshes(node: Node, out: Array) -> void:
+	if node is MeshInstance3D:
+		out.append(node)
+	for c in node.get_children():
+		_collect_meshes(c, out)
+
+
+func _rel_transform(node: Node3D, root: Node) -> Transform3D:
+	var t := Transform3D.IDENTITY
+	var cur: Node = node
+	while cur != null and cur != root:
+		if cur is Node3D:
+			t = (cur as Node3D).transform * t
+		cur = cur.get_parent()
+	return t
+
+
 # ------------------------------------------------------------- C. rendered
 func _check_rendered() -> void:
 	root.size = Vector2i(1280, 720)
@@ -227,12 +312,28 @@ func _check_rendered() -> void:
 	# Let the player settle + HUD bind.
 	await _wait_frames(30)
 
+	# BB-1b: a lime panel exactly on the sight line — the see-through
+	# checks assert this panel is visible THROUGH the reflex/ACOG
+	# apertures (it is unshaded and unmissable when not occluded).
+	var panel := MeshInstance3D.new()
+	var pbm := BoxMesh.new()
+	pbm.size = Vector3(3.0, 3.0, 0.1)
+	panel.mesh = pbm
+	var pmat := StandardMaterial3D.new()
+	pmat.albedo_color = Color(0.25, 0.95, 0.25)
+	pmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	panel.material_override = pmat
+	panel.position = Vector3(0, camera.global_position.y, -11.6)
+	stage.add_child(panel)
+	await _wait_frames(5)
+
 	# [weapon, slot to equip, feature kind]
 	var cases := [
 		["lmg", "primary", "anchor"],
 		["p9", "secondary", "iron_tip"],
-		["ar7", "primary", "dot"],
-		["br3", "primary", "dot"],
+		["ar7", "primary", "dot_glass"],
+		["smg9", "primary", "dot_glass"],
+		["br3", "primary", "dot_glass"],
 		["lr8", "primary", "scope"],
 	]
 	for c in cases:
@@ -272,6 +373,21 @@ func _render_case(player: Node, manager: Node, camera: Camera3D, hud: CanvasLaye
 			var dot := _red_centroid(img)
 			_check(dot.x >= 0.0 and (dot - CENTRE).length() <= 8.0,
 				"%s reflex dot renders at centre (centroid %s)" % [id, dot])
+		"dot_glass":
+			var dot := _red_centroid(img)
+			_check(dot.x >= 0.0 and (dot - CENTRE).length() <= 8.0,
+				"%s reflex dot renders at centre (centroid %s)" % [id, dot])
+			# BB-1b: the world (lime panel on the sight line) must be
+			# visible through the aperture — sample the projected lens
+			# rect's inner 60%, excluding the dot's own 14x14 centre.
+			var lens := _find_lens(vm) if vm != null else null
+			_check(lens != null, "%s lens element found for see-through check" % id)
+			if lens != null:
+				var stats := _aperture_stats(img, camera, lens)
+				_check(stats[1] >= 0.5,
+					"%s aperture shows the world: green frac %.3f >= 0.5" % [id, stats[1]])
+				_check(stats[0] >= 0.45,
+					"%s aperture is not a dark plug: mean lum %.3f >= 0.45" % [id, stats[0]])
 		"iron_tip":
 			var tip := _iron_tip_y(img)
 			_check(tip > 0 and absf(tip - CENTRE.y) <= 9.0,
@@ -291,6 +407,51 @@ func _render_case(player: Node, manager: Node, camera: Camera3D, hud: CanvasLaye
 	if kind == "scope":
 		var scope_root2: Control = hud.get("_scope_root")
 		_check(scope_root2 != null and not scope_root2.visible, "lr8 scope overlay hides on ADS release")
+
+
+# BB-1b: first lens/glass MeshInstance3D in a viewmodel subtree.
+func _find_lens(node: Node) -> MeshInstance3D:
+	if node is MeshInstance3D:
+		var lname := node.name.to_lower()
+		if lname.contains("lens") or lname.contains("glass"):
+			return node as MeshInstance3D
+	for c in node.get_children():
+		var found := _find_lens(c)
+		if found != null:
+			return found
+	return null
+
+
+# BB-1b: [mean luminance, lime-panel fraction] inside the projected
+# lens rect (inner 60%, centre 14x14 excluded — that's the dot).
+func _aperture_stats(img: Image, camera: Camera3D, lens: MeshInstance3D) -> Array:
+	var aabb := lens.get_aabb()
+	var gt := lens.global_transform
+	var lo := Vector2(INF, INF)
+	var hi := Vector2(-INF, -INF)
+	for xi in [aabb.position.x, aabb.end.x]:
+		for yi in [aabb.position.y, aabb.end.y]:
+			for zi in [aabb.position.z, aabb.end.z]:
+				var px := camera.unproject_position(gt * Vector3(xi, yi, zi))
+				lo = lo.min(px)
+				hi = hi.max(px)
+	var inner_lo := lo + (hi - lo) * 0.2
+	var inner_hi := hi - (hi - lo) * 0.2
+	var n := 0
+	var green := 0
+	var lum_sum := 0.0
+	for y in range(int(inner_lo.y), int(inner_hi.y)):
+		for x in range(int(inner_lo.x), int(inner_hi.x)):
+			if absf(x - CENTRE.x) < 7 and absf(y - CENTRE.y) < 7:
+				continue
+			if x < 0 or y < 0 or x >= img.get_width() or y >= img.get_height():
+				continue
+			var p := img.get_pixel(x, y)
+			lum_sum += _lum(p)
+			n += 1
+			if p.g > 0.55 and p.g - p.r > 0.25 and p.g - p.b > 0.25:
+				green += 1
+	return [lum_sum / maxf(n, 1), float(green) / maxf(n, 1)]
 
 
 # Red-dot centroid: pixels that are strongly red (the AdsDot emission).

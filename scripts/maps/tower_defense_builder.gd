@@ -58,6 +58,8 @@ func _ready() -> void:
 
 	_build_environment(0.006, Vector3(-14, -73, 0), "tower_defense")  # light aimed at the Citrus Orchard glow (az 73, el 14; sun itself is behind the cloud deck)
 	_build_ground()
+	_build_ground_apron(C_DIRT)  # BB-7: ground runs to the horizon (no visible world edge)
+	set_play_bounds(AABB(Vector3(-80, -10, -80), Vector3(160, 70, 160)))  # BB-7: combat area = arena (half 60) + 20 m grace
 	_build_perimeter(ARENA_HALF, 3.0, 4.2)
 	_build_lanes()
 	_build_core_plaza()

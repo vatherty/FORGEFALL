@@ -57,6 +57,8 @@ func _ready() -> void:
 
 	_build_environment(0.006, Vector3(-34, 11, 0), "zombies_night")  # zombies is a night map: real Rogland night photo (Milky Way + stars); dim blue light aimed at its brightest region (az -11, el 34) as the moon stand-in
 	_build_ground()
+	_build_ground_apron(C_DIRT)  # BB-7: ground runs to the horizon (no visible world edge)
+	set_play_bounds(AABB(Vector3(-80, -10, -80), Vector3(160, 70, 160)))  # BB-7: combat area = arena (half 60) + 20 m grace
 	_build_perimeter(ARENA_HALF, 2.5, 3.0)
 	_build_crate_clusters()
 	_build_city()

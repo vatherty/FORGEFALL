@@ -201,8 +201,10 @@ func _ready() -> void:
 	_unit_box = BoxMesh.new()
 	_unit_box.size = Vector3.ONE
 
-	_build_environment(0.0042, Vector3(-12, -36, 0), "cinder_city")  # clearer air than Dustline: 130 m sightlines; sun aimed at the Camdeboo photo sun (az 36, el 2.6 -> pitch clamped to 12)
+	_build_environment(0.0042, Vector3(-12, -37.5, 0), "cinder_city")  # clearer air than Dustline: 130 m sightlines; sun aimed at the Industrial Sunset photo sun (az 37.5, el 4.2 -> pitch clamped to 12). BB-6b: Camdeboo Road replaced — its horizon is a mountain range, wrong for a city.
 	_build_ground()
+	_build_ground_apron(C_SIDEWALK)  # BB-7: ground runs to the horizon (no visible world edge)
+	set_play_bounds(AABB(Vector3(-85, -10, -85), Vector3(170, 70, 170)))  # BB-7: combat area = arena (half 65) + 20 m grace
 	_build_perimeter(ARENA_HALF, 5.0, 6.0)
 	var bi := 0
 	for b in BUILDINGS:
