@@ -2,6 +2,8 @@ extends Window
 
 const Proposals = preload("res://ai_proposals.gd")
 const MAX_IMAGE_BYTES := 4 * 1024 * 1024
+const CAPTURE_PATH := "user://ai_view_capture.png"
+const CAPTURE_MAX_WIDTH := 1280
 
 var editor: Control
 var prompt_edit: TextEdit
@@ -14,6 +16,7 @@ var apply_button: Button
 var image_path := ""
 var proposal: Dictionary = {}
 var request: HTTPRequest
+var _draw_seen := false
 
 func _ready() -> void:
 	title = "AI proposals — Forgefall Studio"
@@ -41,6 +44,7 @@ func _build_ui() -> void:
 	var actions := HBoxContainer.new()
 	root.add_child(actions)
 	_button(actions, "Choose image", _choose_image)
+	_button(actions, "Use Current View", _use_current_view)
 	image_label = _label("No image selected")
 	image_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	actions.add_child(image_label)
@@ -95,6 +99,64 @@ func _choose_image() -> void:
 func _set_image(path: String) -> void:
 	image_path = path
 	image_label.text = path.get_file()
+
+func _use_current_view() -> void:
+	if editor == null or editor.map_doc.is_empty():
+		status_label.text = "Create or open a map first."
+		return
+	var view: SubViewport = editor.viewport
+	if view == null:
+		status_label.text = "The map view is not available."
+		return
+	status_label.text = "Capturing the current view..."
+	# Force at least one fresh render of the map viewport, then read its
+	# texture after the draw so the capture matches what is on screen.
+	var previous_mode := view.render_target_update_mode
+	view.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	await _wait_for_draw(1500)
+	view.render_target_update_mode = previous_mode
+	var texture := view.get_texture()
+	if texture == null:
+		status_label.text = "The map view has no image to capture."
+		return
+	var image := texture.get_image()
+	if image == null or image.is_empty() or image.get_width() <= 0 or image.get_height() <= 0:
+		status_label.text = "The current view is empty — nothing to capture."
+		return
+	if image.get_width() > CAPTURE_MAX_WIDTH:
+		var scale := float(CAPTURE_MAX_WIDTH) / float(image.get_width())
+		image.resize(CAPTURE_MAX_WIDTH, maxi(1, int(round(image.get_height() * scale))), Image.INTERPOLATE_LANCZOS)
+	# Shrink until the PNG fits the same limit the request flow enforces.
+	var attempts := 0
+	while attempts < 5:
+		if image.save_png(CAPTURE_PATH) != OK:
+			status_label.text = "Could not save the view capture."
+			return
+		if FileAccess.get_file_as_bytes(CAPTURE_PATH).size() <= MAX_IMAGE_BYTES:
+			break
+		attempts += 1
+		image.resize(maxi(1, int(image.get_width() * 0.75)), maxi(1, int(image.get_height() * 0.75)), Image.INTERPOLATE_LANCZOS)
+	if FileAccess.get_file_as_bytes(CAPTURE_PATH).size() > MAX_IMAGE_BYTES:
+		status_label.text = "The view capture is too large to send (over 4 MiB)."
+		return
+	_set_image(CAPTURE_PATH)
+	status_label.text = "Captured the current view — it will be sent with your request."
+
+func _on_frame_drawn() -> void:
+	_draw_seen = true
+
+## Waits for the rendering server to finish a draw, but never forever: with
+## no visible renderer (headless) frame_post_draw may never fire, in which
+## case we proceed after the timeout and read whatever the texture holds.
+func _wait_for_draw(timeout_msec: int) -> void:
+	_draw_seen = false
+	if not RenderingServer.frame_post_draw.is_connected(_on_frame_drawn):
+		RenderingServer.frame_post_draw.connect(_on_frame_drawn)
+	var deadline := Time.get_ticks_msec() + timeout_msec
+	while not _draw_seen and Time.get_ticks_msec() < deadline:
+		await get_tree().process_frame
+	if RenderingServer.frame_post_draw.is_connected(_on_frame_drawn):
+		RenderingServer.frame_post_draw.disconnect(_on_frame_drawn)
 
 func _clear_proposal() -> void:
 	proposal = {}

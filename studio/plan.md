@@ -66,6 +66,22 @@ The stage owner should report changed files, commands and results, visual eviden
 
 ## 6. AI and completion — live provider proven 2026-11-25; Deck input + Web parity remain
 
+Vision wiring and gizmo anchoring (2026-11-26): AI Assist is now multimodal end to end. The
+DeepSeek CLI accepts images (--image-file / --image-data-url; deepseek-flash is natively
+multimodal since V4.1), the adapter passes image_data_url through (validated, 8 MiB cap)
+instead of ignoring it, and every request now carries grounding: a scene catalog (id, name,
+kind, color, position, size per instance), the exact action vocabulary with the rule that
+edits reference catalog ids, and the coordinate conventions. Studio's AI window gained a
+"Use Current View" button that captures the map viewport as the attached image
+(verify_ai_capture). Live-proven with a real captured viewport PNG: "recolor the crate in
+the image to purple" returned recolor_instance on the crate's catalog id with #800080.
+Also fixed the scale gizmo: it was anchored at a block's base with a fixed 1.5-unit reach,
+which sank the X/Z knobs into the floor plane (and inside large blocks), leaving only the
+Y knob grabbable; the gizmo now anchors at the visual centre with per-axis reach clearing
+the block's faces (verify_gizmo_scale, 26 checks). Remaining AI gap: the adapter + CLI run
+where the DeepSeek credential lives (currently this VM); running AI Assist on the Deck
+itself needs the adapter and a key deployed there.
+
 - [x] Optional endpoint-based text/image proposals, preview and one-command apply/undo/redo; local voxel meshing optimization.
 - [x] Linux standalone and Web export builds; browser JSON import/edit, copy fallback, and one successful download/reimport session. A later in-app browser session suppressed download delivery.
 - [ ] Live external AI provider validation (done 2026-11-25: DeepSeek via tools/studio_ai_adapter.py, proven by verify_ai_live), physical Steam Deck input validation (still open — needs a human on the Deck), and Web native publication/library/gameplay parity (still open).

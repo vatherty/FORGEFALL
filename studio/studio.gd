@@ -324,11 +324,48 @@ static func _gizmo_drag_rotation(start_degrees: float, mouse_delta_x: float) -> 
 static func _gizmo_drag_scale(start_value: float, mouse_delta: Vector2) -> float:
 	return maxf(snappedf(start_value + (mouse_delta.x - mouse_delta.y) * 0.01, 0.125), 0.125)
 
+# True for the plain-block branch of _refresh_geometry: those instances are
+# drawn with their mesh centred half a height above "position" (position is
+# the block's base centre), unlike guides/assets whose node origin already
+# is their visual centre.
+func _is_block_kind(item: Dictionary) -> bool:
+	return not (item.get("kind") in ["asset", "light", "marker", "volume", "navigation"])
+
 func _gizmo_center() -> Vector3:
 	var selected := _selected()
 	if selected.is_empty():
 		return Vector3.ZERO
-	return Vector3(selected["position"][0], selected["position"][1], selected["position"][2])
+	var center := Vector3(selected["position"][0], selected["position"][1], selected["position"][2])
+	# Anchor the gizmo to the block's visual centre, not its base. Anchored
+	# at the base, the X/Z scale handles sat on the floor at the block's
+	# feet — half-buried in the ground plane and, for larger blocks, inside
+	# the mesh — leaving only the Y handle visible and grabbable.
+	if _is_block_kind(selected):
+		var size: Array = selected.get("size", [1.0, 1.0, 1.0])
+		center.y += float(size[1]) * 0.5
+	return center
+
+# Half-extents of the selected instance around the gizmo centre, so handle
+# offsets can clear the mesh instead of ending inside it.
+func _gizmo_half_extents() -> Vector3:
+	var item := _selected()
+	if item.is_empty() or item.get("kind") == "asset":
+		return Vector3.ZERO
+	if item.get("kind") in ["light", "marker"]:
+		return Vector3.ONE * 0.25
+	var size: Array = item.get("size", [1.0, 1.0, 1.0])
+	return Vector3(float(size[0]), float(size[1]), float(size[2])) * 0.5
+
+# Distance of a scale handle from the centre along its axis: at least the
+# classic 1.5, but always clear of the instance's face on that axis.
+func _gizmo_scale_reach(axis: int) -> float:
+	return maxf(1.5, _gizmo_half_extents()[axis] + 0.6)
+
+# Rotate ring radius: at least the classic 1.25, but clear of the whole
+# instance so the ring and its handles are not buried inside a big block.
+func _gizmo_rotate_radius() -> float:
+	var extents := _gizmo_half_extents()
+	return maxf(1.25, maxf(extents.x, maxf(extents.y, extents.z)) + 0.6)
 
 # World-space pick points for the active gizmo mode's handles, keyed by axis.
 func _gizmo_handle_positions() -> Dictionary:
@@ -344,11 +381,11 @@ func _gizmo_handle_positions() -> Dictionary:
 					ring_dir = Vector3(cos(PI / 4.0), 0.0, sin(PI / 4.0))
 				_:
 					ring_dir = Vector3(cos(PI / 4.0), sin(PI / 4.0), 0.0)
-			handles[axis] = center + ring_dir * 1.25
+			handles[axis] = center + ring_dir * _gizmo_rotate_radius()
 	elif gizmo_mode == "scale":
 		var axes := [Vector3.RIGHT, Vector3.UP, Vector3.BACK]
 		for axis in 3:
-			handles[axis] = center + axes[axis] * 1.5
+			handles[axis] = center + axes[axis] * _gizmo_scale_reach(axis)
 	return handles
 
 func _start_handle_drag(kind: String, axis: int, mouse_pos: Vector2) -> void:
@@ -1066,7 +1103,7 @@ func _refresh_geometry() -> void:
 		world.add_child(node)
 	var selected := _selected()
 	if not selected.is_empty():
-		var center := Vector3(selected["position"][0], selected["position"][1], selected["position"][2])
+		var center := _gizmo_center()
 		var gizmo := ImmediateMesh.new()
 		var axes := [Vector3.RIGHT, Vector3.UP, Vector3.BACK]
 		var axis_colors := [Color.RED, Color.GREEN, Color.BLUE]
@@ -1076,12 +1113,12 @@ func _refresh_geometry() -> void:
 				material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 				material.albedo_color = axis_colors[axis]
 				gizmo.surface_begin(Mesh.PRIMITIVE_LINE_STRIP, material)
-				for point in _gizmo_ring_points(center, axis, 1.25):
+				for point in _gizmo_ring_points(center, axis, _gizmo_rotate_radius()):
 					gizmo.surface_add_vertex(point)
 				gizmo.surface_end()
 		else:
-			var reach := 1.5 if gizmo_mode == "scale" else 1.25
 			for axis in 3:
+				var reach := _gizmo_scale_reach(axis) if gizmo_mode == "scale" else 1.25
 				var material := StandardMaterial3D.new()
 				material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 				material.albedo_color = axis_colors[axis]
@@ -1100,10 +1137,10 @@ func _refresh_geometry() -> void:
 			var knob := MeshInstance3D.new()
 			var knob_mesh: PrimitiveMesh = SphereMesh.new() if gizmo_mode == "rotate" else BoxMesh.new()
 			if knob_mesh is SphereMesh:
-				(knob_mesh as SphereMesh).radius = 0.09
-				(knob_mesh as SphereMesh).height = 0.18
+				(knob_mesh as SphereMesh).radius = 0.12
+				(knob_mesh as SphereMesh).height = 0.24
 			else:
-				(knob_mesh as BoxMesh).size = Vector3.ONE * 0.18
+				(knob_mesh as BoxMesh).size = Vector3.ONE * 0.24
 			knob.mesh = knob_mesh
 			knob.position = _gizmo_handle_positions()[axis]
 			var knob_material := StandardMaterial3D.new()
@@ -1137,7 +1174,7 @@ func _viewport_input(event: InputEvent) -> void:
 			# Rotate/scale handle picking takes priority over instance picking.
 			if gizmo_mode in ["rotate", "scale"] and not _selected().is_empty():
 				var handle_axis := -1
-				var handle_distance := 26.0
+				var handle_distance := 30.0
 				for axis in _gizmo_handle_positions():
 					var handle_pos: Vector3 = _gizmo_handle_positions()[axis]
 					if camera.is_position_behind(handle_pos):
