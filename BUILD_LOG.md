@@ -3287,3 +3287,60 @@ Colin compared v4 against the approved reference and called it out: "it does not
 - Breaker: pass — check_scripts 222/0, weapons FX 103/0, smoke 900 frames clean, 1,309 `_c` calls confirmed in `_build_ar7()`.
 - Perf deferral grows: 1,309 MeshInstances per viewmodel (LMG inherits). If Colin likes the look but the phone chokes, the fix is merging cubes into per-colour meshes — separate task, his call.
 - Artifact/live: n/a. Secrets: pass. **Colin verdict:** (pending)
+
+## v0.6.9 — Test build: bug bash + graphics tiers (2026-11-26)
+
+Colin's order: "Publish a test build so I can try it" — the point is trying the
+new GRAPHICS High tier (BB-9) on mobile. Ships everything since v0.6.8: bug bash
+rounds 1–2 (per-weapon sights, ACOG + reflex picture-in-picture lenses, landing
+momentum + wall-run fixes, real CC0 skyboxes + mesa horizons, out-of-bounds
+rules, 4 bot skill tiers in DEPLOY), the Studio MCP server, and the BB-9
+graphics tier system (Settings > DISPLAY > GRAPHICS Low/High).
+
+### Version bump
+export_presets.cfg: version/code 47→48, version/name 0.6.8→0.6.9, Windows
+export_path → forgefall-v0.6.9-windows; scripts/core/tuning.gd
+FALLBACK_VERSION_CODE 47→48; tools/verify_updater_pc.gd manifest expectations
+→ 0.6.9 / code 48. New README-LINUX-v0.6.9.txt + README-WINDOWS-v0.6.9.txt
+(v0.6.9 section: bug bash + graphics tiers + TEST BUILD note).
+BUG_BASH.md carries the BB-9 Deck bench note (27 runs @1280×800: baseline AND
+all-on 60.0 avg fps, p1 lows 42–45 — nothing cut under the 60/30 rule).
+
+### Pre-export sanity
+- project.godot pointing/emulate_mouse_from_touch=true (locked rule intact).
+- tools/check_scripts.gd: 245 checked, 0 failed.
+- tools/verify_skies.gd headless: ALL CHECKS PASSED (7 maps).
+
+### Builds (Godot 4.7.2 headless, --export-debug, same source)
+- **Android** `updates/forgefall-v0.6.9-debug.apk` (46,419,288 bytes, SHA-256
+  `fd80b761c8969f4957fba207605f29be8911bd175e6bfd83582cf96e23dea28f`) + `.idsig`
+  (370,099 bytes). Custom template, debug keystore (builds/debug.keystore).
+- **Linux** `linux_staging/forgefall-v0.6.9-linux.zip` (45,140,505 bytes,
+  SHA-256 `f95dab09fac7c3fa5886128d79b962cf364c44669c3f265a4d7fd5ddbe6aa020`):
+  forgefall.x86_64 + forgefall.pck + forgefall.sh + README-LINUX.txt.
+- **Windows** `windows_staging/forgefall-v0.6.9-windows.zip` (52,046,161 bytes,
+  SHA-256 `f9f77e94dc6b45f1de6964815c5f9434e42f1fe4d2dacfa0ef3d1dcc23208261`):
+  forgefall.exe + forgefall.console.exe + forgefall.pck + README-WINDOWS.txt.
+  (First Windows export attempt failed with the known "export path doesn't
+  exist" — output dir created, retry clean.)
+- **Web** `web_staging/forgefall-web/` — 9 files, single-threaded
+  (variant/thread_support=false): index.pck 18,337,740 bytes, index.wasm
+  37,902,138 bytes.
+
+### Lite Gate
+- APK aapt: package com.sparky.forgefall, versionCode 48, versionName 0.6.9.
+- apksigner: Verifies, v2+v3 true; signer cert SHA-256
+  `e8a9ef7740fa3f9210d4ff1bf0cf37d330b5a9701fc37646db6ff3ec9521c498` —
+  identical to v0.6.3's recorded cert (in-app update continuity preserved).
+- tools/verify_updater_pc.gd against source with staged 0.6.9/48 manifests:
+  65 pass, 0 fail.
+- Shipped Linux binary from the zip: --headless --quit-after 120, exit 0,
+  0 script errors (only the known sandbox UpdateManager TLS chatter).
+- Secret scan over the source delta (push_delta.py): no hits (export_presets
+  keystore password pushed as the "<redacted>" placeholder, as always).
+
+### Publish
+GitHub Release v0.6.9 + Pages (version.json / version_pc.json → 0.6.9/48,
+index.html, /play/) follow in this same publish run.
+**Colin's device verdict:** (pending — High tier on mobile FPS report is the
+test this build exists for.)

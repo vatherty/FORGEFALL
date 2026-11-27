@@ -94,7 +94,7 @@ reticle weight. Device verdict pending.
 - [x] BB-1d ALL OPTICS (Colin): extend the BB-1c lens treatment beyond the ACOG. The
       red dot (reflex) sights get the same in-glass picture + parallax, but WITHOUT
       the zoom (lens camera = main camera fov exactly, 1.0x extra) — just parallax.
-- [x] BB-9 GRAPHICS PUSH (implemented; Deck FPS cuts pending) (Colin): add ALL of it — real cascaded shadows with blocks
+- [x] BB-9 GRAPHICS PUSH (Colin): add ALL of it — real cascaded shadows with blocks
       casting, per-map colour grading + LUT, glow, grit (triplanar grunge + AO),
       decals, MSAA — behind a graphics quality tier (phones keep Low). THEN measure
       FPS and REMOVE any major change that causes a major FPS drop. Colin's target:
@@ -123,3 +123,13 @@ High. verify_skies contract now tier-aware (Low + High runs pass).
 llvmpipe-relative frame costs: msaa +143..299% (software-inflated), glow
 +38..67%, shadows +33..47%, grading +10..15%, grit/ao/decals ~0. DECK bench +
 Colin's cut rule (60 target / 30 floor) still to run.
+
+BB-9 Deck bench DONE (27 runs, 1280x800, bench window resized on the Deck copy):
+ALL configs — baseline AND all-on — measured avg 60.0 fps with p1 lows 42-45 on
+cinder_city, dustline, zombies_flat. The desktop compositor caps presentation at
+the panel's 60 Hz, so per-feature attribution above the cap is not measurable
+this way; the decision-relevant fact is that all-on holds 60 avg / >=42 lows
+everywhere, so under Colin's rule (60 target, 30 floor) NOTHING is cut — MSAA
+included (the llvmpipe +143-299% was a software-renderer artifact; the Deck's
+tile GPU absorbs it). Caveat: bench is a camera sweep, not live combat; Colin's
+device verdict at High is the final word.
