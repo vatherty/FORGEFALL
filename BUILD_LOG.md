@@ -3344,3 +3344,29 @@ GitHub Release v0.6.9 + Pages (version.json / version_pc.json → 0.6.9/48,
 index.html, /play/) follow in this same publish run.
 **Colin's device verdict:** (pending — High tier on mobile FPS report is the
 test this build exists for.)
+
+### Publish completion (v0.6.9, same run)
+- Source push: commit `3787bb30` on main (7 files: version bump set, READMEs,
+  BUG_BASH bench note, this log). Post-push diff = export_presets.cfg only
+  (local working keystore password vs the sanitized repo placeholder — by
+  design, as always).
+- GitHub Release [v0.6.9](https://github.com/vatherty/FORGEFALL/releases/tag/v0.6.9)
+  (id 460183768) — all 3 assets `uploaded`, sizes match local builds.
+- Pages: version.json + version_pc.json → 0.6.9/48, index.html rebuilt from the
+  live page (v0.6.9 links, real sizes, TEST BUILD note), /play/ replaced with
+  the fresh 9-file web build, .nojekyll intact. Pages build `errored` once →
+  pages-enable 409 nudge → `built`.
+- **HOSTING DEVIATION (deliberate, same pattern as the Windows zip since
+  v0.6.3):** the APK (46,419,288 B) and Linux zip (45,140,505 B) both 422'd on
+  the Pages contents API AND the Git Data blob endpoint ("file/input too
+  large") — v0.6.9's new sky/asset payload pushed them past the REST ceiling
+  that v0.6.8 (43.3 MB) still fit under. Both artifacts are therefore hosted on
+  the GitHub Release assets, and version.json `apk_url`, version_pc.json
+  `linux_url`, and the index.html Android/Linux links point at the Release
+  download URLs. The updaters follow the redirect (same mechanism the Windows
+  zip has used since v0.6.3). RESTORE PATH: anyone with a git CLI + credentials
+  can push the two files into the Pages repo and re-point the three URLs back.
+- Live verified: manifests serve 0.6.9/48 with the graphics-tier changelog; all
+  three Release artifacts answer 206 on range requests; play/ 200 with the new
+  index.wasm (37,902,138 B); downloaded live APK SHA-256 matches the local
+  build exactly (`fd80b761…`).
