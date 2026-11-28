@@ -1,10 +1,10 @@
 # FORGEFALL
 
-Voxel-styled tactical FPS for Android, Linux, and Windows, built in **Godot 4.7.2-stable** (GDScript-only, no .NET). MW2 (2009) game-feel — ADS, recoil, hitmarkers, 3/5/7 killstreaks — rendered as chunky voxels ("Modern Voxfare 2", a.k.a. MW2 directed by Minecraft). Fight militia waves on the Dustline map, forge gear live with the Forge AI console, call killstreaks, run portal puzzle chambers, and play LAN multiplayer (TDM / Domination).
+Voxel-styled tactical FPS for Android, Linux, Windows, and Web, built in **Godot 4.7.2-stable** (GDScript-only, no .NET). MW2 (2009) game-feel — ADS, recoil, hitmarkers, 3/5/7 killstreaks — rendered as chunky voxels ("Modern Voxfare 2", a.k.a. MW2 directed by Minecraft). Fight militia waves across seven maps, forge gear live with the Forge AI console, call killstreaks, run portal puzzle chambers, and play LAN multiplayer (TDM / Domination).
 
-Full design doc: [`DESIGN.md`](DESIGN.md). Living build log: [`BUILD_LOG.md`](BUILD_LOG.md). License: **MIT** (see [`LICENSE`](LICENSE)) — Colin's default; use it, fork it, mod it.
+License: **MIT** (see [`LICENSE`](LICENSE)) — Colin's default; use it, fork it, mod it. The map editor, **FORGEFALL Studio**, lives in [`studio/`](studio/) and can also be driven by external AI agents (Claude, Codex, and friends) over MCP — see [`tools/STUDIO_MCP.md`](tools/STUDIO_MCP.md).
 
-**Version note:** the current release is **v0.5.4** with **version code 30**. The display name (0.5.4) and the updater's version code (30) are different numbers on purpose: the in-game updater compares the code, so the code never goes backwards. Do not "reset" the code to match the display name — that would brick updates for existing installs.
+**Version note:** the current release is **v0.6.9** with **version code 48**. The display name (0.6.9) and the updater's version code (48) are different numbers on purpose: the in-game updater compares the code, so the code never goes backwards. Do not "reset" the code to match the display name — that would brick updates for existing installs.
 
 ---
 
@@ -14,9 +14,10 @@ Prebuilt builds live on the updates site: **https://vatherty.github.io/Forgefall
 
 | Platform | File | Install |
 |----------|------|---------|
-| Android | `forgefall-v0.5.4-debug.apk` | Download on the phone, open it, allow install from that source once, confirm the single native system "Install update?" dialog. |
-| Windows | `forgefall-v0.5.4-windows.zip` | Unzip anywhere, run `forgefall.exe` (`forgefall.console.exe` shows a console for logs). |
-| Linux | `forgefall-v0.5.4-linux.zip` | Unzip, run `./forgefall.sh` (or `chmod +x forgefall` and run the binary). |
+| Web | — | Play in the browser, no install: **https://vatherty.github.io/Forgefall-updates/play/** |
+| Android | `forgefall-v0.6.9-debug.apk` | Download on the phone, open it, allow install from that source once, confirm the single native system "Install update?" dialog. |
+| Windows | `forgefall-v0.6.9-windows.zip` | Unzip anywhere, run `forgefall.exe` (`forgefall.console.exe` shows a console for logs). |
+| Linux | `forgefall-v0.6.9-linux.zip` | Unzip, run `./forgefall.sh` (or `chmod +x forgefall` and run the binary). |
 
 After the first install, the game checks for updates on launch and offers Download → Install from inside the game (Android: one native system dialog; PC: a helper script swaps the files and relaunches). No account, no launcher.
 
@@ -78,6 +79,15 @@ The **Chat** tab sits next to Create, and it is the **same session** as the one 
 - **No silent fallback.** If the LLM call fails, or no key is configured, you get a visible error — never a quietly substituted template mod. (The Forge console's offline keyword parser is the one explicit exception, and it is labeled as offline.)
 - **Your key stays on your device.** Enter it in-game (Forge → key entry); it is stored only in the device's `user://forge_config.json` and is never in this repo, never in a screenshot-safe place, never transmitted anywhere except the DeepSeek API call itself.
 
+## What's new in v0.6.9
+
+- **Per-weapon sights.** Every weapon has its own sight picture and ADS zoom (iron 1.1×, reflex 1.15×, ACOG 3×, scope 5×). The ACOG and the AR7/SMG9 red dots are true see-through optics with a picture-in-picture lens rendered inside the glass.
+- **Real skies.** All seven maps wear real CC0 skyboxes (Poly Haven) with matched lighting — mesas on Dustline, an industrial sunset over Cinder City.
+- **Out-of-bounds rules.** Leaving a map's bounds starts a 10-second return countdown over a 900 m ground apron; the kill floor gives no enemy credit.
+- **Humanised bots, four tiers.** Bots aim with tracking error and reaction times instead of lasers. Pick Rookie / Regular / Hardened / Elite with the BOT LEVEL selector in the Deploy panel.
+- **Graphics tiers.** Settings → DISPLAY → GRAPHICS: Low is the classic look; High adds long-range shadows, per-map color grading, glow, ground decals, and MSAA 4×.
+- **FORGEFALL Studio + MCP.** The Studio map editor can expose a localhost MCP server (off by default), so an AI agent you already use can read your map and apply edits as single undoable commands.
+
 ## Build / run from source
 
 1. Install **Godot 4.7.2-stable** (standard build, *not* .NET): https://godotengine.org/download
@@ -105,7 +115,7 @@ The **Chat** tab sits next to Create, and it is the **same session** as the one 
 
 ### Publishing a release (maintainers)
 
-Bump `version/code` + `version/name` in `export_presets.cfg`, sync `Tuning.FALLBACK_VERSION_CODE` in `scripts/core/tuning.gd`, export all three builds, upload them plus `version.json` / `version_pc.json` / `index.html` to the updates repo behind https://vatherty.github.io/Forgefall-updates/ (builds FIRST, manifests LAST). The legacy Netlify deploy script in `tools/netlify_digest_deploy.py` is kept for reference only — current hosting is GitHub Pages. See `BUILD_LOG.md` for the per-release checklist.
+Bump `version/code` + `version/name` in `export_presets.cfg`, sync `Tuning.FALLBACK_VERSION_CODE` in `scripts/core/tuning.gd`, export all three builds, upload them plus `version.json` / `version_pc.json` / `index.html` to the updates repo behind https://vatherty.github.io/Forgefall-updates/ (builds FIRST, manifests LAST). The legacy Netlify deploy script in `tools/netlify_digest_deploy.py` is kept for reference only — current hosting is GitHub Pages (the largest downloads are served from the GitHub Release for the version).
 
 ## Repo layout
 
@@ -117,7 +127,7 @@ Bump `version/code` + `version/name` in `export_presets.cfg`, sync `Tuning.FALLB
 | `tools/` | Audio generators (`gen_audio*.py`) + headless verify suites |
 | `assets/` | Sound effects / music (`.wav`, generated by `tools/gen_audio*.py`) |
 | `addons/` | ForgeUpdater + ForgeSpeech Godot plugins (GDScript + prebuilt `.aar`s) |
-| `docs/` | Android export chain |
-| `DESIGN.md` / `MANIFEST.md` / `BUILD_LOG.md` | Design doc, file manifest, per-release log |
+| `docs/` | Android export chain and feature notes |
+| `studio/` | FORGEFALL Studio, the map editor (plus its MCP server) |
 
 Excluded from the repo (gitignored, generated locally): `.godot/`, `builds/`, `updates/`, `*_staging/`, `.apkmod/`, `*.pck`, `*.apk`, `*.zip`, `*.keystore`, `*.import`.
