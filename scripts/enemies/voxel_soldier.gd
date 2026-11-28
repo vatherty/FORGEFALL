@@ -29,6 +29,11 @@ extends Node3D
 const LEG_H := 0.75
 const TORSO_H := 0.75
 const HEAD_S := 0.375
+# BB-4 Stage D (soldier polish): aim-pitch arm follow-through (the gun
+# pivot takes the rest, so the muzzle lands exactly on the elevation)
+# and the hip-sway roll amplitude of the idle->walk weight shift.
+const AIM_PITCH_ARM_FOLLOW := 0.6
+const HIP_SWAY_ROLL := 0.05
 
 var _leg_l: Node3D
 var _leg_r: Node3D
@@ -463,13 +468,17 @@ func _set_lamp(windup: float) -> void:
 
 ## Full procedural animation driver. Params (all optional, 0..1 unless noted):
 ## speed (m/s), aiming, windup, strike, flinch, strafe (-1..1),
-## crouch, death (0..1 crumple progress).
+## crouch, death (0..1 crumple progress), aim_pitch (radians, Stage D:
+## elevation to the target; + = target above). Flinch may dip to -0.25:
+## EnemyBase's Stage D spring overshoots past neutral on settle, and
+## the pose terms below read the negative as a slight forward settle.
 func animate_full(dt: float, params: Dictionary) -> void:
 	var spd := float(params.get("speed", 0.0))
 	var aiming := bool(params.get("aiming", false))
 	var windup := clampf(float(params.get("windup", 0.0)), 0.0, 1.0)
 	var strike := clampf(float(params.get("strike", 0.0)), 0.0, 1.0)
-	var flinch := clampf(float(params.get("flinch", 0.0)), 0.0, 1.0)
+	var flinch := clampf(float(params.get("flinch", 0.0)), -0.25, 1.0)
+	var aim_pitch := clampf(float(params.get("aim_pitch", 0.0)), -1.0, 1.0)
 	var strafe := clampf(float(params.get("strafe", 0.0)), -1.0, 1.0)
 	var crouch := clampf(float(params.get("crouch", 0.0)), 0.0, 1.0)
 	var death := clampf(float(params.get("death", 0.0)), 0.0, 1.0)
@@ -489,10 +498,18 @@ func animate_full(dt: float, params: Dictionary) -> void:
 	_leg_l.rotation.z = strafe * 0.14
 	_leg_r.rotation.z = -strafe * 0.14
 	# Arms: aim/windup/strike pose, else counter-swing with the legs.
+	# Stage D: pose_pitch is the Stage D aim elevation — the arms follow
+	# AIM_PITCH_ARM_FOLLOW of it, the gun pivot (below) takes the rest,
+	# so the muzzle's world pitch equals aim_pitch while the arms read
+	# as carrying it there. Zero outside the aim pose: a walking puppet
+	# keeps its gun level exactly as before.
+	var pose_pitch := 0.0
 	if aiming or windup > 0.0 or strike > 0.0:
 		# Aim = 1.45; wind-up draws the weapon back/up (0.60); the
 		# strike chops forward (2.00). Lerped so poses blend, never snap.
-		var arm_target := 1.45 - windup * 0.85 + strike * 0.55
+		pose_pitch = aim_pitch
+		var arm_target := 1.45 - windup * 0.85 + strike * 0.55 \
+				+ pose_pitch * AIM_PITCH_ARM_FOLLOW
 		_arm_l.rotation.x = lerpf(_arm_l.rotation.x, arm_target, minf(1.0, 18.0 * dt))
 		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, arm_target, minf(1.0, 18.0 * dt))
 	else:
@@ -501,12 +518,17 @@ func animate_full(dt: float, params: Dictionary) -> void:
 	_arm_l.rotation.z = 0.08 + strafe * 0.10 + flinch * 0.50
 	_arm_r.rotation.z = -0.08 - strafe * 0.10 - flinch * 0.50
 	if _gun_pivot != null:
-		_gun_pivot.rotation.x = -_arm_r.rotation.x
+		_gun_pivot.rotation.x = -_arm_r.rotation.x + pose_pitch
 	# Torso: forward lean with speed, lean BACK on wind-up / flinch,
 	# lunge forward on the strike; bob + breathing; strafe tilt.
 	var lean := -move_k * 0.10 + windup * 0.30 - strike * 0.38 + flinch * 0.35
 	_body_root.rotation.x = lerpf(_body_root.rotation.x, lean, minf(1.0, 14.0 * dt))
-	_body_root.rotation.z = -strafe * 0.10
+	# Stage D stride weight: a hip-sway roll on the stride cycle,
+	# strongest mid-transition (move_k ~0.5, where the sway factor
+	# peaks) — idle->walk reads as weight shifting foot to foot
+	# instead of the puppet skating into motion.
+	var sway_k := move_k * (1.0 - move_k) * 4.0
+	_body_root.rotation.z = -strafe * 0.10 + sin(_walk_phase) * HIP_SWAY_ROLL * sway_k
 	var bob := absf(sin(_walk_phase)) * 0.05 * move_k
 	var breathe := sin(_idle_t * 2.0) * 0.012 * (1.0 - move_k)
 	_body_root.position.y = bob + breathe - crouch * 0.30

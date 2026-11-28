@@ -225,5 +225,73 @@ const UPDATE_BASE_URL := "https://vatherty.github.io/Forgefall-updates/"
 const UPDATE_TIMEOUT_SEC := 8
 ## Installed version code used when the ForgeUpdater Android plugin is absent
 ## (desktop/editor builds). KEEP IN SYNC with export_presets.cfg version/code.
-const FALLBACK_VERSION_CODE := 48
+const FALLBACK_VERSION_CODE := 49
+#endregion
+
+#region TUNABLES — feel wave (BB-4/BB-5)
+## NOTE: live values are the consts in scripts/weapons/weapon_base.gd and
+## scripts/player/player.gd, and the per-weapon "weight" stats in
+## scripts/weapons/arsenal.gd (WEAPONS); this mirrors them.
+## BB-5 weapon weight: weight_norm = clamp((weight - MIN) / (MAX - MIN)).
+const WEIGHT_MIN := 2.5        # weapon_base.gd: normalisation floor
+const WEIGHT_MAX := 10.5       # weapon_base.gd: normalisation ceiling (LMG)
+const WEIGHT_DEFAULT := 5.0    # weapon_base.gd: stat-less Forge/mod weapons
+const WEIGHT_SPRING_SOFTEN := 0.45 # weapon_base.gd: VM spring stiffness lost at norm 1
+const WEIGHT_SWAY_GROW := 0.6      # weapon_base.gd: sway amplitude gained at norm 1
+const WEIGHT_BOB_GROW := 0.5       # weapon_base.gd: bob amplitude gained at norm 1
+const WEIGHT_BOB_RATE_SLOW := 0.25 # weapon_base.gd: bob phase rate lost at norm 1
+const WEIGHT_DIP_BASE := 0.7       # weapon_base.gd: landing-dip scale at norm 0
+const WEIGHT_DIP_GROW := 0.8       # weapon_base.gd: extra dip scale at norm 1
+## PENDING RULING (plan §7.2): Raptor takes full weight effects incl. the
+## Stage D hitbox growth. Flip in weapon_base.gd (the live copy) to exempt.
+const WEIGHT_RAPTOR_FULL_EFFECTS := true
+const PLAYER_WEIGHT_SPEED_PENALTY := 0.22 # player.gd: top-speed fraction lost at norm 1
+const PLAYER_WEIGHT_ACCEL_PENALTY := 0.35 # player.gd: ground-accel fraction lost at norm 1
+## BB-4 Stage B: viewmodel spring core + recoil kick spring + sprint pose.
+const VM_SPRING_STIFFNESS := 220.0     # weapon_base.gd: position spring (omega ~14.8)
+const VM_SPRING_DAMPING_RATIO := 1.0   # weapon_base.gd: position critically damped
+const VM_ROT_SPRING_STIFFNESS := 170.0 # weapon_base.gd: rotation spring (omega ~13)
+const VM_ROT_SPRING_DAMPING_RATIO := 0.9 # weapon_base.gd: rotation damping
+const VM_RAISE_DAMPING_RATIO := 0.85   # weapon_base.gd: raise-only under-damped settle
+const VM_SPRING_MAX_DT := 1.0 / 30.0   # weapon_base.gd: per-substep clamp
+const VM_RAISE_START_OFFSET := Vector3(0.0, -0.22, 0.06) # weapon_base.gd: raise seed pose
+const VM_LOWER_OFFSET := Vector3(0.0, -0.25, 0.0)        # weapon_base.gd: lower target offset
+const ADS_BLEND_TIME := 0.11           # weapon_base.gd: ADS spring ~95% travel time (s)
+const SPRINT_BLEND_TIME := 0.16        # weapon_base.gd: sprint pose spring time (s)
+const VM_KICK_STIFFNESS := 400.0       # weapon_base.gd: recoil kick spring (omega 20)
+const VM_KICK_DAMPING_RATIO := 0.30    # weapon_base.gd: kick spring under-damped settle
+const VM_KICK_VEL_GAIN := 6.0          # weapon_base.gd: shot impulse -> kick velocity gain
+## Sprint pose: POSE ONLY (plan §7.3 default) — no fire block, no delay.
+const SPRINT_POSE_POS := Vector3(-0.04, -0.05, 0.02)  # weapon_base.gd: sprint pose shift
+const SPRINT_POSE_ROT := Vector3(-0.55, 0.35, -0.25)  # weapon_base.gd: sprint pose rotation
+## BB-4 Stage C: reload choreography track (sampled off the staged-reload
+## timers; timing untouched) + viewmodel landing dip. The BB-4×BB-5 join
+## consumes the WEIGHT_* factors above: pose-spring stiffness, sway and
+## bob scale by the equipped weapon's weight_effects() multipliers.
+const RELOAD_POSE_MAG_OUT_POS := Vector3(0.0, -0.06, 0.0)   # weapon_base.gd: MAG_OUT key dip
+const RELOAD_POSE_MAG_OUT_ROT := Vector3(0.10, 0.0, -0.60)  # weapon_base.gd: MAG_OUT key roll
+const RELOAD_POSE_MAG_IN_POS := Vector3(0.0, -0.10, 0.0)    # weapon_base.gd: MAG_IN key dip
+const RELOAD_POSE_MAG_IN_ROT := Vector3(0.28, 0.0, -0.15)   # weapon_base.gd: MAG_IN key pitch
+const RELOAD_POSE_CHAMBER_POS := Vector3(0.0, 0.0, -0.03)   # weapon_base.gd: chamber pulse peak
+const RELOAD_POSE_CHAMBER_ROT := Vector3(-0.06, 0.0, 0.0)   # weapon_base.gd: chamber pulse peak
+const RELOAD_ADS_AMPLITUDE := 0.4     # weapon_base.gd: choreography scale at full ADS
+const RELOAD_SEAT_JOLT_POS := 0.9     # weapon_base.gd: mag-seat impulse -> pos spring vel
+const RELOAD_SEAT_JOLT_ROT := -1.0    # weapon_base.gd: mag-seat impulse -> rot spring vel
+const RELOAD_RACK_JOLT_ROT := -2.2    # weapon_base.gd: rack snap impulse -> rot spring vel
+const LAND_DIP_PER_SPEED := 0.008       # weapon_base.gd: dip depth per m/s of fall
+const LAND_DIP_MAX := 0.09              # weapon_base.gd: dip depth ceiling (pre-weight)
+const LAND_DIP_PITCH_PER_SPEED := 0.010 # weapon_base.gd: dip pitch per m/s of fall
+const LAND_DIP_PITCH_MAX := 0.12        # weapon_base.gd: dip pitch ceiling (pre-weight)
+const LAND_DIP_MIN_FALL := 2.0          # weapon_base.gd: min fall speed that dips the gun
+const LAND_DIP_STIFFNESS := 170.0       # weapon_base.gd: dip spring (omega ~13)
+const LAND_DIP_DAMPING_RATIO := 0.55    # weapon_base.gd: dip spring under-damped bounce
+## BB-5 Stage D: dynamic capsule hitbox (player.gd owns the capsule).
+const PLAYER_WEIGHT_HITBOX_RADIUS := 0.10 # player.gd: capsule radius gained at hitbox_norm 1
+const PLAYER_WEIGHT_HITBOX_BASE_RADIUS := 0.4 # player.gd: scenes/player.tscn capsule radius
+## BB-4 Stage D: soldier polish (enemy_base.gd / voxel_soldier.gd).
+const ANIM_FLINCH_STIFFNESS := 1100.0     # enemy_base.gd: rendered-flinch spring (omega ~33)
+const ANIM_FLINCH_DAMPING_RATIO := 0.5    # enemy_base.gd: ~16% overshoot past neutral
+const ANIM_SPEED_SMOOTH_RATE := 10.0      # enemy_base.gd: stride input smoothing (/s)
+const AIM_PITCH_ARM_FOLLOW := 0.6         # voxel_soldier.gd: arm share of the aim elevation
+const HIP_SWAY_ROLL := 0.05               # voxel_soldier.gd: idle->walk weight-shift roll (rad)
 #endregion

@@ -20,7 +20,10 @@ const RECOIL_RECOVER_TIME := 0.20   # seconds to recover applied kick (fallback;
 const RECOIL_SETTLE_DELAY := 0.045  # Goal 1: kick holds briefly before recovery starts, so it READS
 const RECOIL_VM_KICK_Z := 0.55      # viewmodel backward kick per unit of pattern pitch
 const RECOIL_VM_KICK_PITCH := 0.75  # viewmodel muzzle-rise rotation per unit of pattern pitch
-const RECOIL_VM_DECAY := 11.0       # viewmodel kick spring-back rate (1/s)
+# BB-4 Stage B: the kick RETURN is a spring, not the old exp(-11t) decay.
+const VM_KICK_STIFFNESS := 400.0    # kick spring (omega 20 rad/s)
+const VM_KICK_DAMPING_RATIO := 0.30 # under-damped: settles through a small forward overshoot
+const VM_KICK_VEL_GAIN := 6.0       # shot impulse -> kick spring velocity per unit of kick offset (1/s)
 const MUZZLE_FLASH_TIME := 0.04     # 40ms flash
 const SHELL_POOL_SIZE := 10
 const SHELL_LIFE := 1.4
@@ -33,6 +36,56 @@ const ADS_SPREAD_MULT := 0.35
 const ADS_RECOIL_MULT := 0.7
 const ADS_SWAY_MULT := 0.25
 const ADS_BOB_MULT := 0.20
+# --- BB-4 Stage B: viewmodel spring core (see _tick_viewmodel). One writer
+# drives the viewmodel through damped springs; sway/bob formulas and kick
+# magnitudes are unchanged additives on top. Rest-state feel is identical
+# to the pre-spring build by construction.
+const VM_SPRING_STIFFNESS := 220.0     # position spring (omega ~14.8 rad/s)
+const VM_SPRING_DAMPING_RATIO := 1.0   # position: critically damped (pose never overshoots)
+const VM_ROT_SPRING_STIFFNESS := 170.0 # rotation spring (omega ~13 rad/s) — slightly softer
+const VM_ROT_SPRING_DAMPING_RATIO := 0.9 # rotation: a breath of overshoot reads as mass
+const VM_RAISE_DAMPING_RATIO := 0.85   # raise only: under-damped settle, a hint of overshoot
+const VM_SPRING_MAX_DT := 1.0 / 30.0   # max substep h for every viewmodel spring (see _spring_substeps)
+const VM_SPRING_MAX_FRAME := 1.0       # gate fix: spring integration time clamped to this per tick (s)
+const VM_RAISE_START_OFFSET := Vector3(0.0, -0.22, 0.06) # raise starts here (pre-spring value)
+const VM_LOWER_OFFSET := Vector3(0.0, -0.25, 0.0)        # lower target = HIP_POS + this
+const ADS_BLEND_TIME := 0.11           # ADS spring: ~95% of travel closed in this (s)
+const SPRINT_BLEND_TIME := 0.16        # sprint pose spring: ~95% of travel in this (s)
+# Sprint pose (plan §2.4; ruling §7.3 default = POSE ONLY: firing is NOT
+# blocked while sprinting, no sprint-out delay — these offsets are the
+# whole effect. A future delay would gate _attempt_fire on _sprint_blend
+# and add its timer beside set_sprinting(); the pose machinery is ready.)
+const SPRINT_POSE_POS := Vector3(-0.04, -0.05, 0.02)  # carried-at-a-run shift
+const SPRINT_POSE_ROT := Vector3(-0.55, 0.35, -0.25)  # pitch down, yaw across, roll in (rad)
+# --- BB-4 Stage C: reload choreography (plan §2.3). A pose TRACK sampled
+# off the existing staged-reload timers — keyframe poses at the stage
+# boundaries, smoothstepped within each stage, composed onto the spring
+# target in _tick_viewmodel. VISUAL ONLY: reload timing and the staged
+# game logic in _tick_reload are untouched. The track is normalised per
+# stage, so it stretches over every weapon's own reload_stages with zero
+# per-weapon authoring; at full ADS it plays at RELOAD_ADS_AMPLITUDE so
+# the choreography yields to the sight picture (verify_ads_alignment).
+const RELOAD_POSE_MAG_OUT_POS := Vector3(0.0, -0.06, 0.0)   # MAG_OUT key: dip
+const RELOAD_POSE_MAG_OUT_ROT := Vector3(0.10, 0.0, -0.60)  # MAG_OUT key: ~35° roll to the mag side
+const RELOAD_POSE_MAG_IN_POS := Vector3(0.0, -0.10, 0.0)    # MAG_IN key: deeper dip, mag going home
+const RELOAD_POSE_MAG_IN_ROT := Vector3(0.28, 0.0, -0.15)   # MAG_IN key: muzzle-down pitch, roll mostly back
+const RELOAD_POSE_CHAMBER_POS := Vector3(0.0, 0.0, -0.03)   # CHAMBER pulse peak: bolt driven home (mid-stage)
+const RELOAD_POSE_CHAMBER_ROT := Vector3(-0.06, 0.0, 0.0)   # CHAMBER pulse peak: slight muzzle-up settle
+const RELOAD_ADS_AMPLITUDE := 0.4     # choreography scale at full ADS
+const RELOAD_SEAT_JOLT_POS := 0.9     # mag-seat boundary impulse -> pos spring vel (+y, m/s)
+const RELOAD_SEAT_JOLT_ROT := -1.0    # mag-seat boundary impulse -> rot spring vel (pitch, rad/s)
+const RELOAD_RACK_JOLT_ROT := -2.2    # chamber-start rack snap -> rot spring vel (pitch, rad/s)
+# --- BB-4 Stage C: viewmodel landing dip (plan §2.5). A spring channel
+# of its own, impulse-fired by the landing tracker in _tick_land_dip and
+# scaled by the weapon's weight (weight_effects land_dip_mult — the
+# BB-4×BB-5 join). The camera's own _land_offset dip is untouched.
+const LAND_DIP_PER_SPEED := 0.008       # dip depth per m/s of fall speed (m)
+const LAND_DIP_MAX := 0.09              # dip depth ceiling (m) before weight scaling
+const LAND_DIP_PITCH_PER_SPEED := 0.010 # muzzle-down pitch per m/s of fall (rad)
+const LAND_DIP_PITCH_MAX := 0.12        # pitch ceiling (rad) before weight scaling
+const LAND_DIP_MIN_FALL := 2.0          # falls slower than this (m/s) don't dip the gun
+const LAND_DIP_STIFFNESS := 170.0       # dip spring (omega ~13 rad/s)
+const LAND_DIP_DAMPING_RATIO := 0.55    # under-damped: one soft bounce reads as mass
 const HIP_POS := Vector3(0.24, -0.20, -0.50)
 const ADS_POS := Vector3(0.0, -0.148, -0.38)
 const HIP_ROT := Vector3(0.0, -0.07, 0.0)
@@ -84,6 +137,31 @@ static func lens_extra_zoom_for(optic: String) -> float:
 ## BB-1d: the family's lens render-target size (square, px).
 static func lens_viewport_size_for(optic: String) -> int:
 	return LENS_VIEWPORT_SIZE_REFLEX if optic == "reflex" else LENS_VIEWPORT_SIZE
+
+# --- BB-5 (feel wave): gun weight. Colin's rule: "guns make you heavier —
+# heavier gun = slower, easier to hit; bigger guns even more." The per-weapon
+# mass is DATA (Arsenal.WEAPONS "weight"); everything derived from it flows
+# through weight_norm + weight_effects() below so tuning stays in one place.
+# Movement penalties (speed / strafe-accel) are NOT here: player.gd owns
+# WEIGHT_SPEED_PENALTY / WEIGHT_ACCEL_PENALTY and derives its multipliers
+# from the pushed weight_norm (plan §4). The factors below drive the
+# viewmodel feel (Stages B/C) and the Stage D hitbox push.
+const WEIGHT_MIN := 2.5        # normalisation floor: weight_norm 0 at/below this
+const WEIGHT_MAX := 10.5       # normalisation ceiling: weight_norm 1 (the LMG)
+const WEIGHT_DEFAULT := 5.0    # stats dicts with no "weight" (Forge/mod customs)
+const WEIGHT_SPRING_SOFTEN := 0.45 # viewmodel spring stiffness lost at norm 1
+const WEIGHT_SWAY_GROW := 0.6      # idle sway amplitude gained at norm 1
+const WEIGHT_BOB_GROW := 0.5       # walk bob amplitude gained at norm 1
+const WEIGHT_BOB_RATE_SLOW := 0.25 # walk bob phase rate lost at norm 1
+const WEIGHT_DIP_BASE := 0.7       # landing-dip scale at norm 0
+const WEIGHT_DIP_GROW := 0.8       # extra landing-dip scale at norm 1
+## PENDING RULING (plan §7.2, Colin has not ruled yet): the Raptor is a
+## traversal tool as much as a weapon. Recommended default = true: it takes
+## the FULL weight effects at its mid weight, including the Stage D hitbox
+## growth. Flip to false to exempt it from hitbox growth ONLY (movement and
+## spring effects are unchanged either way). weight_effects() is the single
+## place this flag is read.
+const RAPTOR_FULL_WEIGHT_EFFECTS := true
 #endregion
 
 enum FireMode { AUTO, SEMI, BOLT, PUMP, BURST }
@@ -132,6 +210,8 @@ var muzzle_flash_time: float = MUZZLE_FLASH_TIME    # Goal 1: per-weapon flash d
 var muzzle_flash_energy: float = 4.0                 # Goal 1: per-weapon flash brightness
 var raise_time: float = 0.35
 var lower_time: float = 0.25
+var weight: float = WEIGHT_DEFAULT # BB-5: Arsenal "weight" stat (kg-flavoured)
+var weight_norm: float = 0.3125    # BB-5: derived in setup() — (weight - 2.5) / 8, clamped 0..1
 var reload_stages: Array = [0.45, 0.85, 0.35] # mag_out, mag_in, chamber
 var cycle_time: float = 0.0      # bolt/pump re-chamber lockout
 var sfx_fire: String = "shot"
@@ -177,7 +257,35 @@ var _recoil_debt := Vector2.ZERO
 var _recoil_settle_t := 0.0    # Goal 1: recovery holds while this runs
 var _vm_kick_z := 0.0          # Goal 1: transient viewmodel backward kick (m)
 var _vm_kick_pitch := 0.0      # Goal 1: transient viewmodel muzzle-rise (rad)
+var _vm_kick_z_vel := 0.0      # BB-4 Stage B: kick spring velocity (m/s)
+var _vm_kick_pitch_vel := 0.0  # BB-4 Stage B: kick spring velocity (rad/s)
 var _kick_mag := 0.0           # Goal 1: mean pattern pitch — scales the VM kick
+# BB-4 Stage B: spring-core state. _vm_pos/_vm_rot are the spring-driven
+# viewmodel transform BEFORE the sway/bob/kick additives are applied;
+# the single writer is _tick_viewmodel.
+var _vm_pos := HIP_POS
+var _vm_pos_vel := Vector3.ZERO
+var _vm_rot := HIP_ROT
+var _vm_rot_vel := Vector3.ZERO
+var _ads_vel := 0.0            # ADS critically-damped spring velocity
+var _sprinting := false        # sprint pose input (manager signal / player poll)
+var _sprint_blend := 0.0
+var _sprint_blend_vel := 0.0
+# BB-4×BB-5 join (Stage C): weight_effects() multipliers, cached in
+# setup() (weight_norm only ever changes there) so the per-frame ticks
+# read plain floats — no Dictionary allocation in the hot loop.
+var _w_spring_mult := 1.0
+var _w_sway_mult := 1.0
+var _w_bob_mult := 1.0
+var _w_bob_rate_mult := 1.0
+var _w_dip_mult := 1.0
+# BB-4 Stage C: viewmodel landing-dip spring channel + landing tracker.
+var _land_dip := 0.0           # dip depth (m, positive = gun pushed down)
+var _land_dip_vel := 0.0
+var _land_dip_pitch := 0.0     # dip pitch (rad, positive = muzzle down)
+var _land_dip_pitch_vel := 0.0
+var _air_vy := 0.0             # last airborne vertical velocity (banked fall speed)
+var _was_grounded := true      # landing tracker: grounded state last tick
 var _sway_t: float = 0.0
 var _bob_t: float = 0.0
 var _dry_fired: bool = false
@@ -217,6 +325,23 @@ func setup(stats: Dictionary) -> void:
 		_kick_mag /= float(recoil_pattern.size())
 	raise_time = float(stats.get("raise_time", 0.35))
 	lower_time = float(stats.get("lower_time", 0.25))
+	# BB-5: weight -> weight_norm, the single input to every weight-driven
+	# feel effect (see weight_effects()). Missing stat = WEIGHT_DEFAULT, so
+	# hand-built Forge/mod stat dicts stay valid. Gate-fix rider: an
+	# explicit `"weight": null` (or any non-numeric value) in a
+	# hand-authored mod dict falls back the same way — float(null) used
+	# to abort setup() here, leaving a viewmodel-less weapon.
+	var raw_weight: Variant = stats.get("weight", WEIGHT_DEFAULT)
+	weight = float(raw_weight) if (raw_weight is float or raw_weight is int) else WEIGHT_DEFAULT
+	weight_norm = clampf((weight - WEIGHT_MIN) / (WEIGHT_MAX - WEIGHT_MIN), 0.0, 1.0)
+	# BB-4×BB-5 join (Stage C): cache the effect multipliers the spring
+	# core / sway / bob / landing dip read every tick.
+	var wfx := weight_effects()
+	_w_spring_mult = float(wfx["spring_stiffness_mult"])
+	_w_sway_mult = float(wfx["sway_mult"])
+	_w_bob_mult = float(wfx["bob_mult"])
+	_w_bob_rate_mult = float(wfx["bob_rate_mult"])
+	_w_dip_mult = float(wfx["land_dip_mult"])
 	reload_stages = (stats.get("reload_stages", [0.45, 0.85, 0.35]) as Array).duplicate()
 	cycle_time = float(stats.get("cycle_time", 0.0))
 	sfx_fire = str(stats.get("sfx_fire", "shot"))
@@ -243,6 +368,29 @@ func setup(stats: Dictionary) -> void:
 	_build_flash()
 	_build_shell_pool()
 	_setup_lens_pip()
+
+
+## BB-5: every weight-derived feel multiplier, computed from weight_norm in
+## ONE place (plan §3.1). Movement penalties are deliberately absent: the
+## player derives those from weight_norm with its own WEIGHT_*_PENALTY
+## consts (plan §4). Consumers: the viewmodel spring/sway/bob/landing-dip
+## scaling (Stage C join — setup() caches the multipliers into _w_* vars
+## so the ticks read plain floats) and the Stage D hitbox push.
+## "hitbox_norm" is the norm the player capsule grows by — the pending
+## Raptor ruling (§7.2) is applied HERE and nowhere else, so flipping
+## RAPTOR_FULL_WEIGHT_EFFECTS is the only change that ruling ever needs.
+func weight_effects() -> Dictionary:
+	var n := weight_norm
+	return {
+		"weight": weight,
+		"weight_norm": n,
+		"hitbox_norm": n if (weapon_id != "raptor" or RAPTOR_FULL_WEIGHT_EFFECTS) else 0.0,
+		"spring_stiffness_mult": 1.0 - WEIGHT_SPRING_SOFTEN * n,
+		"sway_mult": 1.0 + WEIGHT_SWAY_GROW * n,
+		"bob_mult": 1.0 + WEIGHT_BOB_GROW * n,
+		"bob_rate_mult": 1.0 - WEIGHT_BOB_RATE_SLOW * n,
+		"land_dip_mult": WEIGHT_DIP_BASE + WEIGHT_DIP_GROW * n,
+	}
 
 
 ## Apply a generated weapon's visual description after Forge grants its
@@ -327,8 +475,29 @@ func on_equip() -> void:
 			_camera.add_child(_viewmodel)
 		else:
 			add_child(_viewmodel)
-		_viewmodel.position = HIP_POS
-		_viewmodel.rotation = HIP_ROT
+		# BB-4 Stage B: the raise IS the position spring starting at the
+		# lowered offset — reset the spring core so no velocity or pose
+		# leaks in from the previously equipped weapon. (_sprint_blend
+		# deliberately persists: swapping mid-sprint keeps the pose.)
+		_vm_pos = HIP_POS + VM_RAISE_START_OFFSET
+		_vm_pos_vel = Vector3.ZERO
+		_vm_rot = HIP_ROT
+		_vm_rot_vel = Vector3.ZERO
+		_ads_vel = 0.0
+		_vm_kick_z = 0.0
+		_vm_kick_pitch = 0.0
+		_vm_kick_z_vel = 0.0
+		_vm_kick_pitch_vel = 0.0
+		# BB-4 Stage C: no landing dip or stale fall speed leaks across
+		# an equip either.
+		_land_dip = 0.0
+		_land_dip_vel = 0.0
+		_land_dip_pitch = 0.0
+		_land_dip_pitch_vel = 0.0
+		_air_vy = 0.0
+		_was_grounded = true
+		_viewmodel.position = _vm_pos
+		_viewmodel.rotation = _vm_rot
 		# If we have no camera yet (first frames), stay hidden until the
 		# manager re-equips us onto the real camera.
 		_viewmodel.visible = _camera != null
@@ -344,6 +513,7 @@ func on_unequip() -> void:
 	_reload_stage = _ReloadStage.NONE
 	_ads = false
 	_ads_blend = 0.0
+	_ads_vel = 0.0
 	if _viewmodel != null:
 		if _viewmodel.get_parent() != null:
 			_viewmodel.get_parent().remove_child(_viewmodel)
@@ -365,6 +535,22 @@ func is_ready() -> bool:
 
 func set_ads(active: bool) -> void:
 	_ads = active
+
+
+## BB-4 Stage B: sprint pose input. WeaponManager forwards the player's
+## sprint_changed signal here (the signal player.gd always emitted and
+## nothing consumed); _tick_viewmodel ALSO polls the player's _sprinting
+## flag duck-typed as a fallback, matching the manager's ADS pattern.
+## Ruling §7.3 default (Colin has not vetoed): POSE ONLY — firing is not
+## blocked while sprinting and there is no sprint-out delay.
+func set_sprinting(active: bool) -> void:
+	_sprinting = active
+
+
+## BB-4 Stage B: current sprint pose blend (0 = hip pose, 1 = full
+## sprint pose). Verify/debug hook, same spirit as get_ads_blend().
+func get_sprint_blend() -> float:
+	return _sprint_blend
 
 
 ## BB-1: 0 = hip, 1 = fully aimed. The HUD reads this to fade the
@@ -754,13 +940,17 @@ func _current_spread() -> float:
 	return s
 
 
-func _player_speed() -> float:
+func _player_velocity() -> Vector3:
 	if _player == null or not is_instance_valid(_player):
-		return 0.0
+		return Vector3.ZERO
 	var v: Variant = _player.get("velocity")
 	if v is Vector3:
-		return (v as Vector3).length()
-	return 0.0
+		return v as Vector3
+	return Vector3.ZERO
+
+
+func _player_speed() -> float:
+	return _player_velocity().length()
 
 
 func _spread_dir(spread: float) -> Vector3:
@@ -954,6 +1144,13 @@ func _apply_recoil() -> void:
 	_recoil_settle_t = RECOIL_SETTLE_DELAY
 	_vm_kick_z += _kick_mag * RECOIL_VM_KICK_Z * mult
 	_vm_kick_pitch += _kick_mag * RECOIL_VM_KICK_PITCH * mult
+	# BB-4 Stage B: the punch itself stays instant (the camera kick it
+	# syncs with is instant too), but the impulse ALSO feeds the kick
+	# spring's velocity — the gun carries back a touch further, then
+	# the under-damped spring hauls it home through a small overshoot
+	# instead of the old exponential slide (see _tick_vm_kick).
+	_vm_kick_z_vel += _kick_mag * RECOIL_VM_KICK_Z * mult * VM_KICK_VEL_GAIN
+	_vm_kick_pitch_vel += _kick_mag * RECOIL_VM_KICK_PITCH * mult * VM_KICK_VEL_GAIN
 
 
 func _recover_recoil(delta: float) -> void:
@@ -977,18 +1174,81 @@ func _recover_recoil(delta: float) -> void:
 		_recoil_debt = Vector2.ZERO
 
 
-## Goal 1: viewmodel kick spring-back (exponential, faster than the
-## camera recovery so the gun visually leads the settle).
+## BB-4 Stage B: viewmodel kick spring (was Goal 1's exponential decay).
+## The kick offsets are spring positions with their own velocities; a
+## shot's impulse (see _apply_recoil) punches them back and the
+## under-damped spring (VM_KICK_DAMPING_RATIO < 1) settles them through
+## a small forward overshoot — the gun reads as mass coming back onto
+## the hands, not a value sliding home on a rail. Semi-implicit
+## integration with the same substep clamp as the pose springs.
 func _tick_vm_kick(delta: float) -> void:
-	if _vm_kick_z == 0.0 and _vm_kick_pitch == 0.0:
+	if _vm_kick_z == 0.0 and _vm_kick_pitch == 0.0 \
+			and _vm_kick_z_vel == 0.0 and _vm_kick_pitch_vel == 0.0:
 		return
-	var k := exp(-RECOIL_VM_DECAY * delta)
-	_vm_kick_z *= k
-	_vm_kick_pitch *= k
-	if absf(_vm_kick_z) < 0.0002:
+	var c := 2.0 * VM_KICK_DAMPING_RATIO * sqrt(VM_KICK_STIFFNESS)
+	var sub := _spring_substeps(delta)
+	var steps: int = sub[0]
+	var h: float = sub[1]
+	for i in steps:
+		_vm_kick_z_vel += (-VM_KICK_STIFFNESS * _vm_kick_z - c * _vm_kick_z_vel) * h
+		_vm_kick_z += _vm_kick_z_vel * h
+		_vm_kick_pitch_vel += (-VM_KICK_STIFFNESS * _vm_kick_pitch - c * _vm_kick_pitch_vel) * h
+		_vm_kick_pitch += _vm_kick_pitch_vel * h
+	if absf(_vm_kick_z) < 0.0002 and absf(_vm_kick_z_vel) < 0.002:
 		_vm_kick_z = 0.0
-	if absf(_vm_kick_pitch) < 0.0002:
+		_vm_kick_z_vel = 0.0
+	if absf(_vm_kick_pitch) < 0.0002 and absf(_vm_kick_pitch_vel) < 0.002:
 		_vm_kick_pitch = 0.0
+		_vm_kick_pitch_vel = 0.0
+
+
+## BB-4 Stage C: current landing-dip state [depth_m, pitch_rad].
+## Verify/debug hook, same spirit as get_ads_blend().
+func get_land_dip() -> Vector2:
+	return Vector2(_land_dip, _land_dip_pitch)
+
+
+## BB-4 Stage C: viewmodel landing dip (plan §2.5). The tracker polls
+## the player duck-typed (the _player_speed pattern): while airborne
+## it banks the fall speed; on the grounded transition a fall past
+## LAND_DIP_MIN_FALL fires the dip as an offset on the dip spring
+## channel — depth and muzzle-down pitch scaled by fall speed and by
+## the weapon's weight (land_dip_mult, cached in setup). The spring
+## (under-damped, LAND_DIP_DAMPING_RATIO) hauls it home through one
+## soft bounce. Players without is_on_floor (test doubles) read as
+## permanently grounded, so the channel simply never fires for them.
+func _tick_land_dip(delta: float) -> void:
+	var grounded := true
+	if _player != null and is_instance_valid(_player) \
+			and _player.has_method("is_on_floor"):
+		grounded = bool(_player.call("is_on_floor"))
+	if not grounded:
+		_air_vy = _player_velocity().y
+	elif not _was_grounded and _air_vy < -LAND_DIP_MIN_FALL:
+		var fall := -_air_vy
+		_land_dip += minf(fall * LAND_DIP_PER_SPEED, LAND_DIP_MAX) * _w_dip_mult
+		_land_dip_pitch += minf(fall * LAND_DIP_PITCH_PER_SPEED,
+				LAND_DIP_PITCH_MAX) * _w_dip_mult
+		_air_vy = 0.0
+	_was_grounded = grounded
+	if _land_dip == 0.0 and _land_dip_vel == 0.0 \
+			and _land_dip_pitch == 0.0 and _land_dip_pitch_vel == 0.0:
+		return
+	var c := 2.0 * LAND_DIP_DAMPING_RATIO * sqrt(LAND_DIP_STIFFNESS)
+	var sub := _spring_substeps(delta)
+	var steps: int = sub[0]
+	var h: float = sub[1]
+	for i in steps:
+		_land_dip_vel += (-LAND_DIP_STIFFNESS * _land_dip - c * _land_dip_vel) * h
+		_land_dip += _land_dip_vel * h
+		_land_dip_pitch_vel += (-LAND_DIP_STIFFNESS * _land_dip_pitch - c * _land_dip_pitch_vel) * h
+		_land_dip_pitch += _land_dip_pitch_vel * h
+	if absf(_land_dip) < 0.0002 and absf(_land_dip_vel) < 0.002:
+		_land_dip = 0.0
+		_land_dip_vel = 0.0
+	if absf(_land_dip_pitch) < 0.0002 and absf(_land_dip_pitch_vel) < 0.002:
+		_land_dip_pitch = 0.0
+		_land_dip_pitch_vel = 0.0
 
 
 # --- Muzzle flash / shells (preallocated, no per-shot allocs) ---
@@ -1098,11 +1358,63 @@ func _process(delta: float) -> void:
 	_recover_recoil(delta)
 	_tick_vm_kick(delta)
 	_tick_reload(delta)
-	_tick_raise_lower(delta)
+	_tick_land_dip(delta)
+	_tick_viewmodel(delta)
 	_tick_flash(delta)
 	_tick_shells(delta)
-	_tick_sway_bob(delta)
 	_tick_lens_pip()
+
+
+## BB-4 Stage C: progress (0..1) through the CURRENT reload stage,
+## read straight off the existing stage timer — the choreography is
+## sampled from the timers, never the other way round (timing is law).
+func _reload_stage_progress() -> float:
+	if _reload_stage == _ReloadStage.NONE:
+		return 0.0
+	var dur := float(reload_stages[_reload_stage - 1])
+	if dur <= 0.0:
+		return 1.0
+	return clampf(1.0 - _reload_t / dur, 0.0, 1.0)
+
+
+## BB-4 Stage C: the reload pose track (plan §2.3). Keyframe poses sit
+## at the stage boundaries — zero at reload start, MAG_OUT key at the
+## end of stage 1, MAG_IN key at the end of stage 2, zero again at the
+## end of CHAMBER — smoothstepped within each stage, so the track is
+## continuous across boundaries and the pose spring adds life on top.
+## CHAMBER adds a sin pulse (the bolt driven home) over its keyframe
+## return. Pure function of (stage, progress) + the TUNABLES consts:
+## every weapon performs the same track stretched over its own
+## reload_stages — no per-weapon keyframes exist or are needed.
+## Returns [position_offset, rotation_offset].
+func reload_track_pose(stage: int, progress: float) -> Array:
+	var p := clampf(progress, 0.0, 1.0)
+	var s := p * p * (3.0 - 2.0 * p) # smoothstep
+	var from_pos := Vector3.ZERO
+	var from_rot := Vector3.ZERO
+	var to_pos := Vector3.ZERO
+	var to_rot := Vector3.ZERO
+	match stage:
+		_ReloadStage.MAG_OUT:
+			to_pos = RELOAD_POSE_MAG_OUT_POS
+			to_rot = RELOAD_POSE_MAG_OUT_ROT
+		_ReloadStage.MAG_IN:
+			from_pos = RELOAD_POSE_MAG_OUT_POS
+			from_rot = RELOAD_POSE_MAG_OUT_ROT
+			to_pos = RELOAD_POSE_MAG_IN_POS
+			to_rot = RELOAD_POSE_MAG_IN_ROT
+		_ReloadStage.CHAMBER:
+			from_pos = RELOAD_POSE_MAG_IN_POS
+			from_rot = RELOAD_POSE_MAG_IN_ROT
+		_:
+			return [Vector3.ZERO, Vector3.ZERO]
+	var pos := from_pos.lerp(to_pos, s)
+	var rot := from_rot.lerp(to_rot, s)
+	if stage == _ReloadStage.CHAMBER:
+		var pulse := sin(p * PI)
+		pos += RELOAD_POSE_CHAMBER_POS * pulse
+		rot += RELOAD_POSE_CHAMBER_ROT * pulse
+	return [pos, rot]
 
 
 func _tick_reload(delta: float) -> void:
@@ -1123,23 +1435,191 @@ func _tick_reload(delta: float) -> void:
 			emit_ammo()
 			_reload_stage = _ReloadStage.CHAMBER
 			_reload_t = float(reload_stages[2])
+			# BB-4 Stage C: the mag seats and the chambering starts on
+			# this boundary — kick the pose springs so the gun jolts in
+			# the hands at the exact frame the ammo lands (the SFX
+			# clicks already sit on this boundary). Visual only.
+			_vm_pos_vel += Vector3(0.0, RELOAD_SEAT_JOLT_POS, 0.0)
+			_vm_rot_vel += Vector3(RELOAD_SEAT_JOLT_ROT + RELOAD_RACK_JOLT_ROT, 0.0, 0.0)
 		_ReloadStage.CHAMBER:
 			_reload_stage = _ReloadStage.NONE
 
 
-func _tick_raise_lower(delta: float) -> void:
-	if _viewmodel == null:
+## Gate fix (2026-11-28): the shared substep plan for every semi-implicit
+## spring in this file (recoil kick, landing dip, pose pos/rot). Returns
+## [steps, h]. Two rules, both load-bearing:
+##  - h NEVER exceeds VM_SPRING_MAX_DT (1/30 s). Semi-implicit Euler goes
+##    unstable once h passes 2*(sqrt(zeta^2 + 1) - zeta)/omega; the
+##    stiffest, least-damped channel here (kick: omega 20, zeta 0.30)
+##    caps at ~0.074 s, so 1/30 s keeps every channel stable with >2x
+##    margin. The pre-fix code capped the substep COUNT at 16, so any
+##    frame delta past ~0.53 s silently stretched h: a 2 s hitch (Deck
+##    suspend/resume mid-firefight) integrated the kick at h = 0.125
+##    and blew it to ~4.5e10, displacing the viewmodel for seconds.
+##    The step count is therefore derived from the max-h target, not
+##    capped (the EnemyBase flinch spring already worked this way).
+##  - The integrated spring time is clamped to VM_SPRING_MAX_FRAME, so
+##    a multi-second (or multi-hour) hitch costs at most ~30 substeps
+##    per channel. ONLY the springs drop the excess time — gameplay
+##    timers (cooldowns, reload staging) keep the real delta in
+##    _process. One clamped second is plenty: the kick envelope decays
+##    as exp(-zeta*omega*t) = exp(-6t), so after the clamped step it
+##    sits at ~0.25% of its amplitude and re-settles almost at once.
+## For delta <= 16 * VM_SPRING_MAX_DT the step count and h are exactly
+## the pre-fix values, so normal-frame feel is numerically unchanged
+## (the verify suites pin it).
+static func _spring_substeps(delta: float) -> Array:
+	var eff := minf(maxf(delta, 0.0), VM_SPRING_MAX_FRAME)
+	var steps := maxi(1, int(ceil(eff / VM_SPRING_MAX_DT)))
+	return [steps, eff / float(steps)]
+
+
+## BB-4 Stage B: critically-damped scalar spring, integrated in CLOSED
+## FORM (exact for any step size). Monotonic by construction — it can
+## never overshoot its target, which the ADS blend's consumers require:
+## the PiP lens wakes at blend > 0.5 and the scope viewmodel hides at
+## > 0.85, so an overshooting blend would flicker both. Snaps exactly
+## onto the target inside a hair of it, so blend == 0.0 / 1.0 are
+## reachable states rather than asymptotes (the ADS pose contract pins
+## blend == 1.0). Returns [value, velocity]. Pure + static so the feel
+## verify can pin the monotonicity contract without a renderer.
+static func _spring_crit_step(x: float, v: float, target: float, omega: float, h: float) -> Vector2:
+	var d := x - target
+	var b := v + omega * d
+	var e := exp(-omega * h)
+	var nx := target + (d + b * h) * e
+	var nv := (v - omega * b * h) * e
+	if absf(nx - target) < 0.0015 and absf(nv) < 0.02:
+		return Vector2(target, 0.0)
+	return Vector2(nx, nv)
+
+
+## BB-4 Stage B: THE viewmodel tick — the single writer of the
+## viewmodel transform (replaces _tick_raise_lower + _tick_sway_bob and
+## their `animating` peace-treaty flag). Each frame: compose a target
+## pose (hip/ADS lerp + sprint pose, or the lowered pose while
+## lowering), integrate the position/rotation springs toward it, then
+## add the UNCHANGED sway/bob formulas and the recoil-kick spring
+## offsets on top — the same separation the flag used to enforce, now
+## structural. Raise/lower are spring states, not separate writers:
+## on_equip seeds the spring at VM_RAISE_START_OFFSET with the
+## under-damped VM_RAISE_DAMPING_RATIO; _raise_t bookkeeping (and
+## therefore is_ready()) is untouched.
+func _tick_viewmodel(delta: float) -> void:
+	if _viewmodel == null or _camera == null:
 		return
-	if _lowering:
-		_viewmodel.position.y = lerpf(_viewmodel.position.y, HIP_POS.y - 0.25, clampf(delta * 14.0, 0.0, 1.0))
-		return
+	# Sprint fallback poll: the manager's sprint_changed forward is the
+	# primary path; this covers weapons built after sprint started and
+	# signal-less player doubles (the manager's ADS fallback pattern).
+	if _player != null and is_instance_valid(_player):
+		var sp: Variant = _player.get("_sprinting")
+		if sp is bool:
+			_sprinting = sp
+	_sway_t += delta
 	if _raise_t < raise_time:
 		_raise_t += delta
-		var t := clampf(_raise_t / maxf(raise_time, 0.001), 0.0, 1.0)
-		var e := 1.0 - pow(1.0 - t, 3.0) # ease-out cubic
-		var target := HIP_POS.lerp(_ads_pos, _ads_blend)
-		var start := HIP_POS + Vector3(0.0, -0.22, 0.06)
-		_viewmodel.position = start.lerp(target, e)
+	# ADS blend: critically-damped spring (monotonic — see
+	# _spring_crit_step). Omega chosen so ~95% of travel closes in
+	# ADS_BLEND_TIME, comparable to the old linear 10/s full travel, so
+	# BB-1 sight timing does not regress.
+	var ads_step := _spring_crit_step(_ads_blend, _ads_vel,
+			1.0 if _ads else 0.0, 4.5 / ADS_BLEND_TIME, delta)
+	_ads_blend = ads_step.x
+	_ads_vel = ads_step.y
+	# Sprint blend: same critically-damped family, its own time
+	# constant. ADS suppresses the pose (the player cancels sprint on
+	# ADS anyway; this keeps a stale flag from tilting an aimed gun).
+	var sprint_step := _spring_crit_step(_sprint_blend, _sprint_blend_vel,
+			1.0 if (_sprinting and not _ads) else 0.0, 4.5 / SPRINT_BLEND_TIME, delta)
+	_sprint_blend = sprint_step.x
+	_sprint_blend_vel = sprint_step.y
+	# Compose the target pose (plan §2.1 stack): base hip/ADS lerp,
+	# sprint pose, then the Stage C reload track sampled off the stage
+	# timers. The track's amplitude fades with the ADS blend — at full
+	# ADS the gun works at RELOAD_ADS_AMPLITUDE so the choreography
+	# yields to the sight picture instead of throwing the aim off.
+	var target_pos := HIP_POS.lerp(_ads_pos, _ads_blend)
+	var target_rot := HIP_ROT.lerp(ADS_ROT, _ads_blend)
+	var pose_w := _sprint_blend * (1.0 - _ads_blend)
+	target_pos += SPRINT_POSE_POS * pose_w
+	target_rot += SPRINT_POSE_ROT * pose_w
+	if _reload_stage != _ReloadStage.NONE:
+		var track := reload_track_pose(_reload_stage, _reload_stage_progress())
+		var amp := lerpf(1.0, RELOAD_ADS_AMPLITUDE, _ads_blend)
+		target_pos += (track[0] as Vector3) * amp
+		target_rot += (track[1] as Vector3) * amp
+	if _lowering:
+		target_pos = HIP_POS + VM_LOWER_OFFSET
+		target_rot = HIP_ROT
+	# Integrate the pose springs: semi-implicit (symplectic), substepped
+	# via _spring_substeps so no single step exceeds VM_SPRING_MAX_DT
+	# and the integrated time is hitch-clamped (frame-hitch stable).
+	# BB-4×BB-5 join (Stage C): both stiffnesses scale by the weapon's
+	# spring_stiffness_mult — a heavy gun's springs are lazier, so it
+	# lags, wallows and settles late where a light gun snaps (plan §3.2).
+	var pos_k := VM_SPRING_STIFFNESS * _w_spring_mult
+	var rot_k := VM_ROT_SPRING_STIFFNESS * _w_spring_mult
+	var pos_ratio := VM_RAISE_DAMPING_RATIO if _raise_t < raise_time else VM_SPRING_DAMPING_RATIO
+	var pos_c := 2.0 * pos_ratio * sqrt(pos_k)
+	var rot_c := 2.0 * VM_ROT_SPRING_DAMPING_RATIO * sqrt(rot_k)
+	var sub := _spring_substeps(delta)
+	var steps: int = sub[0]
+	var h: float = sub[1]
+	for i in steps:
+		_vm_pos_vel += (-pos_k * (_vm_pos - target_pos) - pos_c * _vm_pos_vel) * h
+		_vm_pos += _vm_pos_vel * h
+		_vm_rot_vel += (-rot_k * (_vm_rot - target_rot) - rot_c * _vm_rot_vel) * h
+		_vm_rot += _vm_rot_vel * h
+	# Snap: a settled spring sits EXACTLY on its target — the ADS pose
+	# contract pins viewmodel.position == _ads_pos at full ADS, and a
+	# spring that only asymptotes would never quite get there.
+	if _vm_pos.distance_squared_to(target_pos) < 0.00000016 and _vm_pos_vel.length_squared() < 0.000016:
+		_vm_pos = target_pos
+		_vm_pos_vel = Vector3.ZERO
+	if _vm_rot.distance_squared_to(target_rot) < 0.00000016 and _vm_rot_vel.length_squared() < 0.000016:
+		_vm_rot = target_rot
+		_vm_rot_vel = Vector3.ZERO
+	# Additives — formulas unchanged from the pre-spring tick: walk bob
+	# (hip-fire only, frozen in ADS) and recoil kick on position; idle
+	# sway (ADS-scaled, faded in over the raise) and recoil pitch on
+	# rotation.
+	var speed := _player_speed()
+	if speed > 0.8 and not _ads:
+		# BB-4×BB-5 join: a heavy gun's bob phase runs slower (it lumbers).
+		_bob_t += delta * (2.0 + speed * 0.6) * _w_bob_rate_mult
+	var bob_mult := ADS_BOB_MULT if _ads else 1.0
+	# BB-4×BB-5 join: bob amplitude grows with weapon weight.
+	var bob := Vector3(
+		cos(_bob_t * BOB_FREQ) * BOB_AMOUNT * 0.6,
+		sin(_bob_t * BOB_FREQ * 2.0) * BOB_AMOUNT * 0.5,
+		0.0) * bob_mult * _w_bob_mult * clampf(speed / 3.0, 0.0, 1.0)
+	# Goal 1: viewmodel recoil kick rides on top of bob (backward +Z,
+	# since forward is -Z). Its spring lives in _tick_vm_kick. BB-4
+	# Stage C: the landing dip (its own spring, _tick_land_dip) pushes
+	# the gun down on the same write.
+	_viewmodel.position = _vm_pos + bob + Vector3(0.0, -_land_dip, _vm_kick_z)
+	var ads_mult := ADS_SWAY_MULT if _ads else 1.0
+	# BB-4×BB-5 join: idle sway amplitude grows with weapon weight.
+	var sway := Vector3(
+		sin(_sway_t * SWAY_SPEED * 1.7) * SWAY_AMOUNT,
+		sin(_sway_t * SWAY_SPEED * 1.3) * SWAY_AMOUNT * 1.2,
+		0.0) * ads_mult * _w_sway_mult
+	var raise_blend := clampf(_raise_t / maxf(raise_time, 0.001), 0.0, 1.0)
+	_viewmodel.rotation = _vm_rot + sway * raise_blend \
+			+ Vector3(_vm_kick_pitch - _land_dip_pitch, 0.0, 0.0)
+	# BB-1: reflex/ACOG dot appears only once the sight is mostly up.
+	# BB-1c/BB-1d: on a PiP optic (ACOG, reflex) the floating dot stands
+	# down while the lens is up — the in-glass reticle replaces it (no
+	# double reticles).
+	if _ads_dot != null:
+		_ads_dot.visible = _ads_blend > 0.5 and not _lens_active
+	# BB-1: at full ADS a sniper scope hands the view to the HUD scope
+	# overlay (the GLB scope is an opaque prop — there is nothing to see
+	# through it). Hide the viewmodel while scoped; it returns as the
+	# blend falls. Only while equipped (parented to the camera) — a
+	# parked viewmodel's visibility belongs to on_unequip.
+	if _optic == "scope" and _viewmodel.get_parent() == _camera:
+		_viewmodel.visible = _ads_blend < 0.85
 
 
 func _tick_flash(delta: float) -> void:
@@ -1174,46 +1654,3 @@ func _tick_shells(delta: float) -> void:
 			mi.scale = Vector3.ONE
 
 
-func _tick_sway_bob(delta: float) -> void:
-	if _viewmodel == null or _camera == null:
-		return
-	_sway_t += delta
-	var ads_mult := ADS_SWAY_MULT if _ads else 1.0
-	# ADS blend: 0 = hip, 1 = ads.
-	_ads_blend = move_toward(_ads_blend, 1.0 if _ads else 0.0, delta * 10.0)
-	var target_pos := HIP_POS.lerp(_ads_pos, _ads_blend)
-	var target_rot := HIP_ROT.lerp(ADS_ROT, _ads_blend)
-	var speed := _player_speed()
-	if speed > 0.8 and not _ads:
-		_bob_t += delta * (2.0 + speed * 0.6)
-	var bob_mult := ADS_BOB_MULT if _ads else 1.0
-	var bob := Vector3(
-		cos(_bob_t * BOB_FREQ) * BOB_AMOUNT * 0.6,
-		sin(_bob_t * BOB_FREQ * 2.0) * BOB_AMOUNT * 0.5,
-		0.0) * bob_mult * clampf(speed / 3.0, 0.0, 1.0)
-	# Don't fight the raise/lower animation: sway only drives rotation then.
-	var animating := _raise_t < raise_time or _lowering
-	if not animating:
-		# Goal 1: viewmodel recoil kick rides on top of bob (backward +Z,
-		# since forward is -Z). Decays in _tick_vm_kick.
-		_viewmodel.position = target_pos + bob + Vector3(0.0, 0.0, _vm_kick_z)
-	var sway := Vector3(
-		sin(_sway_t * SWAY_SPEED * 1.7) * SWAY_AMOUNT,
-		sin(_sway_t * SWAY_SPEED * 1.3) * SWAY_AMOUNT * 1.2,
-		0.0) * ads_mult
-	# Don't fight the raise animation: blend sway in as raise completes.
-	var raise_blend := clampf(_raise_t / maxf(raise_time, 0.001), 0.0, 1.0)
-	_viewmodel.rotation = target_rot + sway * raise_blend + Vector3(_vm_kick_pitch, 0.0, 0.0)
-	# BB-1: reflex/ACOG dot appears only once the sight is mostly up.
-	# BB-1c/BB-1d: on a PiP optic (ACOG, reflex) the floating dot stands
-	# down while the lens is up — the in-glass reticle replaces it (no
-	# double reticles).
-	if _ads_dot != null:
-		_ads_dot.visible = _ads_blend > 0.5 and not _lens_active
-	# BB-1: at full ADS a sniper scope hands the view to the HUD scope
-	# overlay (the GLB scope is an opaque prop — there is nothing to see
-	# through it). Hide the viewmodel while scoped; it returns as the
-	# blend falls. Only while equipped (parented to the camera) — a
-	# parked viewmodel's visibility belongs to on_unequip.
-	if _optic == "scope" and _viewmodel.get_parent() == _camera:
-		_viewmodel.visible = _ads_blend < 0.85

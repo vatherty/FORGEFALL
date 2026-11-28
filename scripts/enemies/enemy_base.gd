@@ -53,6 +53,20 @@ const FLINCH_BASE := 0.16         # flinch floor (s) for any damaging hit
 const FLINCH_PER_DAMAGE := 0.0016 # +s of flinch per point of effective damage
 const FLINCH_MAX := 0.50          # flinch ceiling (s)
 const FLINCH_HEADSHOT_MULT := 1.25
+# BB-4 Stage D (soldier polish): the RENDERED flinch (anim_flinch) is a
+# damped spring, not the old linear 5/s decay — the snap-back overshoots
+# ~15% past neutral (the value dips slightly negative; VoxelSoldier's
+# pose terms read it raw) before settling. The AI-interrupt timers
+# (FLINCH_BASE/PER_DAMAGE/MAX above, _flinch) are UNCHANGED — only the
+# rendered pose curve changes. Stiffness/damping: omega ~33 rad/s,
+# zeta 0.5 -> first zero-crossing ~0.11 s, overshoot ~16%, settled
+# ~0.4 s. Integrated in substeps of <= 1/60 s (semi-implicit Euler).
+const ANIM_FLINCH_STIFFNESS := 1100.0
+const ANIM_FLINCH_DAMPING_RATIO := 0.5
+# BB-4 Stage D: stride input smoothing — animate_full is fed a lerped
+# speed (this rate, /s) instead of raw planar velocity, so stride fades
+# in/out instead of popping at starts, stops and speed changes.
+const ANIM_SPEED_SMOOTH_RATE := 10.0
 const KB_BASE := 2.0              # knockback floor (impulse)
 const KB_PER_DAMAGE := 0.055      # +impulse per point of effective damage
 const KB_MAX := 10.0              # knockback ceiling (impulse)
@@ -176,7 +190,9 @@ var attack_telegraph_t := 0.0
 var attack_telegraph_total := 0.0
 var attack_telegraph_kind := ""
 var anim_strike := 0.0   # 1.0 on the strike frame, decays over ~0.25s
-var anim_flinch := 0.0   # 1.0 on a damaging hit, decays over ~0.2s
+var anim_flinch := 0.0   # 1.0 on a damaging hit; Stage D: spring-decays with overshoot
+var _anim_flinch_vel := 0.0 # Stage D: anim_flinch spring velocity
+var _anim_speed := 0.0      # Stage D: smoothed planar speed fed to animate_full
 var anim_crouch := 0.0   # 1.0 while crouched (marksman aim)
 var anim_strafe := 0.0   # -1..1 lateral velocity vs facing (computed per tick)
 var aim_offset := Vector3.ZERO  # added to fire_hitscan's aim point (suppressor sweep)
@@ -407,6 +423,8 @@ func activate(spawn_pos: Vector3, wave: int, mods: Dictionary) -> void:
 	attack_telegraph_kind = ""
 	anim_strike = 0.0
 	anim_flinch = 0.0
+	_anim_flinch_vel = 0.0
+	_anim_speed = 0.0
 	anim_crouch = 0.0
 	anim_strafe = 0.0
 	aim_offset = Vector3.ZERO
@@ -470,6 +488,8 @@ func _recycle() -> void:
 	attack_telegraph_kind = ""
 	anim_strike = 0.0
 	anim_flinch = 0.0
+	_anim_flinch_vel = 0.0
+	_anim_speed = 0.0
 	anim_crouch = 0.0
 	anim_strafe = 0.0
 	aim_offset = Vector3.ZERO
@@ -574,6 +594,7 @@ func take_damage(amount: float, hit_position: Vector3, is_headshot: bool, attack
 		var fl := flinch_time_for(effective, is_headshot)
 		_flinch = maxf(_flinch, fl)
 		anim_flinch = 1.0  # rework: drives the soldier's hit-reaction pose
+		_anim_flinch_vel = 0.0  # Stage D: the flinch spring restarts clean
 		last_hit_flinch = fl
 		var kb_mag := knockback_for(effective, base_hp, is_headshot, _kb_hits)
 		_kb_hits += 1.0
@@ -920,6 +941,32 @@ func gun_update(delta: float, dmg: float, spread_deg: float, sound_id: String, t
 		fire_hitscan(dmg, spread_deg, sound_id, tracer_color)
 
 
+## BB-4 Stage D: advance the rendered-flinch spring (see
+## ANIM_FLINCH_* TUNABLES). Semi-implicit Euler in <= 1/60 s substeps.
+## Snaps to an exact rest at 0 so idle enemies carry no pose residue.
+func _update_anim_flinch(delta: float) -> void:
+	if anim_flinch == 0.0 and _anim_flinch_vel == 0.0:
+		return
+	var damping := 2.0 * ANIM_FLINCH_DAMPING_RATIO * sqrt(ANIM_FLINCH_STIFFNESS)
+	var steps := maxi(1, ceili(delta / (1.0 / 60.0)))
+	var h := delta / float(steps)
+	for i in steps:
+		var acc := -ANIM_FLINCH_STIFFNESS * anim_flinch - damping * _anim_flinch_vel
+		_anim_flinch_vel += acc * h
+		anim_flinch += _anim_flinch_vel * h
+	if absf(anim_flinch) < 0.001 and absf(_anim_flinch_vel) < 0.01:
+		anim_flinch = 0.0
+		_anim_flinch_vel = 0.0
+
+
+## BB-4 Stage D: advance the smoothed stride input toward the raw
+## planar speed (exponential approach at ANIM_SPEED_SMOOTH_RATE).
+func _update_anim_speed(planar: float, delta: float) -> void:
+	_anim_speed += (planar - _anim_speed) * minf(1.0, ANIM_SPEED_SMOOTH_RATE * delta)
+	if absf(planar - _anim_speed) < 0.01:
+		_anim_speed = planar
+
+
 # --- main loop --------------------------------------------------------------
 func _physics_process(delta: float) -> void:
 	if not active:
@@ -931,8 +978,7 @@ func _physics_process(delta: float) -> void:
 		attack_telegraph_t -= delta
 	if anim_strike > 0.0:
 		anim_strike = maxf(anim_strike - 4.0 * delta, 0.0)
-	if anim_flinch > 0.0:
-		anim_flinch = maxf(anim_flinch - 5.0 * delta, 0.0)
+	_update_anim_flinch(delta)
 	if dead:
 		_death_tick(delta)
 		# Code-driven death crumple, driven by _death_t progress.
@@ -997,6 +1043,20 @@ func _physics_process(delta: float) -> void:
 		if right.length_squared() > 0.001:
 			anim_strafe = clampf(velocity.dot(right.normalized()) / maxf(speed, 0.1), -1.0, 1.0)
 	var windup := telegraph_progress() if is_winding_up() else 0.0
-	soldier.animate_full(delta, {"speed": planar, "aiming": aiming,
+	# BB-4 Stage D: the soldier is fed the SMOOTHED speed (stride fades
+	# instead of popping) and, while aiming, the elevation angle to the
+	# player's chest — the same aim point fire_hitscan uses — so the
+	# puppet's gun visibly pitches toward a player above/below it.
+	_update_anim_speed(planar, delta)
+	var aim_pitch := 0.0
+	if aiming:
+		var p := _player_node()
+		if p != null:
+			var to: Vector3 = (p.global_position + Vector3(0, 1.15, 0)) - _eye_pos()
+			var horiz := Vector2(to.x, to.z).length()
+			if horiz > 0.05:
+				aim_pitch = atan2(to.y, horiz)
+	soldier.animate_full(delta, {"speed": _anim_speed, "aiming": aiming,
 		"windup": windup, "strike": anim_strike, "flinch": anim_flinch,
-		"strafe": anim_strafe, "crouch": anim_crouch, "death": 0.0})
+		"strafe": anim_strafe, "crouch": anim_crouch, "death": 0.0,
+		"aim_pitch": aim_pitch})

@@ -127,6 +127,22 @@ const JETPACK_MAX_BURN := 2.5  # sec of continuous thrust before the latch
 const OOB_COUNTDOWN := 10.0      # seconds outside before the world kills you
 const OOB_KILL_DROP := 25.0      # below bounds min.y by this = fell out, die now
 const OOB_FALL_DEATH_Y := -100.0 # absolute kill floor on maps with no bounds
+# --- BB-5 (feel wave): weapon weight. WeaponManager pushes the equipped
+# weapon's weight_norm (0 = lightest, 1 = LMG) via set_weapon_weight() on
+# every equip/swap; these penalties turn it into the movement cost. Speed
+# penalty applies at the _update_horizontal choke point beside
+# class_speed_mult(); accel penalty applies to the GROUND branch only, so
+# direction changes feel laden while air momentum (BB-2) is untouched.
+const WEIGHT_SPEED_PENALTY := 0.22 # top-speed fraction lost at weight_norm 1
+const WEIGHT_ACCEL_PENALTY := 0.35 # ground-accel fraction lost at weight_norm 1
+# BB-5 Stage D: "easier to hit" is literal — the collision capsule (BOTH
+# the enemy-raycast target and the world-collision shape) grows with the
+# equipped weapon's hitbox_norm: radius = BASE + HITBOX_RADIUS * norm.
+# P9 ≈ 0.406 (nothing), AR7 ≈ 0.434, LR8 ≈ 0.476, LMG = 0.50 (+25%
+# radius ≈ +56% frontal area). Radius only: height never changes, so
+# headroom / stance fits are unaffected. Applied on equip/swap only.
+const WEIGHT_HITBOX_RADIUS := 0.10 # capsule radius gained at hitbox_norm 1
+const WEIGHT_HITBOX_BASE_RADIUS := 0.4 # scenes/player.tscn capsule radius
 #endregion
 
 #region SIGNALS
@@ -157,6 +173,18 @@ var ads_sensitivity := ADS_SENS_MULT
 # 5.0 sniper scope), pushed by WeaponManager on every equip/swap via
 # set_ads_zoom(). Drives the FOV zoom and the ADS sensitivity scale.
 var _ads_zoom := 1.0
+# BB-5: equipped weapon's normalised weight + the movement multipliers
+# derived from it in set_weapon_weight(). Neutral 1.0 defaults: a player
+# with no WeaponManager (tests, Studio) moves exactly as before.
+var _weapon_weight_norm := 0.0
+var _weapon_speed_mult := 1.0
+var _weapon_accel_mult := 1.0
+# BB-5 Stage D: the equipped weapon's hitbox_norm (from
+# WeaponBase.weight_effects — the §7.2 Raptor ruling is applied there)
+# and the live capsule shape it resizes. _capsule is resolved and made
+# instance-unique in _ready; null for a script-only player (tests).
+var _hitbox_norm := 0.0
+var _capsule: CapsuleShape3D = null
 var look_sensitivity := 1.0  # user setting; options menu wires this later
 var _hp := MAX_HP
 var _dead := false
@@ -230,6 +258,15 @@ func apply_preferences(values: Dictionary) -> void:
 func _ready() -> void:
 	apply_preferences(Preferences.values)
 	add_to_group("player")
+	# BB-5 Stage D: own the capsule shape. A scene sub-resource is SHARED
+	# across every instance of player.tscn, so duplicate it before any
+	# resize — otherwise one player's weapon weight would resize every
+	# instance's capsule in the tree (test rigs, future co-op bodies).
+	var cs := $CollisionShape3D as CollisionShape3D
+	if cs != null and cs.shape is CapsuleShape3D:
+		_capsule = (cs.shape as CapsuleShape3D).duplicate() as CapsuleShape3D
+		cs.shape = _capsule
+		_apply_hitbox_radius()
 	_pitch = 0.0
 	head.rotation.x = 0.0
 	grapple.setup(self, camera, $Head/Camera3D/GrappleAnchor, floor_ray)
@@ -249,6 +286,42 @@ func _ready() -> void:
 ## BB-1: WeaponManager pushes the equipped weapon's optic zoom here.
 func set_ads_zoom(z: float) -> void:
 	_ads_zoom = maxf(z, 1.0)
+
+
+## BB-5: WeaponManager pushes the equipped weapon's normalised weight
+## here (0..1, derived from the Arsenal "weight" stat by WeaponBase).
+## Stored as plain multipliers with neutral defaults — see _weapon_*_mult.
+func set_weapon_weight(weight_norm: float) -> void:
+	_weapon_weight_norm = clampf(weight_norm, 0.0, 1.0)
+	_weapon_speed_mult = 1.0 - WEIGHT_SPEED_PENALTY * _weapon_weight_norm
+	_weapon_accel_mult = 1.0 - WEIGHT_ACCEL_PENALTY * _weapon_weight_norm
+
+
+## BB-5 Stage D: WeaponManager pushes the equipped weapon's hitbox_norm
+## here (WeaponBase.weight_effects()["hitbox_norm"] — the §7.2 Raptor
+## ruling is applied THERE and never re-derived in this file). Resizes
+## the live capsule shape: enemy fire (EnemyBase.fire_hitscan) runs a
+## fresh physics ray query per shot, so it reads the new radius on the
+## very next shot — no cached target geometry anywhere.
+## Wall-snag discipline: this runs on equip/swap ONLY, never per frame.
+## Growing by at most WEIGHT_HITBOX_RADIUS (0.10 m total; ≤ ~2.5 cm
+## between adjacent weapon classes) while pressed against geometry is
+## resolved by move_and_slide's penetration recovery on the next
+## physics tick — a nudge of a few cm on an intentional player action,
+## in exchange for never deferring or dropping a resize.
+func set_weapon_hitbox(hitbox_norm: float) -> void:
+	_hitbox_norm = clampf(hitbox_norm, 0.0, 1.0)
+	_apply_hitbox_radius()
+
+
+func _apply_hitbox_radius() -> void:
+	if _capsule != null:
+		_capsule.radius = WEIGHT_HITBOX_BASE_RADIUS + WEIGHT_HITBOX_RADIUS * _hitbox_norm
+
+
+## Current capsule radius in metres (verify/debug hook).
+func weapon_hitbox_radius() -> float:
+	return _capsule.radius if _capsule != null else WEIGHT_HITBOX_BASE_RADIUS
 
 
 func add_look(relative: Vector2) -> void:
@@ -823,6 +896,9 @@ func _update_horizontal(delta: float, wish: Vector3) -> void:
 	elif _crouching:
 		speed = CROUCH_SPEED * class_crouch_speed_mult()
 	speed *= class_speed_mult()
+	# BB-5: the equipped gun's weight taxes every on-foot target speed
+	# (walk / sprint / crouch) — heavier gun, slower carrier.
+	speed *= _weapon_speed_mult
 	# v0.5.5: mod status effects (slow / freeze) on the player.
 	speed *= ModStatusEffects.speed_multiplier(self)
 	if not is_on_floor() or _just_jumped:
@@ -853,6 +929,10 @@ func _update_horizontal(delta: float, wish: Vector3) -> void:
 	# (target 11) but lost ~5 m/s in ~5 frames if the stick had rolled
 	# off "forward" and dropped the latch (target 6). Same landing, two
 	# outcomes, decided by an invisible input threshold.
+	# BB-5: ground-branch accel carries the weight penalty (strafe /
+	# direction changes feel laden). Friction, the overspeed bleed, the
+	# air branch and the wall-run branch are deliberately untouched.
+	var ground_accel := ACCEL_GROUND * _weapon_accel_mult
 	var hv := Vector2(velocity.x, velocity.z)
 	if wish == Vector3.ZERO:
 		# No input: uniform magnitude friction. (Per-component friction
@@ -864,13 +944,13 @@ func _update_horizontal(delta: float, wish: Vector3) -> void:
 		# rate, and bleed only the excess at OVERSPEED_BLEED — every
 		# landing, every fall height, latch or no latch.
 		var wish_dir := Vector2(wish.x, wish.z).normalized()
-		var steered := hv.move_toward(wish_dir * hv.length(), ACCEL_GROUND * delta)
+		var steered := hv.move_toward(wish_dir * hv.length(), ground_accel * delta)
 		if steered.length() > speed:
 			hv = steered.normalized() * maxf(speed, steered.length() - OVERSPEED_BLEED * delta)
 		else:
 			hv = steered
 	else:
-		hv = hv.move_toward(Vector2(wish.x, wish.z) * speed, ACCEL_GROUND * delta)
+		hv = hv.move_toward(Vector2(wish.x, wish.z) * speed, ground_accel * delta)
 	velocity.x = hv.x
 	velocity.z = hv.y
 

@@ -101,6 +101,41 @@ func _at(samples: Array, idx: int) -> float:
 	return samples[idx] if samples.size() > idx else -1.0
 
 
+## Measure the player's grounded sprint speed under the CURRENT
+## loadout (the same player instance the landing cases use). Runs on
+## a clear stretch of floor away from the wall and returns the speed
+## once it plateaus (15 consecutive on-floor samples within 0.05).
+## Returns 0.0 if no plateau is reached — callers must treat that as
+## a broken measurement, never as a usable reference.
+func _grounded_sprint_speed() -> float:
+	_release_all()
+	_player.position = Vector3(-20.0, 1.0, 30.0)
+	_player.velocity = Vector3.ZERO
+	_player.rotation = Vector3.ZERO
+	_player.get_node("Head").rotation.x = 0.0
+	_player.call("_end_wallrun")
+	_player.set("_sliding", false)
+	_player.set("_crouching", false)
+	Input.action_press("move_forward")
+	Input.action_press("sprint")
+	var window: Array = []
+	var frames := 0
+	var ref := 0.0
+	while frames < 300:
+		await physics_frame
+		frames += 1
+		if not _player.is_on_floor():
+			continue
+		window.append(_hs())
+		if window.size() > 15:
+			window.pop_front()
+		if window.size() == 15 and window.max() - window.min() < 0.05:
+			ref = _hs()
+			break
+	_release_all()
+	return ref
+
+
 func run() -> void:
 	var arena := Node3D.new()
 	arena.name = "VerifyArena"
@@ -115,11 +150,24 @@ func run() -> void:
 	await physics_frame
 
 	# ---------------- BB-2: landing consistency ----------------
-	# A1: sprint held — no loss at any fall speed.
+	# A1: sprint held — no loss at any fall speed. The reference speed
+	# is MEASURED under the current loadout, not hard-coded: BB-5
+	# weapon weight scales top sprint speed (ar7: 11.0 x ~0.926), so
+	# the invariant is "land at your loadout's real sprint speed and
+	# keep it", within the suite's standing 0.6 m/s tolerance. The
+	# guard check fails closed: a broken measurement must never turn
+	# A1 into a vacuous pass. The frame-5 checkpoint matters as much
+	# as frame-30: laden ground accel (~53 m/s^2) can repair a
+	# one-frame touchdown cut within ~7 frames, so a late sample
+	# alone cannot see momentum eaten at touchdown — preservation is
+	# asserted from the first frames after contact onward.
+	var sprint_ref := await _grounded_sprint_speed()
+	_check(sprint_ref > 6.0,
+		"BB-2 sprint reference: grounded sprint speed measured under current loadout (%.2f m/s)" % sprint_ref)
 	for fv in [2.0, 10.0, 16.0]:
-		var s := await _land_case(11.0, fv, Vector3(0, 0, -1), ["move_forward", "sprint"])
-		_check(s.size() >= 31 and _at(s, 30) >= 10.4,
-			"BB-2 sprint landing (fall %.0f): speed kept, hs@30f = %.2f" % [fv, _at(s, 30)])
+		var s := await _land_case(sprint_ref, fv, Vector3(0, 0, -1), ["move_forward", "sprint"])
+		_check(s.size() >= 31 and _at(s, 5) >= sprint_ref - 0.6 and _at(s, 30) >= sprint_ref - 0.6,
+			"BB-2 sprint landing (fall %.0f): speed kept, hs@5f = %.2f, hs@30f = %.2f (ref %.2f)" % [fv, _at(s, 5), _at(s, 30), sprint_ref])
 	# A2: walk held — identical gentle bleed at every fall speed.
 	var a2: Array = []
 	for fv in [2.0, 10.0, 16.0]:

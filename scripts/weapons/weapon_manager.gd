@@ -43,6 +43,7 @@ var _switching: bool = false
 var _ads_active: bool = false
 var _ads_signal_hooked: bool = false
 var _poll_ads_fallback: bool = false
+var _sprint_active: bool = false
 # v0.5.3: last observed player HP for the on_damage_taken hook poll
 # (-1 = not yet observed). See _poll_damage_taken().
 var _last_player_hp := -1.0
@@ -57,7 +58,10 @@ func _ready() -> void:
 	_current = _weapons[_current_slot]
 	_current.on_equip()
 	_hook_ads()
+	_hook_sprint()
 	_push_ads_zoom()
+	_push_weapon_weight()
+	_push_sprint()
 	weapon_changed.emit.call_deferred(_current.display_name)
 	_current.emit_ammo.call_deferred()
 
@@ -87,6 +91,30 @@ func _hook_ads() -> void:
 		_poll_ads_fallback = true
 
 
+## BB-4 Stage B: the player has always emitted sprint_changed (its
+## comment even promised a weapon-side reaction) — nothing consumed it
+## until now. Hook it like the ADS signal and forward to the current
+## weapon's sprint pose. No poll fallback here: WeaponBase polls the
+## player's _sprinting flag itself as its fallback.
+func _hook_sprint() -> void:
+	if _player != null and _player.has_signal("sprint_changed"):
+		_player.sprint_changed.connect(_on_player_sprint_changed)
+
+
+func _on_player_sprint_changed(active: bool) -> void:
+	_sprint_active = active
+	if _current != null:
+		_current.set_sprinting(active)
+
+
+## BB-4 Stage B: push the tracked sprint state to the current weapon on
+## every equip/swap, exactly like the ADS zoom and the BB-5 weight, so
+## a weapon swapped in mid-sprint starts in the right pose.
+func _push_sprint() -> void:
+	if _current != null and _current.has_method("set_sprinting"):
+		_current.set_sprinting(_sprint_active)
+
+
 func _process(_delta: float) -> void:
 	# v0.5.9 MOD WEAPONS: a mod weapon whose mod was disabled / removed
 	# / broken mid-match drops out to its slot fallback (its hooks
@@ -110,6 +138,7 @@ func _process(_delta: float) -> void:
 		# parked on the weapon node — move it onto the camera now.
 		_current.on_equip()
 		_current.set_ads(_ads_active)
+		_push_sprint()
 	# ADS (fallback poll only when the player has no ads_changed signal).
 	if _poll_ads_fallback and InputMap.has_action("ads"):
 		var ads_now := Input.is_action_pressed("ads")
@@ -191,6 +220,8 @@ func switch_to(slot: String) -> void:
 	_current.on_equip()
 	_current.set_ads(_ads_active)
 	_push_ads_zoom()
+	_push_weapon_weight()
+	_push_sprint()
 	_switching = false
 	weapon_changed.emit(_current.display_name)
 
@@ -309,6 +340,8 @@ func set_slot(slot: String, weapon_id: String) -> void:
 		_current.on_equip()
 		_current.set_ads(_ads_active)
 		_push_ads_zoom()
+		_push_weapon_weight()
+		_push_sprint()
 		weapon_changed.emit(_current.display_name)
 
 
@@ -319,6 +352,24 @@ func set_slot(slot: String, weapon_id: String) -> void:
 func _push_ads_zoom() -> void:
 	if _player != null and _current != null and _player.has_method("set_ads_zoom"):
 		_player.set_ads_zoom(Arsenal.ads_zoom(_current.weapon_id))
+
+
+## BB-5 (feel wave): the player's move-speed / strafe-accel penalties come
+## from the CURRENT weapon's normalised weight (WeaponBase.weight_norm,
+## derived from the Arsenal "weight" stat). Pushed on every equip/swap,
+## exactly like the ADS zoom — the player applies its own WEIGHT_*_PENALTY
+## consts, so it never has to know weapon data either.
+## Stage D adds the hitbox push on the same call: hitbox_norm comes from
+## weight_effects() (NOT weight_norm) so the §7.2 Raptor ruling, applied
+## inside weight_effects(), is the only place that decision exists.
+## Duck-typed: a player without either setter keeps the legacy feel.
+func _push_weapon_weight() -> void:
+	if _player == null or _current == null:
+		return
+	if _player.has_method("set_weapon_weight"):
+		_player.set_weapon_weight(_current.weight_norm)
+	if _player.has_method("set_weapon_hitbox"):
+		_player.set_weapon_hitbox(float(_current.weight_effects()["hitbox_norm"]))
 
 
 ## True when `weapon_id` is a live SCRIPT-mod weapon id.
